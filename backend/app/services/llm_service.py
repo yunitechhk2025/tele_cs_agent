@@ -203,7 +203,7 @@ async def check_file_request(text: str, available_files: list[dict]) -> list[int
     if not available_files:
         return []
     file_list = "\n".join(
-        f"- ID:{f['id']} | {f['name']} | {f['description']} | tags: {f['tags']}"
+        f"- ID:{f['id']} | {f['name']} | {f['description']} | tags: {f['tags']} | mime: {f.get('mime_type') or ''}"
         for f in available_files
     )
     try:
@@ -227,6 +227,74 @@ async def check_file_request(text: str, available_files: list[dict]) -> list[int
         return json.loads(result)
     except Exception as e:
         logger.error(f"File request detection failed: {e}")
+        return []
+
+
+def might_want_product_image(text: str) -> bool:
+    """Heuristic: user is asking for product photos / pictures (not necessarily pricing)."""
+    if not text or len(text.strip()) < 2:
+        return False
+    t = text.lower()
+    for kw in ("商品图", "产品图", "实物图", "发个图", "发图", "有没有图", "有图吗", "发一下图", "发张图"):
+        if kw in text:
+            return True
+    if "图" in text and any(w in text for w in ("椅", "商品", "产品", "货", "款", "样子", "沙发", "桌", "床")):
+        return True
+    for kw in ("product image", "product photo", "picture of", "photo of", "image of", "send me a pic", "send a photo"):
+        if kw in t:
+            return True
+    if any(k in t for k in (" picture", " photo", " image", " pic ")) and any(
+        w in t for w in ("product", "chair", "item", "goods", "catalog")
+    ):
+        return True
+    return False
+
+
+async def match_product_image_files(user_message: str, available_files: list[dict]) -> list[int]:
+    """Pick at most one file from the library that best matches a product-image request. Prefer image/* files."""
+    if not available_files:
+        return []
+    image_files = [f for f in available_files if (f.get("mime_type") or "").lower().startswith("image/")]
+    catalog = image_files if image_files else available_files
+    file_list = "\n".join(
+        f"- ID:{f['id']} | {f['name']} | {f['description']} | tags: {f['tags']} | mime: {f.get('mime_type') or 'unknown'}"
+        for f in catalog
+    )
+    try:
+        result = await _chat_completion(
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "The customer is asking for product photos, images, or pictures "
+                        "(e.g. chair photo, 椅子图片, product image). "
+                        "Match their request to exactly ONE best file ID from the catalog below. "
+                        "Prefer images (image/* mime) when the user wants a picture. "
+                        "Return a JSON array with a single id, e.g. [3], or [] if nothing fits.\n"
+                        "Return ONLY the JSON array, nothing else.\n\n"
+                        f"File catalog:\n{file_list}"
+                    ),
+                },
+                {"role": "user", "content": user_message},
+            ],
+            max_tokens=40,
+            temperature=0,
+        )
+        raw = result.strip()
+        if "[" not in raw:
+            return []
+        ids = json.loads(raw)
+        if not isinstance(ids, list):
+            return []
+        out: list[int] = []
+        for x in ids:
+            try:
+                out.append(int(float(x)))
+            except (TypeError, ValueError):
+                continue
+        return out[:1]
+    except Exception as e:
+        logger.error(f"Product image match failed: {e}")
         return []
 
 

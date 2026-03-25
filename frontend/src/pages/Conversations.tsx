@@ -7,6 +7,7 @@ import {
   Badge,
   Button,
   Card,
+  Divider,
   Empty,
   Input,
   List,
@@ -616,38 +617,63 @@ export default function Conversations() {
       </div>
 
       <Modal
-        title="生成合同"
+        title={
+          <Space direction="vertical" size={0}>
+            <span>
+              <FileTextOutlined style={{ marginRight: 8 }} />
+              生成合同
+            </span>
+            <Text type="secondary" style={{ fontSize: 13, fontWeight: 'normal' }}>
+              第一步：选择合同正文语言；第二步（可选）：选择 Word 模板
+            </Text>
+          </Space>
+        }
+        width={520}
         open={generateModalOpen}
         onCancel={() => setGenerateModalOpen(false)}
         okText="生成"
         confirmLoading={contractLoading}
         onOk={() => void confirmGenerateContract()}
+        destroyOnClose
+        styles={{ body: { paddingTop: 8 } }}
       >
         <Space direction="vertical" style={{ width: '100%' }} size="middle">
           <div>
-            <Text type="secondary" style={{ display: 'block', marginBottom: 8 }}>
-              合同输出语言
+            <Text strong style={{ display: 'block', marginBottom: 10 }}>
+              1. 合同输出语言（必选）
             </Text>
             <Select
+              size="large"
               style={{ width: '100%' }}
               value={genOutputLang}
               onChange={setGenOutputLang}
               options={CONTRACT_OUTPUT_LANG_OPTIONS}
+              placeholder="选择输出语言"
+              showSearch
+              optionFilterProp="label"
             />
           </div>
-          <Text type="secondary">可选：选择 Word 合同模板，AI 将根据聊天记录填充与修订模板。</Text>
-          <Select
-            loading={templatesLoading}
-            placeholder="不使用模板（由 AI 从零起草）"
-            allowClear
-            style={{ width: '100%' }}
-            value={genTemplateId ?? undefined}
-            onChange={(v) => setGenTemplateId(v ?? null)}
-            options={templates.map((t) => ({
-              label: `${t.name}（${t.original_name}）`,
-              value: t.id,
-            }))}
-          />
+          <Divider style={{ margin: '8px 0' }} />
+          <div>
+            <Text strong style={{ display: 'block', marginBottom: 8 }}>
+              2. Word 合同模板（可选）
+            </Text>
+            <Text type="secondary" style={{ display: 'block', marginBottom: 8 }}>
+              不选则 AI 根据聊天记录从零起草；选择后 AI 会按模板结构填充修订
+            </Text>
+            <Select
+              loading={templatesLoading}
+              placeholder="不使用模板"
+              allowClear
+              style={{ width: '100%' }}
+              value={genTemplateId ?? undefined}
+              onChange={(v) => setGenTemplateId(v ?? null)}
+              options={templates.map((t) => ({
+                label: `${t.name}（${t.original_name}）`,
+                value: t.id,
+              }))}
+            />
+          </div>
         </Space>
       </Modal>
 

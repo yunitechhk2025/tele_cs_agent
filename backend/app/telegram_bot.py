@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from io import BytesIO
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, constants
 from telegram.ext import ContextTypes
 from sqlalchemy import select
@@ -8,6 +9,7 @@ from app.database import AsyncSessionLocal
 from app.models import Conversation, Message, FileEntry, TelegramBot, ConversationStatus, MessageRole
 from app.services.llm_service import (
     detect_language, check_is_quote_related, check_file_request, generate_response,
+    might_want_product_image, match_product_image_files,
 )
 from app.services.rag_service import search_knowledge_base
 
@@ -34,6 +36,15 @@ HANDOFF_MESSAGES = {
     "ko": "견적 관련 문의이므로 담당자에게 연결해 드리겠습니다. 잠시만 기다려 주세요.",
     "es": "Su consulta involucra cotización. Le he conectado con un agente humano. Por favor espere.",
     "fr": "Votre demande concerne un devis. Je vous ai mis en relation avec un agent. Veuillez patienter.",
+}
+
+PRODUCT_IMAGE_ACK = {
+    "zh": "好的，已为您发送商品图片。",
+    "en": "Here's the product image.",
+    "ja": "商品画像をお送りします。",
+    "ko": "상품 이미지를 보내드립니다.",
+    "es": "Aquí tiene la imagen del producto.",
+    "fr": "Voici l'image du produit.",
 }
 
 
@@ -114,7 +125,14 @@ async def get_all_file_entries() -> list[dict]:
         result = await db.execute(select(FileEntry).order_by(FileEntry.created_at.desc()))
         files = result.scalars().all()
         return [
-            {"id": f.id, "name": f.original_name, "description": f.description, "tags": f.tags}
+            {
+                "id": f.id,
+                "name": f.original_name,
+                "description": f.description,
+                "tags": f.tags,
+                "mime_type": f.mime_type or "",
+                "category": f.category or "",
+            }
             for f in files
         ]
 
@@ -139,6 +157,38 @@ async def send_files_to_user(chat_id: str, file_ids: list[int], bot):
                 )
         except Exception as e:
             logger.error(f"Failed to send file {entry.original_name}: {e}")
+
+
+async def send_one_product_image_file(chat_id: str, file_id: int, bot):
+    """Send a single file as photo if image/*, else as document."""
+    entry = await get_file_entry_by_id(file_id)
+    if not entry:
+        return
+    mt = (entry.mime_type or "").lower()
+    try:
+        with open(entry.file_path, "rb") as f:
+            data = f.read()
+        bio = BytesIO(data)
+        bio.name = entry.original_name
+        cap = (entry.description[:1024] if entry.description else None)
+        if mt.startswith("image/"):
+            bio.seek(0)
+            await bot.send_photo(
+                chat_id=int(chat_id),
+                photo=bio,
+                caption=cap,
+            )
+        else:
+            bio.seek(0)
+            await bot.send_document(
+                chat_id=int(chat_id),
+                document=bio,
+                filename=entry.original_name,
+                caption=entry.description[:200] if entry.description else None,
+            )
+        logger.info(f"Sent product file {entry.original_name} to chat {chat_id}")
+    except Exception as e:
+        logger.error(f"Failed to send product image file {entry.original_name}: {e}", exc_info=True)
 
 
 async def notify_admin(bot_id: int, conversation: Conversation, user_message: str, bot, is_followup: bool = False):
@@ -292,6 +342,23 @@ def make_message_handler(bot_id: int):
                 await update.message.reply_text(handoff_msg)
                 await notify_admin(bot_id, conversation, user_message, context.bot)
                 return
+
+            if might_want_product_image(user_message):
+                all_files_for_img = await get_all_file_entries()
+                img_ids = (
+                    await match_product_image_files(user_message, all_files_for_img)
+                    if all_files_for_img
+                    else []
+                )
+                if img_ids:
+                    ack = PRODUCT_IMAGE_ACK.get(language, PRODUCT_IMAGE_ACK["en"])
+                    await save_message(conversation.id, MessageRole.ASSISTANT, ack, language)
+                    stop_typing.set()
+                    await typing_task
+                    await update.message.reply_text(ack)
+                    await send_one_product_image_file(chat_id, img_ids[0], context.bot)
+                    logger.info(f"[Bot {bot_id}] Auto-sent product image id={img_ids[0]}")
+                    return
 
             kb_context = await search_knowledge_base(user_message)
 
