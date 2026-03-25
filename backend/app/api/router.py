@@ -32,7 +32,11 @@ from app.services.rag_service import (
     add_to_knowledge_base, remove_from_knowledge_base,
     add_file_to_index, remove_file_from_index,
 )
-from app.services.contract_service import create_contract_from_conversation
+from app.services.contract_service import (
+    create_contract_from_conversation,
+    extract_docx_text_from_bytes,
+    looks_like_ooxml_docx,
+)
 from app.services.llm_service import (
     get_llm_settings, save_llm_settings, invalidate_llm_cache,
     test_llm_connection, LLM_SETTING_KEYS, translate_text, detect_language,
@@ -325,7 +329,12 @@ async def create_knowledge(
     db.add(entry)
     await db.commit()
     await db.refresh(entry)
-    await add_to_knowledge_base(entry.id, entry.title, entry.content, entry.category)
+    ok = await add_to_knowledge_base(entry.id, entry.title, entry.content, entry.category)
+    if not ok:
+        logger.error(
+            "Knowledge entry %s saved to DB but vector index failed (check embedding API / keys)",
+            entry.id,
+        )
     return KnowledgeEntrySchema.model_validate(entry)
 
 
@@ -340,6 +349,31 @@ async def delete_knowledge(entry_id: int, db: AsyncSession = Depends(get_db), _:
     return {"status": "deleted"}
 
 
+def _knowledge_text_from_upload(filename: str | None, content: bytes) -> str:
+    name = (filename or "").lower().strip()
+    treat_as_docx = name.endswith(".docx") or looks_like_ooxml_docx(content)
+    if treat_as_docx:
+        try:
+            return extract_docx_text_from_bytes(content)
+        except Exception as e:
+            logger.warning("Failed to parse .docx for knowledge upload: %s", e)
+            raise HTTPException(status_code=400, detail="无法解析 Word 文档，请确认是否为有效的 .docx 文件") from e
+    if name.endswith((".txt", ".md", ".csv")):
+        return content.decode("utf-8", errors="ignore")
+    if name.endswith(".doc"):
+        raise HTTPException(
+            status_code=400,
+            detail="不支持旧版 Word（.doc），请在 Word 中「另存为」.docx 后再上传",
+        )
+    # 无扩展名或非常见名：按纯文本兜底（兼容旧行为）；若实为 .docx 已由 looks_like_ooxml_docx 走上一分支
+    if not name or not os.path.splitext(name)[1]:
+        return content.decode("utf-8", errors="ignore")
+    raise HTTPException(
+        status_code=400,
+        detail="不支持的文件类型，请上传 .txt、.md、.csv 或 .docx（不支持旧版 .doc）",
+    )
+
+
 @router.post("/knowledge/upload")
 async def upload_knowledge_file(
     file: UploadFile = File(...),
@@ -348,7 +382,9 @@ async def upload_knowledge_file(
     _: str = Depends(get_current_user),
 ):
     content = await file.read()
-    text = content.decode("utf-8", errors="ignore")
+    text = _knowledge_text_from_upload(file.filename, content)
+    if not text.strip():
+        raise HTTPException(status_code=400, detail="文件内容为空或无法提取文本")
     chunks = _split_text_into_chunks(text, max_chunk_size=1500)
     entries = []
     for i, chunk in enumerate(chunks):
@@ -356,7 +392,12 @@ async def upload_knowledge_file(
         entry = KnowledgeEntry(title=title, content=chunk, source=file.filename, category=category or "uploaded")
         db.add(entry)
         await db.flush()
-        await add_to_knowledge_base(entry.id, entry.title, entry.content, entry.category)
+        ok = await add_to_knowledge_base(entry.id, entry.title, entry.content, entry.category)
+        if not ok:
+            logger.error(
+                "Knowledge chunk entry_id=%s failed to index (embedding API); entry exists in DB only",
+                entry.id,
+            )
         entries.append(entry)
     await db.commit()
     return {"status": "uploaded", "chunks_created": len(entries)}

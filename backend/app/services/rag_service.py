@@ -47,26 +47,34 @@ async def remove_from_knowledge_base(entry_id: int):
         return False
 
 
-async def search_knowledge_base(query: str, top_k: int = 3) -> str:
+async def search_knowledge_base(query: str, top_k: int = 5) -> str:
+    """Retrieve nearest knowledge chunks by embedding. Uses top_k results as-is; do not
+    filter by a hard distance cutoff — Chroma's metric (cosine vs L2) and embedding scale
+    vary, and an overly tight threshold was dropping all hits so RAG appeared empty."""
     embedding = await get_embedding(query)
     if not embedding:
+        logger.warning("Knowledge base search skipped: embedding API returned no vector")
         return ""
     try:
         count = kb_collection.count()
         if count == 0:
             return ""
+        n_results = min(top_k, count)
         results = kb_collection.query(
             query_embeddings=[embedding],
-            n_results=min(top_k, count),
+            n_results=n_results,
         )
         if not results["documents"] or not results["documents"][0]:
             return ""
-        context_parts = []
-        for i, doc in enumerate(results["documents"][0]):
-            distance = results["distances"][0][i] if results["distances"] else 0
-            if distance < 1.5:
-                context_parts.append(doc)
-        return "\n\n---\n\n".join(context_parts) if context_parts else ""
+        docs = results["documents"][0]
+        dists = results.get("distances") or []
+        if dists and dists[0]:
+            logger.debug(
+                "KB search: n=%s distances=%s",
+                len(docs),
+                [round(float(d), 4) for d in dists[0][: min(5, len(dists[0]))]],
+            )
+        return "\n\n---\n\n".join(docs)
     except Exception as e:
         logger.error(f"Knowledge base search failed: {e}")
         return ""

@@ -324,20 +324,34 @@ async def generate_response(
             f"and let them know you will send it."
         )
 
-    system_prompt = (
-        f"You are a professional and friendly customer service agent. "
-        f"You MUST respond in {lang_name} ({language}). "
-        f"Use the following knowledge base context to answer the customer's question. "
-        f"If the context doesn't contain relevant information, politely let the customer know "
-        f"and offer to connect them with a human agent.\n\n"
-        f"Knowledge Base Context:\n{context}\n"
-        f"{file_section}\n\n"
-        f"Rules:\n"
-        f"1. Always respond in {lang_name}\n"
-        f"2. Be professional, helpful and concise\n"
-        f"3. If unsure, suggest contacting human support\n"
-        f"4. Do not make up information not in the context"
-    )
+    has_kb = bool(context and context.strip())
+    if has_kb:
+        system_prompt = (
+            f"You are a professional and friendly customer service agent. "
+            f"You MUST respond in {lang_name} ({language}). "
+            f"Use the following retrieved knowledge base excerpts as the primary source of facts. "
+            f"Prefer citing or paraphrasing them when they apply. "
+            f"If they do not cover the question, say so briefly and offer human support.\n\n"
+            f"Knowledge Base Context:\n{context}\n"
+            f"{file_section}\n\n"
+            f"Rules:\n"
+            f"1. Always respond in {lang_name}\n"
+            f"2. Be professional, helpful and concise\n"
+            f"3. If unsure, suggest contacting human support\n"
+            f"4. Do not invent product/policy details that contradict the context above"
+        )
+    else:
+        system_prompt = (
+            f"You are a professional and friendly customer service agent. "
+            f"You MUST respond in {lang_name} ({language}). "
+            f"No knowledge base snippets were retrieved for this question; answer helpfully from "
+            f"general customer-service practice, and suggest contacting a human agent for specifics.\n"
+            f"{file_section}\n\n"
+            f"Rules:\n"
+            f"1. Always respond in {lang_name}\n"
+            f"2. Be professional, helpful and concise\n"
+            f"3. If unsure, suggest contacting human support"
+        )
 
     messages = [{"role": "system", "content": system_prompt}]
     if chat_history:
@@ -357,6 +371,16 @@ async def generate_response(
         return error_messages.get(language, error_messages["en"])
 
 
+_OUTPUT_FORMAT_CONTRACT = (
+    "OUTPUT FORMAT (mandatory, no text before TITLE):\n"
+    "LINE 1: TITLE: <short document title ONLY — one line, max ~40 characters, plain language "
+    "such as the deal type, e.g. 产品销售合同 / Service Agreement / 采购订单. No quotes, no markdown, no numbering.\n"
+    "LINE 2: exactly three dashes: ---\n"
+    "LINE 3 onward: the full contract body (sections, clauses, signature blocks as appropriate).\n"
+    "Do not repeat the title inside the body as a duplicate heading unless the template requires it."
+)
+
+
 async def generate_contract(
     chat_history: list[dict],
     customer_name: str,
@@ -372,33 +396,34 @@ async def generate_contract(
 
     if template_content and template_content.strip():
         prompt = (
-            f"You are given a CONTRACT TEMPLATE (plain text extracted from a Word document). "
-            f"Revise and fill it using the customer service conversation below. "
-            f"Replace placeholders, fill in names, amounts, dates, product details, and terms "
-            f"that appear or are implied in the chat. Keep the template's overall structure "
-            f"and section order. Output the complete contract in {lang_name} only, as plain text.\n\n"
+            f"You are given a CONTRACT TEMPLATE (plain text from a Word document). "
+            f"Fill and revise it using the conversation: names, amounts, dates, products, and terms "
+            f"that appear or are clearly implied. Keep the template's section order and headings where sensible.\n\n"
             f"Customer display name: {customer_name}\n\n"
             f"--- TEMPLATE ---\n{template_content}\n--- END TEMPLATE ---\n\n"
-            f"--- CONVERSATION ---\n{conversation_text}\n--- END CONVERSATION ---"
+            f"--- CONVERSATION ---\n{conversation_text}\n--- END CONVERSATION ---\n\n"
+            f"{_OUTPUT_FORMAT_CONTRACT}\n"
+            f"The contract body after --- must be entirely in {lang_name}."
         )
         system_msg = (
-            f"You are a professional contract drafting assistant. "
-            f"Follow the template structure; adapt content from the conversation. Write in {lang_name}."
+            f"You are a precise contract drafting assistant. "
+            f"Prefer clear, standard wording; avoid unnecessary legalese. "
+            f"Follow the mandatory TITLE/--- format. Write contract body in {lang_name}."
         )
     else:
         prompt = (
-            f"Based on the following customer service conversation, generate a professional "
-            f"contract/agreement draft in {lang_name}. Extract key terms, requirements, "
-            f"and any agreed-upon details from the conversation.\n\n"
-            f"Customer Name: {customer_name}\n\n"
-            f"Conversation:\n{conversation_text}\n\n"
-            f"Generate a complete contract draft with:\n"
-            f"1. Title\n2. Parties involved\n3. Scope of services/products\n"
-            f"4. Terms and conditions\n5. Payment terms (if discussed)\n"
-            f"6. Timeline (if discussed)\n7. Signature blocks\n\n"
-            f"Format the contract professionally in {lang_name}."
+            f"Draft a practical contract or agreement in {lang_name} from this customer service chat. "
+            f"Use only what the conversation supports; mark gaps briefly if something critical is missing.\n\n"
+            f"Customer: {customer_name}\n\n"
+            f"--- CONVERSATION ---\n{conversation_text}\n--- END CONVERSATION ---\n\n"
+            f"Include as applicable: parties, scope, deliverables, price/payment, timeline, "
+            f"termination, governing law only if discussed, and signature lines.\n\n"
+            f"{_OUTPUT_FORMAT_CONTRACT}"
         )
-        system_msg = f"You are a professional contract drafting assistant. Write in {lang_name}."
+        system_msg = (
+            f"You are a professional contract drafting assistant: clear structure, plain where possible, "
+            f"accurate to the chat. You MUST use the TITLE: / --- / body format. Body in {lang_name}."
+        )
 
     try:
         return await _chat_completion(

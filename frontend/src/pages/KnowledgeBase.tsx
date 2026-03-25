@@ -12,6 +12,7 @@ import {
   Space,
   Typography,
   Card,
+  Alert,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import type { UploadFile } from 'antd/es/upload/interface';
@@ -22,6 +23,8 @@ import {
   SearchOutlined,
   BookOutlined,
   InboxOutlined,
+  LoadingOutlined,
+  EyeOutlined,
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import { knowledgeApi } from '../api';
@@ -42,6 +45,8 @@ export default function KnowledgeBase() {
   const [uploadFileList, setUploadFileList] = useState<UploadFile[]>([]);
   const [addForm] = Form.useForm();
   const [uploadForm] = Form.useForm();
+  const [viewOpen, setViewOpen] = useState(false);
+  const [viewingEntry, setViewingEntry] = useState<KnowledgeEntry | null>(null);
 
   const loadEntries = useCallback(async () => {
     setLoading(true);
@@ -79,7 +84,7 @@ export default function KnowledgeBase() {
         source: values.source || undefined,
         category: values.category || undefined,
       });
-      message.success('知识条目已创建');
+      message.success('嵌入完成：知识条目已写入并已生成向量索引');
       setAddOpen(false);
       addForm.resetFields();
       await loadEntries();
@@ -112,14 +117,15 @@ export default function KnowledgeBase() {
       const res = await knowledgeApi.upload(uploadFile, category);
       const body = res.data as { status?: string; chunks_created?: number };
       const chunks = body.chunks_created ?? 0;
-      message.success(`上传完成，已创建 ${chunks} 个分块。`);
+      message.success(`嵌入完成：已生成 ${chunks} 个向量分块并写入知识库`);
       setUploadOpen(false);
       uploadForm.resetFields();
       setUploadFile(null);
       setUploadFileList([]);
       await loadEntries();
-    } catch {
-      message.error('上传失败');
+    } catch (e: unknown) {
+      const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      message.error(typeof detail === 'string' ? detail : '上传失败');
     } finally {
       setUploadSubmitting(false);
     }
@@ -158,21 +164,34 @@ export default function KnowledgeBase() {
     {
       title: '操作',
       key: 'actions',
-      width: 100,
+      width: 160,
       align: 'center',
       render: (_, record) => (
-        <Popconfirm
-          title="确认删除此条目？"
-          description="删除后不可恢复。"
-          okText="删除"
-          cancelText="取消"
-          okButtonProps={{ danger: true }}
-          onConfirm={() => void handleDelete(record.id)}
-        >
-          <Button type="link" danger size="small" icon={<DeleteOutlined />}>
-            删除
+        <Space size="small" wrap>
+          <Button
+            type="link"
+            size="small"
+            icon={<EyeOutlined />}
+            onClick={() => {
+              setViewingEntry(record);
+              setViewOpen(true);
+            }}
+          >
+            查看
           </Button>
-        </Popconfirm>
+          <Popconfirm
+            title="确认删除此条目？"
+            description="删除后不可恢复。"
+            okText="删除"
+            cancelText="取消"
+            okButtonProps={{ danger: true }}
+            onConfirm={() => void handleDelete(record.id)}
+          >
+            <Button type="link" danger size="small" icon={<DeleteOutlined />}>
+              删除
+            </Button>
+          </Popconfirm>
+        </Space>
       ),
     },
   ];
@@ -244,12 +263,25 @@ export default function KnowledgeBase() {
           setAddOpen(false);
           addForm.resetFields();
         }}
-        okText="确定"
+        okText="保存并嵌入"
         cancelText="取消"
         confirmLoading={addSubmitting}
+        maskClosable={!addSubmitting}
+        closable={!addSubmitting}
+        cancelButtonProps={{ disabled: addSubmitting }}
         destroyOnClose
         width={560}
       >
+        {addSubmitting ? (
+          <Alert
+            type="info"
+            showIcon
+            icon={<LoadingOutlined spin />}
+            message="正在嵌入知识库"
+            description="正在保存条目并调用向量模型写入索引，请稍候，勿关闭窗口。"
+            style={{ marginBottom: 16 }}
+          />
+        ) : null}
         <Form form={addForm} layout="vertical" style={{ marginTop: 8 }}>
           <Form.Item
             name="title"
@@ -275,6 +307,69 @@ export default function KnowledgeBase() {
       </Modal>
 
       <Modal
+        title="查看知识条目"
+        open={viewOpen}
+        onCancel={() => {
+          setViewOpen(false);
+          setViewingEntry(null);
+        }}
+        footer={null}
+        width={720}
+        destroyOnClose
+      >
+        {viewingEntry ? (
+          <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+            <div>
+              <Text type="secondary">标题</Text>
+              <div>
+                <Text strong>{viewingEntry.title}</Text>
+              </div>
+            </div>
+            <Space size="large" wrap>
+              <div>
+                <Text type="secondary">分类</Text>
+                <div>
+                  {viewingEntry.category ? (
+                    <Tag color="geekblue">{viewingEntry.category}</Tag>
+                  ) : (
+                    <Text type="secondary">—</Text>
+                  )}
+                </div>
+              </div>
+              <div>
+                <Text type="secondary">来源</Text>
+                <div>{viewingEntry.source || '—'}</div>
+              </div>
+              <div>
+                <Text type="secondary">更新时间</Text>
+                <div>{dayjs(viewingEntry.updated_at).format('YYYY-MM-DD HH:mm')}</div>
+              </div>
+            </Space>
+            <div>
+              <Text type="secondary">正文内容</Text>
+              <pre
+                style={{
+                  marginTop: 8,
+                  marginBottom: 0,
+                  padding: 12,
+                  background: 'var(--ant-color-fill-quaternary, #fafafa)',
+                  borderRadius: 8,
+                  maxHeight: 420,
+                  overflow: 'auto',
+                  whiteSpace: 'pre-wrap',
+                  wordBreak: 'break-word',
+                  fontSize: 13,
+                  lineHeight: 1.6,
+                }}
+              >
+                {viewingEntry.content}
+              </pre>
+            </div>
+          </Space>
+        ) : null}
+      </Modal>
+
+      <Modal
         title="上传文档"
         open={uploadOpen}
         onOk={() => void handleUploadOk()}
@@ -284,9 +379,12 @@ export default function KnowledgeBase() {
           setUploadFile(null);
           setUploadFileList([]);
         }}
-        okText="上传"
+        okText="上传并嵌入"
         cancelText="取消"
         confirmLoading={uploadSubmitting}
+        maskClosable={!uploadSubmitting}
+        closable={!uploadSubmitting}
+        cancelButtonProps={{ disabled: uploadSubmitting }}
         destroyOnClose
         width={520}
       >
@@ -295,9 +393,27 @@ export default function KnowledgeBase() {
             <Input placeholder="为上传的分块添加分类标签" />
           </Form.Item>
         </Form>
+        {uploadSubmitting ? (
+          <Alert
+            type="info"
+            showIcon
+            icon={<LoadingOutlined spin />}
+            message="正在嵌入知识库"
+            description={
+              <>
+                <div>正在上传、解析文档、切块并写入向量索引；完成后将弹出「嵌入完成」提示。</div>
+                <div style={{ marginTop: 8 }}>
+                  <Text type="secondary">大文件可能需数十秒，请勿关闭窗口。</Text>
+                </div>
+              </>
+            }
+            style={{ marginBottom: 16 }}
+          />
+        ) : null}
         <Upload.Dragger
-          accept=".txt,.md,.csv"
+          accept=".txt,.md,.csv,.docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
           maxCount={1}
+          disabled={uploadSubmitting}
           fileList={uploadFileList}
           beforeUpload={(file) => {
             setUploadFile(file);
@@ -320,7 +436,9 @@ export default function KnowledgeBase() {
             <InboxOutlined />
           </p>
           <p className="ant-upload-text">点击或拖拽文件到此区域上传</p>
-          <p className="ant-upload-hint">支持格式：.txt、.md、.csv</p>
+          <p className="ant-upload-hint">
+            支持：.txt、.md、.csv、Word 2007+（.docx）。旧版 .doc 请先在 Word 中另存为 .docx。
+          </p>
         </Upload.Dragger>
       </Modal>
     </div>

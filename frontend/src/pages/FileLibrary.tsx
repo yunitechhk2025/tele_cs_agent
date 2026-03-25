@@ -29,6 +29,7 @@ import {
   FileImageOutlined,
   FilePdfOutlined,
   FileWordOutlined,
+  EyeOutlined,
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import { fileApi } from '../api';
@@ -94,6 +95,9 @@ export default function FileLibrary() {
     tags: string;
     category?: string;
   }>();
+
+  const [viewOpen, setViewOpen] = useState(false);
+  const [viewingFile, setViewingFile] = useState<FileEntry | null>(null);
 
   const loadFiles = useCallback(async () => {
     setLoading(true);
@@ -268,10 +272,21 @@ export default function FileLibrary() {
     {
       title: '操作',
       key: 'actions',
-      width: 220,
+      width: 260,
       fixed: 'right',
       render: (_, record) => (
         <Space size="small" wrap>
+          <Button
+            type="link"
+            size="small"
+            icon={<EyeOutlined />}
+            onClick={() => {
+              setViewingFile(record);
+              setViewOpen(true);
+            }}
+          >
+            查看
+          </Button>
           <Button
             type="link"
             size="small"
@@ -357,6 +372,99 @@ export default function FileLibrary() {
           scroll={{ x: 960 }}
         />
       </Card>
+
+      <Modal
+        title="查看文件"
+        open={viewOpen}
+        onCancel={() => {
+          setViewOpen(false);
+          setViewingFile(null);
+        }}
+        footer={null}
+        width={640}
+        destroyOnClose
+      >
+        {viewingFile ? (
+          <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+            <Space align="start">
+              {fileTypeIcon(viewingFile.mime_type)}
+              <div>
+                <Text strong style={{ fontSize: 15 }}>
+                  {viewingFile.original_name}
+                </Text>
+                <div style={{ marginTop: 4 }}>
+                  <Text type="secondary">
+                    {formatFileSize(viewingFile.file_size)}
+                    {viewingFile.mime_type ? ` · ${viewingFile.mime_type}` : ''}
+                  </Text>
+                </div>
+              </div>
+            </Space>
+            <div>
+              <Text type="secondary">描述</Text>
+              <div style={{ marginTop: 4 }}>{viewingFile.description || '—'}</div>
+            </div>
+            <div>
+              <Text type="secondary">标签</Text>
+              <div style={{ marginTop: 8 }}>
+                {parseTags(viewingFile.tags).length ? (
+                  <Space size={[4, 4]} wrap>
+                    {parseTags(viewingFile.tags).map((t) => (
+                      <Tag key={t}>{t}</Tag>
+                    ))}
+                  </Space>
+                ) : (
+                  <Text type="secondary">—</Text>
+                )}
+              </div>
+            </div>
+            <div>
+              <Text type="secondary">分类</Text>
+              <div style={{ marginTop: 4 }}>
+                {viewingFile.category ? (
+                  <Tag color="blue">{viewingFile.category}</Tag>
+                ) : (
+                  <Text type="secondary">—</Text>
+                )}
+              </div>
+            </div>
+            <div>
+              <Text type="secondary">上传时间</Text>
+              <div>{dayjs(viewingFile.created_at).format('YYYY-MM-DD HH:mm')}</div>
+            </div>
+            {viewingFile.mime_type?.toLowerCase().startsWith('image/') ? (
+              <div>
+                <Text type="secondary">预览</Text>
+                <div style={{ marginTop: 8, textAlign: 'center' }}>
+                  <img
+                    src={fileApi.downloadUrl(viewingFile.id)}
+                    alt={viewingFile.original_name}
+                    style={{ maxWidth: '100%', maxHeight: 360, objectFit: 'contain' }}
+                  />
+                </div>
+              </div>
+            ) : (
+              <div>
+                <Text type="secondary">预览</Text>
+                <div style={{ marginTop: 8 }}>
+                  <Text type="secondary">
+                    当前类型无法在页面内直接预览，请使用「下载」在本地打开。
+                  </Text>
+                </div>
+              </div>
+            )}
+            <Button
+              type="primary"
+              icon={<DownloadOutlined />}
+              href={fileApi.downloadUrl(viewingFile.id)}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              下载文件
+            </Button>
+          </Space>
+        ) : null}
+      </Modal>
 
       <Modal
         title="上传文件"
