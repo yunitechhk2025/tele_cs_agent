@@ -1,153 +1,118 @@
 # tele_cs_agent
 
-# Telegram Customer Service Agent System
+基于 Telegram 的出海客服系统：集成大模型对话、RAG 知识库、询价转人工、多语言回复与合同草稿生成，并提供 React 管理后台。
 
-A full-featured AI-powered customer service system that integrates with Telegram, featuring RAG-based knowledge base Q&A, automatic language detection, human handoff for pricing inquiries, and automated contract generation.
-
-## Architecture
+## 架构概览
 
 ```
 ┌──────────────┐     ┌──────────────────────┐     ┌──────────────┐
-│   Telegram   │────▶│   FastAPI Backend     │────▶│  PostgreSQL  │
-│   Clients    │◀────│                       │     └──────────────┘
-└──────────────┘     │  ┌─────────────────┐  │     ┌──────────────┐
-                     │  │  Telegram Bot    │  │────▶│   ChromaDB   │
-┌──────────────┐     │  │  LLM Service    │  │     │  (RAG Store) │
-│  Admin Panel │────▶│  │  RAG Service    │  │     └──────────────┘
-│  (React SPA) │◀────│  │  Contract Gen   │  │     ┌──────────────┐
-└──────────────┘     │  └─────────────────┘  │────▶│    Redis      │
-                     └──────────────────────┘     └──────────────┘
+│   Telegram   │────▶│   FastAPI 后端        │────▶│  PostgreSQL  │
+│   客户       │◀────│                      │     └──────────────┘
+└──────────────┘     │  ┌─────────────────┐ │     ┌──────────────┐
+                     │  │ Telegram Bot    │ │────▶│   ChromaDB   │
+┌──────────────┐     │  │ LLM / RAG       │ │     │  (向量知识库) │
+│  管理后台     │────▶│  │ 合同生成等       │ │     └──────────────┘
+│  (React)     │◀────│  └─────────────────┘ │     ┌──────────────┐
+└──────────────┘     └──────────────────────┘────▶│    Redis     │
+                                                 └──────────────┘
 ```
 
-## Features
+## 主要功能
 
-### 1. Multi-language Customer Service
-- Automatic language detection using OpenAI
-- Responds to customers in their detected language
-- Supports 15+ languages including Chinese, English, Japanese, Korean, Spanish, French, German, Arabic, Russian, and more
+- **多语言客服**：自动识别客户语言并尽量用同语言回复；支持常见多种语言。
+- **RAG 知识库**：ChromaDB + OpenAI 嵌入，支持上传文档（如 TXT、MD、CSV）并在回答中检索相关知识。
+- **询价与人工接管**：识别询价类问题后通知管理员 Telegram，可在后台查看会话并直接回复客户；人工处理期间客户再次发消息会触发跟进提醒。
+- **人工回复与翻译**：可按客户询价语言进行翻译辅助；相关逻辑与会话字段配合使用。
+- **合同与模板**：从会话生成合同草稿；支持 Word 模板、语言选择；可在对话流程中配合「发送合同」等能力（以当前实现为准）。
+- **文件与商品图**：知识库/文件管理中的图片可在客户表达需要商品图等意图时，按规则自动选取并发送（具体规则见后端实现）。
 
-### 2. RAG Knowledge Base
-- Vector-based document search using ChromaDB + OpenAI embeddings
-- Upload documents (TXT, MD, CSV) to build your knowledge base
-- AI generates answers based on relevant knowledge base entries
-- Admin panel for managing knowledge base entries
+## 技术栈
 
-### 3. Human Handoff for Pricing Inquiries
-- AI automatically detects pricing/quotation-related questions
-- Sends notification to admin's Telegram with:
-  - Customer information
-  - The pricing question
-  - Direct link to admin dashboard conversation
-  - Direct link to customer's Telegram profile
-- Admin can reply directly from the dashboard
-
-### 4. Automated Contract Generation
-- Generate contract drafts from conversation history
-- AI extracts key terms, requirements, and agreed details
-- Contracts generated in the customer's language
-- Edit, review, approve, and manage contracts in the admin panel
-
-### 5. Admin Dashboard
-- **Dashboard**: Overview statistics and recent conversations
-- **Conversations**: Real-time chat view, reply to customers, manage handoffs
-- **Knowledge Base**: Add, edit, delete, and upload knowledge entries
-- **Contracts**: View, edit, approve, and export generated contracts
-
-## Tech Stack
-
-| Component | Technology |
-|-----------|-----------|
-| Backend | Python 3.12, FastAPI |
-| Telegram Bot | python-telegram-bot |
-| AI/LLM | OpenAI GPT-4o |
+| 模块 | 技术 |
+|------|------|
+| 后端 | Python 3.12、FastAPI |
+| Telegram | python-telegram-bot |
+| 大模型 | OpenAI API（可配置模型与 Base URL） |
 | RAG | ChromaDB + OpenAI Embeddings |
-| Database | PostgreSQL + SQLAlchemy (async) |
-| Cache | Redis |
-| Frontend | React 18, TypeScript, Ant Design 5 |
-| Deployment | Docker, Docker Compose |
+| 数据库 | PostgreSQL、SQLAlchemy（异步） |
+| 缓存 | Redis |
+| 前端 | React 18、TypeScript、Ant Design 5 |
+| 部署 | Docker、Docker Compose |
 
-## Quick Start
+## 环境要求
 
-### Prerequisites
-- Docker & Docker Compose
-- Telegram Bot Token (from [@BotFather](https://t.me/BotFather))
-- OpenAI API Key
+- Docker 与 Docker Compose
+- Telegram Bot Token（通过 [@BotFather](https://t.me/BotFather) 创建机器人）
+- OpenAI API Key（或兼容 OpenAI API 的服务，需在环境变量中配置）
 
-### 1. Clone and Configure
+## 快速开始（Docker）
+
+### 1. 配置环境变量
 
 ```bash
-# Copy the environment file
 cp backend/.env.example backend/.env
-
-# Edit with your credentials
-nano backend/.env
+# 编辑 backend/.env，填入真实密钥与管理员信息
 ```
 
-Required environment variables:
-```
-TELEGRAM_BOT_TOKEN=your_bot_token
-ADMIN_CHAT_ID=your_telegram_user_id
-OPENAI_API_KEY=your_openai_key
+必填项示例：
+
+```env
+TELEGRAM_BOT_TOKEN=你的机器人Token
+ADMIN_CHAT_ID=管理员的Telegram数字ID
+OPENAI_API_KEY=你的OpenAI密钥
 ```
 
-### 2. Deploy with Docker Compose
+其他项（数据库、Redis、JWT、管理员账号密码等）请参照 [backend/.env.example](backend/.env.example)。**生产环境务必修改默认密码与 `JWT_SECRET`。**
+
+修改 `backend/.env` 后需要**重启后端容器**才能生效；仅在前端或部分仅内存中生效的配置可能无需重启，以实际代码为准。
+
+### 2. 启动服务
 
 ```bash
-docker-compose up -d --build
+docker compose up -d --build
 ```
 
-This starts:
-- **PostgreSQL** on port 5432
-- **Redis** on port 6379
-- **Backend API** on port 8000
-- **Frontend** on port 80
+默认端口（与 [docker-compose.yml](docker-compose.yml) 一致）：
 
-### 3. Access the Admin Dashboard
+| 服务 | 端口 |
+|------|------|
+| PostgreSQL | 5432 |
+| Redis | 6379 |
+| 后端 API | 8000 |
+| 管理前端（Nginx） | **3001** |
 
-Open `http://localhost` in your browser.
+### 3. 打开管理后台
 
-Default credentials:
-- Username: `admin`
-- Password: `admin123`
+浏览器访问：**http://localhost:3001**
 
-> **Important**: Change the default password in your `.env` file for production.
+默认账号见 `backend/.env` 中的 `ADMIN_USERNAME` / `ADMIN_PASSWORD`（示例中为 `admin` 与你在 `.env` 里设置的密码）。**上线前务必改为强密码。**
 
-### 4. Set Up Your Bot
+### 4. 绑定机器人与管理员
 
-1. Talk to [@BotFather](https://t.me/BotFather) on Telegram
-2. Create a new bot with `/newbot`
-3. Copy the token to `TELEGRAM_BOT_TOKEN` in `.env`
-4. Get your admin chat ID (talk to [@userinfobot](https://t.me/userinfobot))
-5. Set `ADMIN_CHAT_ID` in `.env`
-6. Restart: `docker-compose restart backend`
+1. 在 Telegram 与 [@BotFather](https://t.me/BotFather) 对话，使用 `/newbot` 创建机器人，将 Token 写入 `TELEGRAM_BOT_TOKEN`。
+2. 获取你的数字 Chat ID（例如通过 [@userinfobot](https://t.me/userinfobot)），写入 `ADMIN_CHAT_ID`。
+3. 保存 `.env` 后执行：`docker compose restart backend`。
 
-### 5. Add Knowledge Base Content
+### 5. 维护知识库
 
-1. Log into the admin dashboard
-2. Go to **Knowledge Base**
-3. Either:
-   - Click **Add Entry** to manually add Q&A pairs
-   - Click **Upload File** to upload documentation files (.txt, .md, .csv)
+登录管理后台 → **知识库**：手动新增条目或上传文件，用于 RAG 检索。
 
-## Local Development
+## 本地开发（可选）
 
-### Backend
+### 后端
 
 ```bash
 cd backend
 python -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
+# Windows: venv\Scripts\activate
 pip install -r requirements.txt
-
-# Set up environment variables
 cp .env.example .env
-# Edit .env with your credentials
-
-# Run with hot reload
-uvicorn app.main:app --reload --port 8000
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-### Frontend
+需本机已安装 PostgreSQL、Redis，或在 `.env` 中指向可访问的实例。
+
+### 前端
 
 ```bash
 cd frontend
@@ -155,51 +120,27 @@ npm install
 npm run dev
 ```
 
-The frontend dev server runs on port 5173 and proxies `/api` requests to the backend.
+开发服务器通常为 Vite 默认端口，并将 `/api` 代理到后端（以 [frontend/vite.config.ts](frontend/vite.config.ts) 为准）。
 
-## API Endpoints
+## API 说明（节选）
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/auth/login` | Admin login |
-| GET | `/api/dashboard/stats` | Dashboard statistics |
-| GET | `/api/conversations` | List conversations |
-| GET | `/api/conversations/:id` | Conversation detail with messages |
-| POST | `/api/conversations/:id/reply` | Send reply to customer |
-| POST | `/api/conversations/:id/close` | Close conversation |
-| GET | `/api/knowledge` | List knowledge entries |
-| POST | `/api/knowledge` | Create knowledge entry |
-| POST | `/api/knowledge/upload` | Upload knowledge file |
-| DELETE | `/api/knowledge/:id` | Delete knowledge entry |
-| GET | `/api/contracts` | List contracts |
-| POST | `/api/contracts/generate` | Generate contract from conversation |
-| PUT | `/api/contracts/:id` | Update contract |
-| DELETE | `/api/contracts/:id` | Delete contract |
+管理端通过后端 REST API 完成登录、会话、知识库、合同等操作。常见路径包括：
 
-## Cloud Deployment
+- `POST /api/auth/login`：管理员登录  
+- `GET /api/conversations`：会话列表  
+- `GET /api/conversations/{id}`：会话详情与消息  
+- `POST /api/conversations/{id}/reply`：向客户发送回复  
+- 知识库、合同相关：`/api/knowledge`、`/api/contracts` 等（以 [backend/app/api](backend/app/api) 路由为准）
 
-### AWS / GCP / Azure
+完整列表可在运行后端后访问 OpenAPI 文档（若已启用）：`http://localhost:8000/docs`。
 
-1. Push your images to a container registry
-2. Deploy using your cloud provider's container service (ECS, Cloud Run, AKS)
-3. Set up managed PostgreSQL and Redis instances
-4. Configure environment variables
-5. Set up a domain with SSL
+## 云端 / 生产部署建议
 
-### Recommended Production Settings
+1. 将镜像推送到容器镜像仓库，在目标环境拉取并运行 Compose 或编排（如 Kubernetes）。  
+2. 使用云厂商托管 PostgreSQL 与 Redis，在环境变量中填写 `DATABASE_URL`、`REDIS_URL`。  
+3. 配置 HTTPS 域名、防火墙与安全组，仅暴露必要端口。  
+4. 更新代码后一般在项目根目录执行：`git pull` 后 `docker compose up -d --build` 以重新构建并滚动更新。
 
-```env
-# Use strong secrets
-JWT_SECRET=<random-64-char-string>
-ADMIN_PASSWORD=<strong-password>
-
-# Use managed database
-DATABASE_URL=postgresql+asyncpg://user:pass@managed-db:5432/cs_agent
-
-# Use managed Redis
-REDIS_URL=redis://managed-redis:6379/0
-```
-
-## License
+## 开源协议
 
 MIT
