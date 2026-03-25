@@ -4,6 +4,7 @@ export interface Message {
   role: 'user' | 'assistant' | 'human_agent';
   content: string;
   language: string | null;
+  attachment_file_id: number | null;
   created_at: string;
 }
 

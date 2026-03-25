@@ -19,6 +19,7 @@ class MessageSchema(BaseModel):
     role: str
     content: str
     language: Optional[str] = None
+    attachment_file_id: Optional[int] = None
     created_at: datetime
 
     class Config:

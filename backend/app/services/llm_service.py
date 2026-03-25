@@ -331,14 +331,18 @@ async def generate_response(
             f"You MUST respond in {lang_name} ({language}). "
             f"Use the following retrieved knowledge base excerpts as the primary source of facts. "
             f"Prefer citing or paraphrasing them when they apply. "
-            f"If they do not cover the question, say so briefly and offer human support.\n\n"
+            f"If the user's question matches FAQ-style or 'common questions' (常见问题) content in the excerpts, "
+            f"you MUST answer using the answer text given there—paraphrase only for clarity and language, "
+            f"do not substitute different facts or generic guesses. "
+            f"If the excerpts do not cover the question, say so briefly and offer human support.\n\n"
             f"Knowledge Base Context:\n{context}\n"
             f"{file_section}\n\n"
             f"Rules:\n"
             f"1. Always respond in {lang_name}\n"
             f"2. Be professional, helpful and concise\n"
             f"3. If unsure, suggest contacting human support\n"
-            f"4. Do not invent product/policy details that contradict the context above"
+            f"4. Do not invent product/policy details that contradict the context above\n"
+            f"5. FAQ/common-question matches: follow the knowledge base answer as the authoritative response"
         )
     else:
         system_prompt = (

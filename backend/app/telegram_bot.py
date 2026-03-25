@@ -11,7 +11,7 @@ from app.services.llm_service import (
     detect_language, check_is_quote_related, check_file_request, generate_response,
     might_want_product_image, match_product_image_files,
 )
-from app.services.rag_service import search_knowledge_base
+from app.services.rag_service import search_knowledge_for_bot
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -100,9 +100,21 @@ async def get_or_create_conversation(
         return conversation
 
 
-async def save_message(conversation_id: int, role: MessageRole, content: str, language: str | None = None):
+async def save_message(
+    conversation_id: int,
+    role: MessageRole,
+    content: str,
+    language: str | None = None,
+    attachment_file_id: int | None = None,
+):
     async with AsyncSessionLocal() as db:
-        msg = Message(conversation_id=conversation_id, role=role, content=content, language=language)
+        msg = Message(
+            conversation_id=conversation_id,
+            role=role,
+            content=content,
+            language=language,
+            attachment_file_id=attachment_file_id,
+        )
         db.add(msg)
         await db.commit()
 
@@ -309,16 +321,6 @@ def make_message_handler(bot_id: int):
             fresh_conv = await db.get(Conversation, conversation.id)
             current_status = fresh_conv.status if fresh_conv else conversation.status
 
-        if current_status in (ConversationStatus.HUMAN_HANDLING, ConversationStatus.PENDING_HUMAN):
-            logger.info(f"[Bot {bot_id}] Conversation in {current_status}, notifying user and admin")
-            human_notice = {
-                "zh": "您的对话已转接人工客服，请耐心等待回复。如需重新开始，请发送 /close 关闭当前对话，然后发送 /start。",
-                "en": "Your conversation has been transferred to a human agent. Please wait for a reply. Send /close then /start to restart.",
-            }
-            await update.message.reply_text(human_notice.get(language, human_notice["en"]))
-            await notify_admin(bot_id, conversation, user_message, context.bot, is_followup=True)
-            return
-
         stop_typing = asyncio.Event()
         typing_task = asyncio.create_task(
             keep_typing(int(chat_id), context.bot, stop_typing)
@@ -340,8 +342,17 @@ def make_message_handler(bot_id: int):
                 stop_typing.set()
                 await typing_task
                 await update.message.reply_text(handoff_msg)
-                await notify_admin(bot_id, conversation, user_message, context.bot)
+                await notify_admin(
+                    bot_id,
+                    conversation,
+                    user_message,
+                    context.bot,
+                    is_followup=(current_status == ConversationStatus.PENDING_HUMAN),
+                )
                 return
+
+            if current_status == ConversationStatus.PENDING_HUMAN:
+                await notify_admin(bot_id, conversation, user_message, context.bot, is_followup=True)
 
             if might_want_product_image(user_message):
                 all_files_for_img = await get_all_file_entries()
@@ -352,7 +363,13 @@ def make_message_handler(bot_id: int):
                 )
                 if img_ids:
                     ack = PRODUCT_IMAGE_ACK.get(language, PRODUCT_IMAGE_ACK["en"])
-                    await save_message(conversation.id, MessageRole.ASSISTANT, ack, language)
+                    await save_message(
+                        conversation.id,
+                        MessageRole.ASSISTANT,
+                        ack,
+                        language,
+                        attachment_file_id=img_ids[0],
+                    )
                     stop_typing.set()
                     await typing_task
                     await update.message.reply_text(ack)
@@ -360,7 +377,7 @@ def make_message_handler(bot_id: int):
                     logger.info(f"[Bot {bot_id}] Auto-sent product image id={img_ids[0]}")
                     return
 
-            kb_context = await search_knowledge_base(user_message)
+            kb_context = await search_knowledge_for_bot(user_message)
 
             all_files = await get_all_file_entries()
             matched_file_ids = await check_file_request(user_message, all_files) if all_files else []

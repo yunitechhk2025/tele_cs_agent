@@ -87,6 +87,7 @@ class Message(Base):
     role = Column(SQLEnum(MessageRole))
     content = Column(Text)
     language = Column(String(10), nullable=True)
+    attachment_file_id = Column(Integer, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     conversation = relationship("Conversation", back_populates="messages")

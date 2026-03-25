@@ -154,6 +154,15 @@ function MessageBubble({ msg }: { msg: Message }) {
         <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 14, lineHeight: 1.55 }}>
           {msg.content}
         </div>
+        {msg.attachment_file_id != null && msg.attachment_file_id !== undefined && (
+          <div style={{ marginTop: 10 }}>
+            <img
+              alt=""
+              src={`/api/files/${msg.attachment_file_id}/download`}
+              style={{ maxWidth: '100%', maxHeight: 280, borderRadius: 8, display: 'block' }}
+            />
+          </div>
+        )}
       </div>
     </div>
   );
@@ -376,6 +385,7 @@ export default function Conversations() {
         gap: 0,
         height: PANEL_HEIGHT,
         minHeight: 420,
+        maxHeight: PANEL_HEIGHT,
         background: '#fff',
         borderRadius: 12,
         overflow: 'hidden',
@@ -383,13 +393,16 @@ export default function Conversations() {
         border: '1px solid #f0f0f0',
       }}
     >
-      {/* 左侧：对话列表 */}
+      {/* 左侧：对话列表（minHeight:0 让内部列表在任意会话下都能出现滚动条） */}
       <div
         style={{
           width: 350,
           flexShrink: 0,
+          alignSelf: 'stretch',
+          minHeight: 0,
           display: 'flex',
           flexDirection: 'column',
+          overflow: 'hidden',
           borderRight: '1px solid #f0f0f0',
           background: '#fafafa',
         }}
@@ -414,7 +427,18 @@ export default function Conversations() {
           }))}
           style={{ padding: '0 12px', marginBottom: 0 }}
         />
-        <div style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: '8px 12px 16px' }}>
+        <div
+          style={{
+            flex: 1,
+            minHeight: 0,
+            overflowY: 'auto',
+            overflowX: 'hidden',
+            overscrollBehavior: 'contain',
+            scrollbarGutter: 'stable',
+            WebkitOverflowScrolling: 'touch',
+            padding: '8px 12px 16px',
+          }}
+        >
           <Spin spinning={listLoading}>
             {!listLoading && conversations.length === 0 ? (
               <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无对话" />
@@ -482,9 +506,11 @@ export default function Conversations() {
         style={{
           flex: 1,
           minWidth: 0,
+          minHeight: 0,
           display: 'flex',
           flexDirection: 'column',
           background: '#f5f5f5',
+          overflow: 'hidden',
         }}
       >
         {selectedId == null ? (
@@ -554,24 +580,28 @@ export default function Conversations() {
               </Space>
             </div>
 
-            <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
-              <Spin spinning={detailLoading} style={{ maxHeight: '100%' }}>
-                <div
-                  style={{
-                    height: '100%',
-                    overflow: 'auto',
-                    padding: '20px 24px 24px',
-                    background: 'linear-gradient(180deg, #f0f2f5 0%, #f5f5f5 100%)',
-                  }}
-                >
-                  {detail && !detailLoading && (!detail.messages || detail.messages.length === 0) ? (
-                    <Empty description="暂无消息" />
-                  ) : detail?.messages?.length ? (
-                    [...detail.messages]
-                      .sort((a, b) => dayjs(a.created_at).valueOf() - dayjs(b.created_at).valueOf())
-                      .map((m) => <MessageBubble key={m.id} msg={m} />)
-                  ) : null}
-                </div>
+            <div
+              style={{
+                flex: 1,
+                minHeight: 0,
+                overflowY: 'scroll',
+                overflowX: 'hidden',
+                overscrollBehavior: 'contain',
+                scrollbarGutter: 'stable',
+                WebkitOverflowScrolling: 'touch',
+                padding: '20px 20px 20px 24px',
+                background: 'linear-gradient(180deg, #f0f2f5 0%, #f5f5f5 100%)',
+                position: 'relative',
+              }}
+            >
+              <Spin spinning={detailLoading}>
+                {detail && !detailLoading && (!detail.messages || detail.messages.length === 0) ? (
+                  <Empty description="暂无消息" />
+                ) : detail?.messages?.length ? (
+                  [...detail.messages]
+                    .sort((a, b) => dayjs(a.created_at).valueOf() - dayjs(b.created_at).valueOf())
+                    .map((m) => <MessageBubble key={m.id} msg={m} />)
+                ) : null}
               </Spin>
             </div>
 

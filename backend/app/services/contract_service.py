@@ -39,6 +39,24 @@ def extract_docx_text_from_bytes(data: bytes) -> str:
     return _document_to_plain_text(Document(BytesIO(data)))
 
 
+def sanitize_contract_filename(title: str, max_len: int = 100) -> str:
+    """Safe base name for .docx attachment (no path separators)."""
+    base = re.sub(r'[<>:"/\\|?*\x00-\x1f\n\r]', "_", (title or "contract").strip()).strip(" .")
+    return (base[:max_len] if base else "contract") or "contract"
+
+
+def export_contract_to_docx_bytes(title: str, content: str) -> bytes:
+    """Build a .docx from plain title + body for Telegram send_document."""
+    doc = Document()
+    head = (title or "合同").strip() or "合同"
+    doc.add_heading(head, level=0)
+    for line in (content or "").split("\n"):
+        doc.add_paragraph(line)
+    buf = BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
+
+
 def _split_contract_title_and_body(raw: str) -> tuple[str, str]:
     """Parse LLM output: TITLE: <short>\\n---\\n<body>. Fallback: first line as title, rest as body."""
     text = raw.strip()

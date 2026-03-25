@@ -32,6 +32,10 @@ def _run_migrations(conn):
             "conversations", "quote_language",
             "ALTER TABLE conversations ADD COLUMN quote_language VARCHAR(10)"
         ),
+        (
+            "messages", "attachment_file_id",
+            "ALTER TABLE messages ADD COLUMN attachment_file_id INTEGER"
+        ),
     ]
     for table, column, ddl in migrations:
         result = conn.execute(text(

@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import uuid
+from io import BytesIO
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -34,8 +35,10 @@ from app.services.rag_service import (
 )
 from app.services.contract_service import (
     create_contract_from_conversation,
+    export_contract_to_docx_bytes,
     extract_docx_text_from_bytes,
     looks_like_ooxml_docx,
+    sanitize_contract_filename,
 )
 from app.services.llm_service import (
     get_llm_settings, save_llm_settings, invalidate_llm_cache,
@@ -261,20 +264,26 @@ async def send_contract_to_customer(
         raise HTTPException(status_code=503, detail="Telegram bot not available for this conversation")
 
     chat_id = int(conversation.telegram_chat_id)
-    header = f"📄 {contract.title}\n\n"
-    full_text = header + contract.content
-    chunk_size = 4000
     try:
-        for i in range(0, len(full_text), chunk_size):
-            await bot_instance.send_message(chat_id=chat_id, text=full_text[i : i + chunk_size])
+        docx_bytes = export_contract_to_docx_bytes(contract.title, contract.content)
+        fname = f"{sanitize_contract_filename(contract.title)}.docx"
+        bio = BytesIO(docx_bytes)
+        bio.seek(0)
+        cap = f"📄 {contract.title}"[:1024]
+        await bot_instance.send_document(
+            chat_id=chat_id,
+            document=bio,
+            filename=fname,
+            caption=cap,
+        )
     except Exception as e:
-        logger.error(f"Failed to send contract via Telegram: {e}")
-        raise HTTPException(status_code=500, detail="Failed to send contract via Telegram")
+        logger.error(f"Failed to send contract as Word via Telegram: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="发送合同 Word 文件失败，请稍后重试") from e
 
     message = Message(
         conversation_id=conversation_id,
         role=MessageRole.HUMAN_AGENT,
-        content=f"[已发送合同] {contract.title}",
+        content=f"[已发送合同 Word] {contract.title}",
     )
     db.add(message)
     contract.status = "sent"
@@ -347,6 +356,23 @@ async def delete_knowledge(entry_id: int, db: AsyncSession = Depends(get_db), _:
     await db.delete(entry)
     await db.commit()
     return {"status": "deleted"}
+
+
+@router.post("/knowledge/reindex")
+async def reindex_knowledge_base(
+    db: AsyncSession = Depends(get_db),
+    _: str = Depends(get_current_user),
+):
+    """Rebuild Chroma vectors from all knowledge_entries (after persistence/embedding fixes)."""
+    result = await db.execute(select(KnowledgeEntry))
+    rows = result.scalars().all()
+    ok, fail = 0, 0
+    for e in rows:
+        if await add_to_knowledge_base(e.id, e.title, e.content, e.category):
+            ok += 1
+        else:
+            fail += 1
+    return {"status": "ok", "indexed": ok, "failed_embedding": fail, "total": len(rows)}
 
 
 def _knowledge_text_from_upload(filename: str | None, content: bytes) -> str:

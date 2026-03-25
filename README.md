@@ -114,13 +114,41 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
 ### 前端
 
+**依赖只需装一次**（任选其一）：
+
 ```bash
-cd frontend
-npm install
+cd frontend && npm install
+```
+
+或在本仓库根目录：
+
+```bash
+npm run install-frontend
+```
+
+启动开发服务器（任选其一）：
+
+```bash
+cd frontend && npm run dev
+```
+
+或在本仓库根目录：
+
+```bash
 npm run dev
 ```
 
-开发服务器通常为 Vite 默认端口，并将 `/api` 代理到后端（以 [frontend/vite.config.ts](frontend/vite.config.ts) 为准）。
+浏览器打开 **http://localhost:5173**（Vite 开发服务器）。`/api` 会代理到本机 **http://localhost:8000**（见 [frontend/vite.config.ts](frontend/vite.config.ts)）。
+
+**改界面时不必每次重新构建 Docker 镜像**：只要后端 API 已在跑（见上或用下面「仅起后端」），前端用 `npm run dev` 保存文件后会热更新，**刷新页面即可看到效果**。
+
+仅起数据库 / Redis / 后端、不启动前端容器（避免占用 3001 与生产构建混淆）示例：
+
+```bash
+docker compose up -d db redis backend
+```
+
+然后另开终端执行 `cd frontend && npm run dev`。若仍启动了带前端的完整 Compose，请用 **5173** 访问开发版；**3001** 仍是 Nginx 里的生产构建，改代码后需 `docker compose build frontend` 才会变。
 
 ## API 说明（节选）
 
