@@ -18,7 +18,7 @@ from app.config import get_settings
 from app.database import get_db, AsyncSessionLocal
 from app.models import (
     Conversation, Message, KnowledgeEntry, Contract, ContractTemplate, FileEntry, TelegramBot,
-    ConversationStatus, MessageRole,
+    ConversationStatus, MessageRole, ProductEntry, ProductImage,
 )
 from app.schemas import (
     LoginRequest, TokenResponse, ConversationSchema, ConversationDetailSchema,
@@ -28,6 +28,7 @@ from app.schemas import (
     FileEntrySchema, FileEntryUpdateRequest,
     TelegramBotSchema, TelegramBotCreateRequest, TelegramBotUpdateRequest,
     ContractTemplateSchema,
+    ProductEntrySchema, ProductEntryListSchema, ProductImageSchema,
 )
 from app.services.rag_service import (
     add_to_knowledge_base, remove_from_knowledge_base,
@@ -925,3 +926,146 @@ async def stop_bot_endpoint(
 ):
     ok = await bot_manager.stop_bot(bot_id)
     return {"status": "stopped" if ok else "not_running", "is_running": False}
+
+
+# ─── Products ────────────────────────────────────────────────────────────────
+
+@router.get("/products/meta")
+async def get_products_meta(
+    db: AsyncSession = Depends(get_db),
+    _: str = Depends(get_current_user),
+):
+    """Return distinct values for filter dropdowns."""
+    from sqlalchemy import distinct
+
+    async def _distinct(col):
+        r = await db.execute(select(distinct(col)).where(col != "").order_by(col))
+        return [row[0] for row in r.fetchall() if row[0]]
+
+    spaces = await _distinct(ProductEntry.space)
+    styles = await _distinct(ProductEntry.style)
+    series = await _distinct(ProductEntry.series_name)
+    brands = await _distinct(ProductEntry.brand)
+    return {"spaces": spaces, "styles": styles, "series": series, "brands": brands}
+
+
+@router.get("/products", response_model=list[ProductEntryListSchema])
+async def list_products(
+    keyword: Optional[str] = Query(None),
+    brand: Optional[str] = Query(None),
+    space: Optional[str] = Query(None),
+    style: Optional[str] = Query(None),
+    series: Optional[str] = Query(None),
+    color: Optional[str] = Query(None),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(40, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+    _: str = Depends(get_current_user),
+):
+    query = select(ProductEntry).options(selectinload(ProductEntry.images))
+    if keyword:
+        kw = f"%{keyword}%"
+        from sqlalchemy import or_
+        query = query.where(
+            or_(
+                ProductEntry.product_name.ilike(kw),
+                ProductEntry.series_name.ilike(kw),
+                ProductEntry.description_text.ilike(kw),
+            )
+        )
+    if brand:
+        query = query.where(ProductEntry.brand == brand)
+    if space:
+        query = query.where(ProductEntry.space == space)
+    if style:
+        query = query.where(ProductEntry.style == style)
+    if series:
+        query = query.where(ProductEntry.series_name == series)
+    if color:
+        query = query.where(ProductEntry.color.ilike(f"%{color}%"))
+    query = query.order_by(ProductEntry.id).offset(skip).limit(limit)
+    result = await db.execute(query)
+    entries = result.scalars().all()
+
+    out = []
+    for e in entries:
+        first_img = e.images[0].local_path if e.images else None
+        out.append(ProductEntryListSchema(
+            id=e.id,
+            brand=e.brand,
+            product_id_ext=e.product_id_ext,
+            product_name=e.product_name,
+            series_name=e.series_name,
+            space=e.space,
+            style=e.style,
+            color=e.color,
+            material=e.material,
+            size=e.size,
+            price_display=e.price_display,
+            serial_number=e.serial_number,
+            description_text=e.description_text,
+            buy_url=e.buy_url,
+            first_image_path=first_img,
+            created_at=e.created_at,
+            updated_at=e.updated_at,
+        ))
+    return out
+
+
+@router.get("/products/{product_id}", response_model=ProductEntrySchema)
+async def get_product(
+    product_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: str = Depends(get_current_user),
+):
+    result = await db.execute(
+        select(ProductEntry)
+        .options(selectinload(ProductEntry.images))
+        .where(ProductEntry.id == product_id)
+    )
+    entry = result.scalar_one_or_none()
+    if not entry:
+        raise HTTPException(status_code=404, detail="Product not found")
+    return ProductEntrySchema.model_validate(entry)
+
+
+@router.get("/products/{product_id}/images/{order}")
+async def get_product_image(
+    product_id: int,
+    order: int,
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(ProductImage).where(
+            ProductImage.product_entry_id == product_id,
+            ProductImage.display_order == order,
+        )
+    )
+    img = result.scalar_one_or_none()
+    if not img:
+        raise HTTPException(status_code=404, detail="Image not found")
+    # local_path is stored as "uploads/products/..." relative to /app inside the container
+    full_path = os.path.join("/app", img.local_path)
+    if not os.path.exists(full_path):
+        raise HTTPException(status_code=404, detail="Image file missing from disk")
+    ext = os.path.splitext(full_path)[1].lower()
+    mime = {"jpg": "image/jpeg", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp"}.get(ext, "image/jpeg")
+    return FileResponse(path=full_path, media_type=mime)
+
+
+@router.post("/products/import")
+async def trigger_product_import(
+    _: str = Depends(get_current_user),
+):
+    """Trigger re-import of product data from mounted Furniture-Crawler CSV + images."""
+    import subprocess
+    script = "/app/scripts/import_products.py"
+    if not os.path.exists(script):
+        raise HTTPException(status_code=500, detail="Import script not found")
+    proc = subprocess.run(
+        ["python", script],
+        capture_output=True, text=True, timeout=300,
+    )
+    if proc.returncode != 0:
+        raise HTTPException(status_code=500, detail=proc.stderr[-2000:])
+    return {"status": "ok", "output": proc.stdout[-2000:]}

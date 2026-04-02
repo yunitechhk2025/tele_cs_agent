@@ -211,3 +211,63 @@ class TelegramBotUpdateRequest(BaseModel):
     welcome_message: Optional[str] = None
     is_active: Optional[bool] = None
     description: Optional[str] = None
+
+
+class ProductImageSchema(BaseModel):
+    id: int
+    product_entry_id: int
+    local_path: str
+    display_order: int
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class ProductEntrySchema(BaseModel):
+    id: int
+    brand: str
+    product_id_ext: str
+    product_name: str
+    series_name: str
+    space: str
+    style: str
+    color: str
+    material: str
+    size: str
+    price_display: str
+    original_price: str
+    serial_number: str
+    description_text: str
+    detail_content_text: str
+    buy_url: str
+    detail_url: str
+    created_at: datetime
+    updated_at: datetime
+    images: list[ProductImageSchema] = []
+
+    class Config:
+        from_attributes = True
+
+
+class ProductEntryListSchema(BaseModel):
+    id: int
+    brand: str
+    product_id_ext: str
+    product_name: str
+    series_name: str
+    space: str
+    style: str
+    color: str
+    material: str
+    size: str
+    price_display: str
+    serial_number: str
+    description_text: str
+    buy_url: str
+    first_image_path: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True

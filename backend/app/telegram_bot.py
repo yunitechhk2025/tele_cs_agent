@@ -1,15 +1,17 @@
 import asyncio
 import logging
+import os
 from io import BytesIO
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, constants
 from telegram.ext import ContextTypes
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 from app.config import get_settings
 from app.database import AsyncSessionLocal
-from app.models import Conversation, Message, FileEntry, TelegramBot, ConversationStatus, MessageRole
+from app.models import Conversation, Message, FileEntry, TelegramBot, ConversationStatus, MessageRole, ProductEntry
 from app.services.llm_service import (
     detect_language, check_is_quote_related, check_file_request, generate_response,
-    might_want_product_image, match_product_image_files,
+    check_is_product_recommendation, ai_select_products,
 )
 from app.services.rag_service import search_knowledge_for_bot
 
@@ -38,13 +40,22 @@ HANDOFF_MESSAGES = {
     "fr": "Votre demande concerne un devis. Je vous ai mis en relation avec un agent. Veuillez patienter.",
 }
 
-PRODUCT_IMAGE_ACK = {
-    "zh": "好的，已为您发送商品图片。",
-    "en": "Here's the product image.",
-    "ja": "商品画像をお送りします。",
-    "ko": "상품 이미지를 보내드립니다.",
-    "es": "Aquí tiene la imagen del producto.",
-    "fr": "Voici l'image du produit.",
+PRODUCT_REC_INTRO = {
+    "zh": "为您推荐以下产品：",
+    "en": "Here are some products that may interest you:",
+    "ja": "以下の商品をおすすめします：",
+    "ko": "다음 제품을 추천드립니다：",
+    "es": "Le recomendamos los siguientes productos:",
+    "fr": "Voici des produits qui pourraient vous intéresser :",
+}
+
+PRODUCT_REC_NONE = {
+    "zh": "抱歉，暂时没有找到符合您需求的产品，请联系人工客服获取更多信息。",
+    "en": "Sorry, I couldn't find matching products. Please contact a human agent for more information.",
+    "ja": "申し訳ありませんが、条件に合う商品が見つかりませんでした。担当者にご連絡ください。",
+    "ko": "죄송합니다. 조건에 맞는 제품을 찾지 못했습니다. 상담원에게 문의해 주세요.",
+    "es": "Lo siento, no encontré productos que coincidan. Contacte a un agente.",
+    "fr": "Désolé, aucun produit correspondant. Veuillez contacter un agent.",
 }
 
 
@@ -171,36 +182,80 @@ async def send_files_to_user(chat_id: str, file_ids: list[int], bot):
             logger.error(f"Failed to send file {entry.original_name}: {e}")
 
 
-async def send_one_product_image_file(chat_id: str, file_id: int, bot):
-    """Send a single file as photo if image/*, else as document."""
-    entry = await get_file_entry_by_id(file_id)
-    if not entry:
-        return
-    mt = (entry.mime_type or "").lower()
-    try:
-        with open(entry.file_path, "rb") as f:
-            data = f.read()
-        bio = BytesIO(data)
-        bio.name = entry.original_name
-        cap = (entry.description[:1024] if entry.description else None)
-        if mt.startswith("image/"):
-            bio.seek(0)
-            await bot.send_photo(
-                chat_id=int(chat_id),
-                photo=bio,
-                caption=cap,
-            )
-        else:
-            bio.seek(0)
-            await bot.send_document(
-                chat_id=int(chat_id),
-                document=bio,
-                filename=entry.original_name,
-                caption=entry.description[:200] if entry.description else None,
-            )
-        logger.info(f"Sent product file {entry.original_name} to chat {chat_id}")
-    except Exception as e:
-        logger.error(f"Failed to send product image file {entry.original_name}: {e}", exc_info=True)
+async def get_products_for_bot() -> list[dict]:
+    """Load all products from DB for AI recommendation."""
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(ProductEntry)
+            .options(selectinload(ProductEntry.images))
+            .order_by(ProductEntry.id)
+        )
+        entries = result.scalars().all()
+        return [
+            {
+                "id": e.id,
+                "name": e.product_name,
+                "series": e.series_name,
+                "space": e.space,
+                "style": e.style,
+                "color": e.color,
+                "material": e.material,
+                "description": e.description_text,
+                "buy_url": e.buy_url,
+                "image_paths": [img.local_path for img in e.images],
+            }
+            for e in entries
+        ]
+
+
+async def send_product_recommendations(chat_id: str, products: list[dict], language: str, bot):
+    """Send 1-3 recommended products as Telegram photo cards."""
+    for p in products:
+        lines = [f"*{p['name']}*"]
+        if p.get("series"):
+            lines.append(f"系列: {p['series']}")
+        if p.get("space"):
+            lines.append(f"空间: {p['space']}")
+        if p.get("style"):
+            lines.append(f"风格: {p['style']}")
+        if p.get("color"):
+            lines.append(f"颜色: {p['color']}")
+        if p.get("material"):
+            lines.append(f"材质: {p['material']}")
+        if p.get("buy_url"):
+            lines.append(f"[查看详情]({p['buy_url']})")
+        caption = "\n".join(lines)[:1024]
+
+        sent = False
+        for img_path in p.get("image_paths", []):
+            full = os.path.join("/app", img_path)
+            if not os.path.exists(full):
+                continue
+            try:
+                with open(full, "rb") as f:
+                    bio = BytesIO(f.read())
+                bio.name = os.path.basename(full)
+                bio.seek(0)
+                await bot.send_photo(
+                    chat_id=int(chat_id),
+                    photo=bio,
+                    caption=caption,
+                    parse_mode="Markdown",
+                )
+                sent = True
+                break
+            except Exception as e:
+                logger.error(f"Failed to send product photo {full}: {e}")
+
+        if not sent:
+            try:
+                await bot.send_message(
+                    chat_id=int(chat_id),
+                    text=caption,
+                    parse_mode="Markdown",
+                )
+            except Exception as e:
+                logger.error(f"Failed to send product text card: {e}")
 
 
 async def notify_admin(bot_id: int, conversation: Conversation, user_message: str, bot, is_followup: bool = False):
@@ -354,28 +409,25 @@ def make_message_handler(bot_id: int):
             if current_status == ConversationStatus.PENDING_HUMAN:
                 await notify_admin(bot_id, conversation, user_message, context.bot, is_followup=True)
 
-            if might_want_product_image(user_message):
-                all_files_for_img = await get_all_file_entries()
-                img_ids = (
-                    await match_product_image_files(user_message, all_files_for_img)
-                    if all_files_for_img
-                    else []
-                )
-                if img_ids:
-                    ack = PRODUCT_IMAGE_ACK.get(language, PRODUCT_IMAGE_ACK["en"])
-                    await save_message(
-                        conversation.id,
-                        MessageRole.ASSISTANT,
-                        ack,
-                        language,
-                        attachment_file_id=img_ids[0],
-                    )
-                    stop_typing.set()
-                    await typing_task
-                    await update.message.reply_text(ack)
-                    await send_one_product_image_file(chat_id, img_ids[0], context.bot)
-                    logger.info(f"[Bot {bot_id}] Auto-sent product image id={img_ids[0]}")
-                    return
+            is_product_rec = await check_is_product_recommendation(user_message)
+            logger.info(f"[Bot {bot_id}] Product recommendation: {is_product_rec}")
+            if is_product_rec:
+                all_products = await get_products_for_bot()
+                selected_ids = await ai_select_products(user_message, all_products) if all_products else []
+                selected_products = [p for p in all_products if p["id"] in selected_ids]
+                intro = PRODUCT_REC_INTRO.get(language, PRODUCT_REC_INTRO["en"])
+                none_msg = PRODUCT_REC_NONE.get(language, PRODUCT_REC_NONE["en"])
+                stop_typing.set()
+                await typing_task
+                if selected_products:
+                    await update.message.reply_text(intro)
+                    await save_message(conversation.id, MessageRole.ASSISTANT, intro, language)
+                    await send_product_recommendations(chat_id, selected_products, language, context.bot)
+                    logger.info(f"[Bot {bot_id}] Sent {len(selected_products)} product recommendations")
+                else:
+                    await update.message.reply_text(none_msg)
+                    await save_message(conversation.id, MessageRole.ASSISTANT, none_msg, language)
+                return
 
             kb_context = await search_knowledge_for_bot(user_message)
 

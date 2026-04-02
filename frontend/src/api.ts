@@ -2,6 +2,7 @@ import axios from 'axios';
 import type {
   Conversation, ConversationDetail, KnowledgeEntry,
   Contract, ContractTemplate, DashboardStats, LLMSettings, FileEntry, TelegramBot,
+  ProductEntry,
 } from './types';
 
 const api = axios.create({ baseURL: '/api' });
@@ -143,6 +144,15 @@ export const botApi = {
   delete: (id: number) => api.delete(`/bots/${id}`),
   start: (id: number) => api.post<{ status: string; is_running: boolean }>(`/bots/${id}/start`),
   stop: (id: number) => api.post<{ status: string; is_running: boolean }>(`/bots/${id}/stop`),
+};
+
+export const productApi = {
+  list: (params?: { keyword?: string; brand?: string; space?: string; style?: string; series?: string; color?: string; skip?: number; limit?: number }) =>
+    api.get<ProductEntry[]>('/products', { params }),
+  get: (id: number) => api.get<ProductEntry>(`/products/${id}`),
+  meta: () => api.get<{ spaces: string[]; styles: string[]; series: string[]; brands: string[] }>('/products/meta'),
+  imageUrl: (productId: number, order: number) => `/api/products/${productId}/images/${order}`,
+  triggerImport: () => api.post<{ status: string; output: string }>('/products/import'),
 };
 
 export default api;

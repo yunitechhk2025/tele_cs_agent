@@ -11,8 +11,15 @@ node_modules/
 frontend/dist/
 *.tsbuildinfo
 
-# Local samples (optional)
+# Local samples & temp files
 /contract_format.docx
+*.docx
+*.jpg
+*.png
+/package.json
+
+# External repos
+Furniture-Crawler/
 
 # Env & secrets
 .env

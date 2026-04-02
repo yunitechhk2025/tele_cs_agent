@@ -6,13 +6,13 @@ import {
   MessageOutlined,
   BookOutlined,
   FileTextOutlined,
-  FolderOutlined,
   SettingOutlined,
   LogoutOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
   RobotOutlined,
   ApiOutlined,
+  ShopOutlined,
 } from '@ant-design/icons';
 
 const { Header, Sider, Content } = Layout;
@@ -21,8 +21,8 @@ const menuItems = [
   { key: '/', icon: <DashboardOutlined />, label: '工作台' },
   { key: '/conversations', icon: <MessageOutlined />, label: '对话管理' },
   { key: '/bots', icon: <ApiOutlined />, label: 'Bot 管理' },
+  { key: '/products', icon: <ShopOutlined />, label: '产品库' },
   { key: '/knowledge', icon: <BookOutlined />, label: '知识库' },
-  { key: '/files', icon: <FolderOutlined />, label: '文件库' },
   { key: '/contracts', icon: <FileTextOutlined />, label: '合同管理' },
   { key: '/settings', icon: <SettingOutlined />, label: '系统设置' },
 ];

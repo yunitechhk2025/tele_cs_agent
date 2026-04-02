@@ -131,3 +131,41 @@ class ContractTemplate(Base):
     file_size = Column(BigInteger, default=0)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class ProductEntry(Base):
+    __tablename__ = "product_entries"
+
+    id = Column(Integer, primary_key=True, index=True)
+    brand = Column(String(100), nullable=False, index=True)
+    product_id_ext = Column(String(64), nullable=False, index=True)
+    product_name = Column(String(500), default="")
+    series_name = Column(String(500), default="")
+    space = Column(String(200), default="")
+    style = Column(String(200), default="")
+    color = Column(String(200), default="")
+    material = Column(String(500), default="")
+    size = Column(String(500), default="")
+    price_display = Column(String(200), default="")
+    original_price = Column(String(200), default="")
+    serial_number = Column(String(200), default="")
+    description_text = Column(Text, default="")
+    detail_content_text = Column(Text, default="")
+    buy_url = Column(String(1000), default="")
+    detail_url = Column(String(1000), default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    images = relationship("ProductImage", back_populates="product", order_by="ProductImage.display_order")
+
+
+class ProductImage(Base):
+    __tablename__ = "product_images"
+
+    id = Column(Integer, primary_key=True, index=True)
+    product_entry_id = Column(Integer, ForeignKey("product_entries.id"), index=True, nullable=False)
+    local_path = Column(String(1000), nullable=False)
+    display_order = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    product = relationship("ProductEntry", back_populates="images")

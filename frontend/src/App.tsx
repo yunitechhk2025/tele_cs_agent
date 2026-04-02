@@ -6,8 +6,8 @@ import Conversations from './pages/Conversations';
 import KnowledgeBase from './pages/KnowledgeBase';
 import Contracts from './pages/Contracts';
 import Settings from './pages/Settings';
-import FileLibrary from './pages/FileLibrary';
 import BotManagement from './pages/BotManagement';
+import Products from './pages/Products';
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const token = localStorage.getItem('token');
@@ -30,8 +30,8 @@ export default function App() {
                 <Route path="/conversations/:id" element={<Conversations />} />
                 <Route path="/knowledge" element={<KnowledgeBase />} />
                 <Route path="/contracts" element={<Contracts />} />
-                <Route path="/files" element={<FileLibrary />} />
                 <Route path="/bots" element={<BotManagement />} />
+                <Route path="/products" element={<Products />} />
                 <Route path="/settings" element={<Settings />} />
                 <Route path="*" element={<Navigate to="/" replace />} />
               </Routes>

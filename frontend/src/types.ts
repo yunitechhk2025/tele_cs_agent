@@ -69,6 +69,38 @@ export interface DashboardStats {
   recent_conversations: Conversation[];
 }
 
+export interface ProductImage {
+  id: number;
+  product_entry_id: number;
+  local_path: string;
+  display_order: number;
+  created_at: string;
+}
+
+export interface ProductEntry {
+  id: number;
+  brand: string;
+  product_id_ext: string;
+  product_name: string;
+  series_name: string;
+  space: string;
+  style: string;
+  color: string;
+  material: string;
+  size: string;
+  price_display: string;
+  original_price: string;
+  serial_number: string;
+  description_text: string;
+  detail_content_text: string;
+  buy_url: string;
+  detail_url: string;
+  first_image_path: string | null;
+  images: ProductImage[];
+  created_at: string;
+  updated_at: string;
+}
+
 export interface LLMSettings {
   provider: string;
   api_key: string;

@@ -230,35 +230,44 @@ async def check_file_request(text: str, available_files: list[dict]) -> list[int
         return []
 
 
-def might_want_product_image(text: str) -> bool:
-    """Heuristic: user is asking for product photos / pictures (not necessarily pricing)."""
+async def check_is_product_recommendation(text: str) -> bool:
+    """Detect if the user wants product recommendations, browsing, or product photos."""
     if not text or len(text.strip()) < 2:
         return False
-    t = text.lower()
-    for kw in ("商品图", "产品图", "实物图", "发个图", "发图", "有没有图", "有图吗", "发一下图", "发张图"):
-        if kw in text:
-            return True
-    if "图" in text and any(w in text for w in ("椅", "商品", "产品", "货", "款", "样子", "沙发", "桌", "床")):
-        return True
-    for kw in ("product image", "product photo", "picture of", "photo of", "image of", "send me a pic", "send a photo"):
-        if kw in t:
-            return True
-    if any(k in t for k in (" picture", " photo", " image", " pic ")) and any(
-        w in t for w in ("product", "chair", "item", "goods", "catalog")
-    ):
-        return True
-    return False
+    try:
+        result = await _chat_completion(
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Determine if the user's message is about browsing products, asking for "
+                        "product recommendations, wanting to see product photos/images, or asking "
+                        "what products are available. Examples: 'recommend a sofa', 'what chairs "
+                        "do you have', 'show me living room furniture', '有什么沙发', '推荐一款椅子', "
+                        "'发一下产品图', '有哪些款式', 'send me a photo of the chair'. "
+                        'Return JSON: {"is_product_rec": true} or {"is_product_rec": false}. Nothing else.'
+                    ),
+                },
+                {"role": "user", "content": text},
+            ],
+            max_tokens=20,
+            temperature=0,
+        )
+        return json.loads(result).get("is_product_rec", False)
+    except Exception as e:
+        logger.error(f"Product recommendation detection failed: {e}")
+        return False
 
 
-async def match_product_image_files(user_message: str, available_files: list[dict]) -> list[int]:
-    """Pick at most one file from the library that best matches a product-image request. Prefer image/* files."""
-    if not available_files:
+async def ai_select_products(user_message: str, products: list[dict]) -> list[int]:
+    """Use AI to select up to 3 best-matching product IDs from the catalog."""
+    import re
+    if not products:
         return []
-    image_files = [f for f in available_files if (f.get("mime_type") or "").lower().startswith("image/")]
-    catalog = image_files if image_files else available_files
-    file_list = "\n".join(
-        f"- ID:{f['id']} | {f['name']} | {f['description']} | tags: {f['tags']} | mime: {f.get('mime_type') or 'unknown'}"
-        for f in catalog
+    catalog = "\n".join(
+        f"ID:{p['id']} | {p['name']} | 系列:{p['series']} | 空间:{p['space']} "
+        f"| 风格:{p['style']} | 颜色:{p['color']}"
+        for p in products
     )
     try:
         result = await _chat_completion(
@@ -266,35 +275,41 @@ async def match_product_image_files(user_message: str, available_files: list[dic
                 {
                     "role": "system",
                     "content": (
-                        "The customer is asking for product photos, images, or pictures "
-                        "(e.g. chair photo, 椅子图片, product image). "
-                        "Match their request to exactly ONE best file ID from the catalog below. "
-                        "Prefer images (image/* mime) when the user wants a picture. "
-                        "Return a JSON array with a single id, e.g. [3], or [] if nothing fits.\n"
-                        "Return ONLY the JSON array, nothing else.\n\n"
-                        f"File catalog:\n{file_list}"
+                        "You are a furniture product matcher. The customer wants product recommendations.\n"
+                        "Given the catalog below, pick up to 3 product IDs that BEST match the request.\n"
+                        "RULES:\n"
+                        "- Match by style, space, color, series, or name.\n"
+                        "- Return a JSON array of numeric IDs, e.g. [12, 45, 78]\n"
+                        "- If nothing matches, return []\n"
+                        "- Output ONLY the JSON array, no explanation.\n\n"
+                        f"CATALOG:\n{catalog}"
                     ),
                 },
                 {"role": "user", "content": user_message},
             ],
-            max_tokens=40,
+            max_tokens=100,
             temperature=0,
         )
         raw = result.strip()
-        if "[" not in raw:
+        logger.info(f"AI product selection raw response: {raw[:200]}")
+        m = re.search(r'\[[\d\s,]*\]', raw)
+        if not m:
             return []
-        ids = json.loads(raw)
+        ids = json.loads(m.group())
         if not isinstance(ids, list):
             return []
+        valid_ids = {p['id'] for p in products}
         out: list[int] = []
         for x in ids:
             try:
-                out.append(int(float(x)))
+                pid = int(float(x))
+                if pid in valid_ids:
+                    out.append(pid)
             except (TypeError, ValueError):
                 continue
-        return out[:1]
+        return out[:3]
     except Exception as e:
-        logger.error(f"Product image match failed: {e}")
+        logger.error(f"Product AI selection failed: {e}")
         return []
 
 
