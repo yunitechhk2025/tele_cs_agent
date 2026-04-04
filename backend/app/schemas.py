@@ -136,6 +136,12 @@ class LLMSettingsSchema(BaseModel):
     embedding_model: str = "text-embedding-3-small"
     embedding_base_url: str = "https://api.openai.com/v1"
     embedding_api_key: str = ""
+    image_model: str = "gpt-image-1"
+    image_base_url: str = "https://api.openai.com/v1"
+    image_api_key: str = ""
+    image_size: str = "1536x1024"
+    image_quality: str = "high"
+    image_style: str = "natural"
     temperature: float = 0.7
     max_tokens: int = 1000
 
@@ -148,6 +154,12 @@ class LLMSettingsUpdateRequest(BaseModel):
     embedding_model: Optional[str] = None
     embedding_base_url: Optional[str] = None
     embedding_api_key: Optional[str] = None
+    image_model: Optional[str] = None
+    image_base_url: Optional[str] = None
+    image_api_key: Optional[str] = None
+    image_size: Optional[str] = None
+    image_quality: Optional[str] = None
+    image_style: Optional[str] = None
     temperature: Optional[float] = None
     max_tokens: Optional[int] = None
 
@@ -271,3 +283,36 @@ class ProductEntryListSchema(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class ProductLinkSchema(BaseModel):
+    id: int
+    product_name: str
+    buy_url: str
+    detail_url: str
+
+
+class SceneGenerationRequest(BaseModel):
+    scene_name: Optional[str] = None
+    style_hint: Optional[str] = None
+    user_request: Optional[str] = None
+    related_product_ids: list[int] = []
+    conversation_id: Optional[int] = None
+
+
+class SceneGenerationRecordSchema(BaseModel):
+    id: int
+    conversation_id: Optional[int] = None
+    primary_product_id: int
+    primary_product_name: str
+    scene_name: str
+    style_hint: str
+    request_text: str
+    prompt_text: str
+    related_products: list[ProductLinkSchema] = []
+    image_urls: list[str] = []
+    duration_ms: int
+    status: str
+    error_message: str
+    created_at: datetime
+    updated_at: datetime

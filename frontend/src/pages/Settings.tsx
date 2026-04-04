@@ -59,6 +59,11 @@ function buildLLMPayload(values: LLMSettings): Partial<LLMSettings> {
     model: values.model,
     embedding_model: values.embedding_model,
     embedding_base_url: values.embedding_base_url,
+    image_model: values.image_model,
+    image_base_url: values.image_base_url,
+    image_size: values.image_size,
+    image_quality: values.image_quality,
+    image_style: values.image_style,
     temperature: values.temperature,
     max_tokens: values.max_tokens,
   };
@@ -67,6 +72,9 @@ function buildLLMPayload(values: LLMSettings): Partial<LLMSettings> {
   }
   if (values.embedding_api_key && !values.embedding_api_key.includes('****')) {
     payload.embedding_api_key = values.embedding_api_key;
+  }
+  if (values.image_api_key && !values.image_api_key.includes('****')) {
+    payload.image_api_key = values.image_api_key;
   }
   return payload;
 }
@@ -250,6 +258,58 @@ export default function Settings() {
               <Divider orientation="left" plain>
                 生成设置
               </Divider>
+
+              <Form.Item label="生图模型" name="image_model">
+                <Input placeholder="gpt-image-1 / qwen-image / 你的图片模型名" />
+              </Form.Item>
+
+              <Form.Item
+                label="生图接口地址"
+                name="image_base_url"
+                extra={
+                  <Text type="secondary">
+                    默认可与主模型接口一致；如图片能力走单独端点，请在此填写。
+                  </Text>
+                }
+              >
+                <Input placeholder="https://..." />
+              </Form.Item>
+
+              <Form.Item label="生图 API 密钥" name="image_api_key">
+                <Input.Password
+                  placeholder="可选 — 不填则复用主 API 密钥"
+                  autoComplete="off"
+                />
+              </Form.Item>
+
+              <Form.Item label="图片尺寸" name="image_size">
+                <Select
+                  options={[
+                    { value: '1024x1024', label: '1024 x 1024' },
+                    { value: '1536x1024', label: '1536 x 1024' },
+                    { value: '1024x1536', label: '1024 x 1536' },
+                  ]}
+                />
+              </Form.Item>
+
+              <Form.Item label="图片质量" name="image_quality">
+                <Select
+                  options={[
+                    { value: 'high', label: 'High' },
+                    { value: 'medium', label: 'Medium' },
+                    { value: 'low', label: 'Low' },
+                  ]}
+                />
+              </Form.Item>
+
+              <Form.Item label="图片风格" name="image_style">
+                <Select
+                  options={[
+                    { value: 'natural', label: 'Natural' },
+                    { value: 'vivid', label: 'Vivid' },
+                  ]}
+                />
+              </Form.Item>
 
               <Form.Item
                 label="温度"

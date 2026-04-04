@@ -2,7 +2,7 @@ import axios from 'axios';
 import type {
   Conversation, ConversationDetail, KnowledgeEntry,
   Contract, ContractTemplate, DashboardStats, LLMSettings, FileEntry, TelegramBot,
-  ProductEntry,
+  ProductEntry, SceneGenerationRecord,
 } from './types';
 
 const api = axios.create({ baseURL: '/api' });
@@ -153,6 +153,14 @@ export const productApi = {
   meta: () => api.get<{ spaces: string[]; styles: string[]; series: string[]; brands: string[] }>('/products/meta'),
   imageUrl: (productId: number, order: number) => `/api/products/${productId}/images/${order}`,
   triggerImport: () => api.post<{ status: string; output: string }>('/products/import'),
+  listSceneImages: (productId: number) => api.get<SceneGenerationRecord[]>(`/products/${productId}/scene-images`),
+  generateSceneImages: (productId: number, data: {
+    scene_name?: string;
+    style_hint?: string;
+    user_request?: string;
+    related_product_ids?: number[];
+    conversation_id?: number;
+  }) => api.post<SceneGenerationRecord>(`/products/${productId}/scene-images`, data),
 };
 
 export default api;

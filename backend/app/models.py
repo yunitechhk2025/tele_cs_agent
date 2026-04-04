@@ -1,6 +1,6 @@
 import enum
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Text, DateTime, BigInteger, Boolean, ForeignKey, Enum as SQLEnum
+from sqlalchemy import Column, Integer, String, Text, DateTime, BigInteger, Boolean, ForeignKey, Enum as SQLEnum, LargeBinary
 from sqlalchemy.orm import relationship
 from app.database import Base
 
@@ -169,3 +169,59 @@ class ProductImage(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     product = relationship("ProductEntry", back_populates="images")
+
+
+class ConversationSceneState(Base):
+    __tablename__ = "conversation_scene_states"
+
+    id = Column(Integer, primary_key=True, index=True)
+    conversation_id = Column(Integer, ForeignKey("conversations.id"), unique=True, index=True, nullable=False)
+    primary_product_id = Column(Integer, ForeignKey("product_entries.id"), nullable=True)
+    recommended_product_ids_json = Column(Text, default="[]")
+    suggested_scene = Column(String(200), default="")
+    suggested_style = Column(String(200), default="")
+    pending_confirmation = Column(Boolean, default=False)
+    last_customer_request = Column(Text, default="")
+    reply_language = Column(String(10), default="en")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    conversation = relationship("Conversation")
+    primary_product = relationship("ProductEntry")
+
+
+class SceneGenerationRecord(Base):
+    __tablename__ = "scene_generation_records"
+
+    id = Column(Integer, primary_key=True, index=True)
+    conversation_id = Column(Integer, ForeignKey("conversations.id"), nullable=True, index=True)
+    primary_product_id = Column(Integer, ForeignKey("product_entries.id"), nullable=False, index=True)
+    scene_name = Column(String(200), default="")
+    style_hint = Column(String(200), default="")
+    request_text = Column(Text, default="")
+    prompt_text = Column(Text, default="")
+    related_product_ids_json = Column(Text, default="[]")
+    output_paths_json = Column(Text, default="[]")
+    duration_ms = Column(Integer, default=0)
+    status = Column(String(50), default="pending")
+    error_message = Column(Text, default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    conversation = relationship("Conversation")
+    primary_product = relationship("ProductEntry")
+    images = relationship("SceneGenerationImage", back_populates="record", order_by="SceneGenerationImage.image_index")
+
+
+class SceneGenerationImage(Base):
+    __tablename__ = "scene_generation_images"
+
+    id = Column(Integer, primary_key=True, index=True)
+    record_id = Column(Integer, ForeignKey("scene_generation_records.id"), nullable=False, index=True)
+    image_index = Column(Integer, default=0, nullable=False)
+    mime_type = Column(String(100), default="image/png")
+    binary_data = Column(LargeBinary, nullable=False)
+    file_size = Column(BigInteger, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    record = relationship("SceneGenerationRecord", back_populates="images")

@@ -22,6 +22,12 @@ LLM_SETTING_KEYS = {
     "embedding_model": settings.EMBEDDING_MODEL,
     "embedding_base_url": settings.OPENAI_BASE_URL,
     "embedding_api_key": "",
+    "image_model": "gpt-image-1",
+    "image_base_url": settings.OPENAI_BASE_URL,
+    "image_api_key": "",
+    "image_size": "1536x1024",
+    "image_quality": "high",
+    "image_style": "natural",
 }
 
 _settings_cache: dict[str, str] = {}
@@ -41,7 +47,11 @@ async def load_llm_settings() -> dict[str, str]:
                 select(SystemSetting).where(SystemSetting.key.like("embedding_%"))
             )
             rows2 = result2.scalars().all()
-            db_settings = {r.key: r.value for r in list(rows) + list(rows2)}
+            result3 = await db.execute(
+                select(SystemSetting).where(SystemSetting.key.like("image_%"))
+            )
+            rows3 = result3.scalars().all()
+            db_settings = {r.key: r.value for r in list(rows) + list(rows2) + list(rows3)}
 
         merged = {}
         for key, default in LLM_SETTING_KEYS.items():
@@ -147,6 +157,13 @@ async def get_embedding(text: str) -> list[float]:
     except Exception as e:
         logger.error(f"Embedding generation failed: {e}")
         return []
+
+
+def build_image_client(cfg: dict[str, str] | None = None) -> AsyncOpenAI:
+    cfg = cfg or _settings_cache or LLM_SETTING_KEYS
+    api_key = cfg.get("image_api_key") or cfg.get("llm_api_key", "")
+    base_url = cfg.get("image_base_url") or cfg.get("llm_base_url", "https://api.openai.com/v1")
+    return AsyncOpenAI(api_key=api_key, base_url=base_url)
 
 
 # ─── Public API (used by bot and other services) ─────────────────────────────
@@ -257,6 +274,215 @@ async def check_is_product_recommendation(text: str) -> bool:
     except Exception as e:
         logger.error(f"Product recommendation detection failed: {e}")
         return False
+
+
+async def check_is_scene_image_confirmation(text: str) -> bool:
+    if not text or len(text.strip()) < 1:
+        return False
+    try:
+        result = await _chat_completion(
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Determine whether the user's message is confirming that they want scene images, "
+                        "effect renders, showroom images, or styled display images after the assistant asked "
+                        "if such images are needed. Examples: 'yes', 'show me', '要效果图', '来几张场景图', "
+                        "'please generate it', '想看看'. "
+                        'Return JSON: {"is_confirmed": true} or {"is_confirmed": false}. Nothing else.'
+                    ),
+                },
+                {"role": "user", "content": text},
+            ],
+            max_tokens=20,
+            temperature=0,
+        )
+        return json.loads(result).get("is_confirmed", False)
+    except Exception as e:
+        logger.error(f"Scene image confirmation detection failed: {e}")
+        return False
+
+
+async def resolve_recent_product_reference(
+    user_message: str,
+    products: list[dict],
+    recent_product_ids: list[int] | None = None,
+) -> dict[str, Any]:
+    if not user_message or len(user_message.strip()) < 1:
+        return {"target_product_id": None, "reason": ""}
+
+    recent_product_ids = recent_product_ids or []
+    if not recent_product_ids:
+        return {"target_product_id": None, "reason": ""}
+
+    products_by_id = {
+        int(p["id"]): p for p in products
+        if p.get("id") is not None
+    }
+    recent_products = [products_by_id[pid] for pid in recent_product_ids if pid in products_by_id]
+    if not recent_products:
+        return {"target_product_id": None, "reason": ""}
+
+    recent_lines = "\n".join(
+        f"SLOT:{idx} | ID:{p['id']} | {p['name']} | 空间:{p.get('space', '')} | 风格:{p.get('style', '')}"
+        for idx, p in enumerate(recent_products, start=1)
+    )
+    prompt = (
+        "The assistant previously recommended these products to the customer.\n"
+        "Determine whether the customer's latest message refers to one specific recommended product.\n"
+        "The customer may speak in ANY language. They may refer by product name, slot number like #1/#2/#3, "
+        "Arabic numerals, ordinal words, or phrases like 'the last one'.\n"
+        "Return ONLY JSON with keys: target_product_id (number or null), reason (string).\n\n"
+        f"Recent recommended products:\n{recent_lines}"
+    )
+    try:
+        raw = await _chat_completion(
+            messages=[
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": user_message},
+            ],
+            max_tokens=120,
+            temperature=0,
+        )
+        data = json.loads(raw)
+        target_id = data.get("target_product_id")
+        if target_id is not None:
+            try:
+                target_id = int(target_id)
+            except (TypeError, ValueError):
+                target_id = None
+        valid_ids = {int(p["id"]) for p in recent_products}
+        if target_id not in valid_ids:
+            target_id = None
+        return {
+            "target_product_id": target_id,
+            "reason": str(data.get("reason") or ""),
+        }
+    except Exception as e:
+        logger.error(f"Recent product reference resolution failed: {e}")
+        return {"target_product_id": None, "reason": ""}
+
+
+async def analyze_scene_image_request(
+    user_message: str,
+    products: list[dict],
+    recent_product_ids: list[int] | None = None,
+) -> dict[str, Any]:
+    if not user_message or len(user_message.strip()) < 2:
+        return {
+            "is_scene_request": False,
+            "scene_name": "",
+            "style_hint": "",
+            "target_product_id": None,
+            "reason": "",
+        }
+
+    recent_product_ids = recent_product_ids or []
+    recent_lines = []
+    for p in products:
+        if p.get("id") in recent_product_ids:
+            recent_lines.append(
+                f"SLOT:{len(recent_lines) + 1} | ID:{p['id']} | {p['name']} | 空间:{p.get('space', '')} | 风格:{p.get('style', '')}"
+            )
+    catalog = "\n".join(
+        f"ID:{p['id']} | {p['name']} | 空间:{p.get('space', '')} | 风格:{p.get('style', '')} | 材质:{p.get('material', '')}"
+        for p in products[:120]
+    )
+    prompt = (
+        "Analyze whether the customer is asking to see a product in a realistic scene, effect image, "
+        "showroom render, or styled environment. This includes messages like 'show me this sofa in a Chinese-style living room'.\n"
+        "If they refer to 'this product/this sofa/this one', prefer the recent recommended products if applicable.\n"
+        "The customer may speak in ANY language and may refer to products by name, slot number like #1/#2/#3, numerals, or ordinals.\n"
+        "Return ONLY JSON with keys: is_scene_request (bool), scene_name (string), style_hint (string), "
+        "target_product_id (number or null), reason (string).\n\n"
+        f"Recent recommended products:\n{chr(10).join(recent_lines) or '(none)'}\n\n"
+        f"Catalog:\n{catalog}"
+    )
+    try:
+        raw = await _chat_completion(
+            messages=[
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": user_message},
+            ],
+            max_tokens=200,
+            temperature=0,
+        )
+        data = json.loads(raw)
+        target_id = data.get("target_product_id")
+        if target_id is not None:
+            try:
+                data["target_product_id"] = int(target_id)
+            except (TypeError, ValueError):
+                data["target_product_id"] = None
+        return {
+            "is_scene_request": bool(data.get("is_scene_request")),
+            "scene_name": str(data.get("scene_name") or ""),
+            "style_hint": str(data.get("style_hint") or ""),
+            "target_product_id": data.get("target_product_id"),
+            "reason": str(data.get("reason") or ""),
+        }
+    except Exception as e:
+        logger.error(f"Scene request analysis failed: {e}")
+        return {
+            "is_scene_request": False,
+            "scene_name": "",
+            "style_hint": "",
+            "target_product_id": None,
+            "reason": "",
+        }
+
+
+async def select_scene_bundle_products(
+    user_message: str,
+    primary_product: dict[str, Any],
+    candidate_products: list[dict[str, Any]],
+    scene_name: str,
+    style_hint: str,
+) -> list[int]:
+    if not candidate_products:
+        return []
+    catalog = "\n".join(
+        f"ID:{p['id']} | {p['name']} | 空间:{p.get('space', '')} | 风格:{p.get('style', '')} | 材质:{p.get('material', '')}"
+        for p in candidate_products[:50]
+    )
+    try:
+        result = await _chat_completion(
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are selecting complementary furniture products for a styled scene image.\n"
+                        "Choose up to 3 products that match the primary product and scene.\n"
+                        "Prioritize products that fit the same room and style and can logically appear together.\n"
+                        "Return ONLY a JSON array of numeric IDs, e.g. [12, 18].\n\n"
+                        f"Primary product: {primary_product['name']} | 空间:{primary_product.get('space', '')} "
+                        f"| 风格:{primary_product.get('style', '')} | 材质:{primary_product.get('material', '')}\n"
+                        f"Requested scene: {scene_name}\n"
+                        f"Style hint: {style_hint}\n"
+                        f"Candidate catalog:\n{catalog}"
+                    ),
+                },
+                {"role": "user", "content": user_message or primary_product["name"]},
+            ],
+            max_tokens=120,
+            temperature=0,
+        )
+        ids = json.loads(result)
+        if not isinstance(ids, list):
+            return []
+        valid_ids = {int(p["id"]) for p in candidate_products}
+        out: list[int] = []
+        for x in ids:
+            try:
+                val = int(x)
+            except (TypeError, ValueError):
+                continue
+            if val in valid_ids and val not in out:
+                out.append(val)
+        return out[:3]
+    except Exception as e:
+        logger.error(f"Scene bundle product selection failed: {e}")
+        return []
 
 
 async def ai_select_products(user_message: str, products: list[dict]) -> list[int]:

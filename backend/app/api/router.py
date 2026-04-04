@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import os
 import uuid
@@ -9,7 +10,7 @@ from typing import Optional
 import jwt
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from sqlalchemy import select, func, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -18,7 +19,7 @@ from app.config import get_settings
 from app.database import get_db, AsyncSessionLocal
 from app.models import (
     Conversation, Message, KnowledgeEntry, Contract, ContractTemplate, FileEntry, TelegramBot,
-    ConversationStatus, MessageRole, ProductEntry, ProductImage,
+    ConversationStatus, MessageRole, ProductEntry, ProductImage, SceneGenerationImage, SceneGenerationRecord,
 )
 from app.schemas import (
     LoginRequest, TokenResponse, ConversationSchema, ConversationDetailSchema,
@@ -28,7 +29,7 @@ from app.schemas import (
     FileEntrySchema, FileEntryUpdateRequest,
     TelegramBotSchema, TelegramBotCreateRequest, TelegramBotUpdateRequest,
     ContractTemplateSchema,
-    ProductEntrySchema, ProductEntryListSchema, ProductImageSchema,
+    ProductEntrySchema, ProductEntryListSchema, ProductImageSchema, SceneGenerationRequest, SceneGenerationRecordSchema,
 )
 from app.services.rag_service import (
     add_to_knowledge_base, remove_from_knowledge_base,
@@ -45,6 +46,7 @@ from app.services.llm_service import (
     get_llm_settings, save_llm_settings, invalidate_llm_cache,
     test_llm_connection, LLM_SETTING_KEYS, translate_text, detect_language,
 )
+from app.services.scene_service import generate_scene_images, build_scene_record_response
 from app.services import bot_manager
 
 logger = logging.getLogger(__name__)
@@ -606,6 +608,9 @@ async def get_settings_llm(_: str = Depends(get_current_user)):
     masked_emb_key = cfg.get("embedding_api_key", "")
     if len(masked_emb_key) > 8:
         masked_emb_key = masked_emb_key[:4] + "****" + masked_emb_key[-4:]
+    masked_image_key = cfg.get("image_api_key", "")
+    if len(masked_image_key) > 8:
+        masked_image_key = masked_image_key[:4] + "****" + masked_image_key[-4:]
 
     return LLMSettingsSchema(
         provider=cfg.get("llm_provider", "openai"),
@@ -615,6 +620,12 @@ async def get_settings_llm(_: str = Depends(get_current_user)):
         embedding_model=cfg.get("embedding_model", "text-embedding-3-small"),
         embedding_base_url=cfg.get("embedding_base_url", ""),
         embedding_api_key=masked_emb_key,
+        image_model=cfg.get("image_model", "gpt-image-1"),
+        image_base_url=cfg.get("image_base_url", cfg.get("llm_base_url", "")),
+        image_api_key=masked_image_key,
+        image_size=cfg.get("image_size", "1536x1024"),
+        image_quality=cfg.get("image_quality", "high"),
+        image_style=cfg.get("image_style", "natural"),
         temperature=float(cfg.get("llm_temperature", "0.7")),
         max_tokens=int(cfg.get("llm_max_tokens", "1000")),
     )
@@ -637,6 +648,18 @@ async def update_settings_llm(req: LLMSettingsUpdateRequest, _: str = Depends(ge
         updates["embedding_base_url"] = req.embedding_base_url
     if req.embedding_api_key is not None and "****" not in req.embedding_api_key:
         updates["embedding_api_key"] = req.embedding_api_key
+    if req.image_model is not None:
+        updates["image_model"] = req.image_model
+    if req.image_base_url is not None:
+        updates["image_base_url"] = req.image_base_url
+    if req.image_api_key is not None and "****" not in req.image_api_key:
+        updates["image_api_key"] = req.image_api_key
+    if req.image_size is not None:
+        updates["image_size"] = req.image_size
+    if req.image_quality is not None:
+        updates["image_quality"] = req.image_quality
+    if req.image_style is not None:
+        updates["image_style"] = req.image_style
     if req.temperature is not None:
         updates["llm_temperature"] = str(req.temperature)
     if req.max_tokens is not None:
@@ -1048,6 +1071,98 @@ async def get_product_image(
     full_path = os.path.join("/app", img.local_path)
     if not os.path.exists(full_path):
         raise HTTPException(status_code=404, detail="Image file missing from disk")
+    ext = os.path.splitext(full_path)[1].lower()
+    mime = {"jpg": "image/jpeg", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp"}.get(ext, "image/jpeg")
+    return FileResponse(path=full_path, media_type=mime)
+
+
+def _record_to_schema(record_dict: dict) -> SceneGenerationRecordSchema:
+    return SceneGenerationRecordSchema.model_validate(record_dict)
+
+
+@router.get("/products/{product_id}/scene-images", response_model=list[SceneGenerationRecordSchema])
+async def list_product_scene_images(
+    product_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: str = Depends(get_current_user),
+):
+    result = await db.execute(
+        select(SceneGenerationRecord)
+        .where(SceneGenerationRecord.primary_product_id == product_id)
+        .order_by(desc(SceneGenerationRecord.created_at))
+        .limit(20)
+    )
+    records = result.scalars().all()
+    out = []
+    for record in records:
+        out.append(_record_to_schema(await build_scene_record_response(record)))
+    return out
+
+
+@router.post("/products/{product_id}/scene-images", response_model=SceneGenerationRecordSchema)
+async def create_product_scene_images(
+    product_id: int,
+    req: SceneGenerationRequest,
+    db: AsyncSession = Depends(get_db),
+    _: str = Depends(get_current_user),
+):
+    product = await db.get(ProductEntry, product_id)
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+
+    result = await db.execute(select(ProductEntry).order_by(ProductEntry.id))
+    entries = result.scalars().all()
+    all_products = [
+        {
+            "id": e.id,
+            "name": e.product_name,
+            "space": e.space,
+            "style": e.style,
+            "color": e.color,
+            "material": e.material,
+            "buy_url": e.buy_url,
+            "detail_url": e.detail_url,
+        }
+        for e in entries
+    ]
+    record = await generate_scene_images(
+        primary_product=product,
+        all_products=all_products,
+        user_request=req.user_request or "",
+        scene_name=req.scene_name or "",
+        style_hint=req.style_hint or "",
+        related_product_ids=req.related_product_ids or None,
+        conversation_id=req.conversation_id,
+    )
+    return _record_to_schema(await build_scene_record_response(record))
+
+
+@router.get("/scene-generations/{record_id}/images/{index}")
+async def get_scene_generation_image(
+    record_id: int,
+    index: int,
+    db: AsyncSession = Depends(get_db),
+):
+    record = await db.get(SceneGenerationRecord, record_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="Scene generation record not found")
+    image_result = await db.execute(
+        select(SceneGenerationImage)
+        .where(
+            SceneGenerationImage.record_id == record_id,
+            SceneGenerationImage.image_index == index,
+        )
+        .limit(1)
+    )
+    scene_image = image_result.scalar_one_or_none()
+    if scene_image:
+        return Response(content=scene_image.binary_data, media_type=scene_image.mime_type or "image/png")
+    paths = json.loads(record.output_paths_json or "[]")
+    if index < 0 or index >= len(paths):
+        raise HTTPException(status_code=404, detail="Scene image not found")
+    full_path = os.path.join("/app", paths[index])
+    if not os.path.exists(full_path):
+        raise HTTPException(status_code=404, detail="Scene image file missing from disk")
     ext = os.path.splitext(full_path)[1].lower()
     mime = {"jpg": "image/jpeg", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp"}.get(ext, "image/jpeg")
     return FileResponse(path=full_path, media_type=mime)

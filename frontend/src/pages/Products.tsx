@@ -5,6 +5,7 @@ import {
   Card,
   Col,
   Descriptions,
+  Divider,
   Drawer,
   Empty,
   Image,
@@ -21,12 +22,14 @@ import {
   ReloadOutlined,
   SearchOutlined,
   ShoppingCartOutlined,
+  PictureOutlined,
 } from '@ant-design/icons';
 import { productApi } from '../api';
-import type { ProductEntry } from '../types';
+import type { ProductEntry, SceneGenerationRecord } from '../types';
 
 const { Text, Title, Link } = Typography;
 const { Option } = Select;
+const { TextArea } = Input;
 
 function tagColor(label: string) {
   const map: Record<string, string> = {
@@ -55,6 +58,11 @@ export default function Products() {
   const [drawerLoading, setDrawerLoading] = useState(false);
   const [importing, setImporting] = useState(false);
   const [imgErrors, setImgErrors] = useState<Record<string, boolean>>({});
+  const [sceneName, setSceneName] = useState('');
+  const [sceneStyleHint, setSceneStyleHint] = useState('');
+  const [sceneRequest, setSceneRequest] = useState('');
+  const [sceneGenerating, setSceneGenerating] = useState(false);
+  const [sceneRecords, setSceneRecords] = useState<SceneGenerationRecord[]>([]);
 
   // Load filter options once on mount
   useEffect(() => {
@@ -107,14 +115,40 @@ export default function Products() {
   const openDetail = async (p: ProductEntry) => {
     setDrawerOpen(true);
     setSelected(p);
+    setSceneName(p.space || '客厅');
+    setSceneStyleHint(p.style || '');
+    setSceneRequest('');
     setDrawerLoading(true);
     try {
-      const res = await productApi.get(p.id);
-      setSelected(res.data);
+      const [detailRes, sceneRes] = await Promise.all([
+        productApi.get(p.id),
+        productApi.listSceneImages(p.id),
+      ]);
+      setSelected(detailRes.data);
+      setSceneRecords(sceneRes.data);
     } catch {
       message.error('加载产品详情失败');
     } finally {
       setDrawerLoading(false);
+    }
+  };
+
+  const handleGenerateScene = async () => {
+    if (!selected) return;
+    setSceneGenerating(true);
+    try {
+      const res = await productApi.generateSceneImages(selected.id, {
+        scene_name: sceneName || selected.space,
+        style_hint: sceneStyleHint || selected.style,
+        user_request: sceneRequest || `请生成 ${selected.product_name} 在 ${sceneName || selected.space || '客厅'} 的真实搭配效果图`,
+      });
+      setSceneRecords((prev) => [res.data, ...prev]);
+      message.success(`场景图已生成，耗时 ${res.data.duration_ms} ms`);
+    } catch (e: unknown) {
+      const detail = (e as { response?: { data?: { detail?: string } } }).response?.data?.detail;
+      message.error(detail ? `场景图生成失败: ${detail.slice(0, 160)}` : '场景图生成失败');
+    } finally {
+      setSceneGenerating(false);
     }
   };
 
@@ -386,6 +420,111 @@ export default function Products() {
                 </div>
               </div>
             )}
+
+            <Divider />
+
+            <div style={{ marginBottom: 16 }}>
+              <Text strong>场景图推荐 / 效果图生成</Text>
+              <div style={{ marginTop: 10 }}>
+                <Space direction="vertical" style={{ width: '100%' }} size={10}>
+                  <Space wrap style={{ width: '100%' }}>
+                    <Input
+                      value={sceneName}
+                      onChange={(e) => setSceneName(e.target.value)}
+                      placeholder="场景，如：中式客厅 / 高端样板间 / 餐厅"
+                      style={{ width: 220 }}
+                    />
+                    <Input
+                      value={sceneStyleHint}
+                      onChange={(e) => setSceneStyleHint(e.target.value)}
+                      placeholder="风格提示，如：新中式 / 轻奢 / 现代"
+                      style={{ width: 220 }}
+                    />
+                    <Button
+                      type="primary"
+                      icon={<PictureOutlined />}
+                      loading={sceneGenerating}
+                      onClick={handleGenerateScene}
+                    >
+                      生成 3 张场景图
+                    </Button>
+                  </Space>
+                  <TextArea
+                    value={sceneRequest}
+                    onChange={(e) => setSceneRequest(e.target.value)}
+                    rows={3}
+                    placeholder="可补充给模型的场景要求，例如：保留真皮纹理、放在中式客厅、搭配茶几和边柜、不要改动外观比例。"
+                  />
+                </Space>
+              </div>
+            </div>
+
+            <div>
+              <Text strong>最近场景图生成记录</Text>
+              <div style={{ marginTop: 10, display: 'grid', gap: 12 }}>
+                {sceneRecords.length === 0 ? (
+                  <Text type="secondary">暂无记录</Text>
+                ) : (
+                  sceneRecords.map((record) => (
+                    <Card key={record.id} size="small" bodyStyle={{ padding: 12 }}>
+                      <Space direction="vertical" style={{ width: '100%' }} size={8}>
+                        <Space wrap>
+                          <Tag color={record.status === 'completed' ? 'green' : 'red'}>
+                            {record.status}
+                          </Tag>
+                          <Tag>{record.scene_name || '未指定场景'}</Tag>
+                          {record.style_hint && <Tag>{record.style_hint}</Tag>}
+                          <Text type="secondary">耗时 {record.duration_ms} ms</Text>
+                        </Space>
+
+                        {record.request_text && (
+                          <div style={{ whiteSpace: 'pre-wrap', fontSize: 12, color: '#666' }}>
+                            {record.request_text}
+                          </div>
+                        )}
+
+                        {record.image_urls.length > 0 && (
+                          <Image.PreviewGroup>
+                            <Space wrap>
+                              {record.image_urls.map((url) => (
+                                <Image
+                                  key={url}
+                                  src={url}
+                                  width={120}
+                                  height={90}
+                                  style={{ objectFit: 'cover', borderRadius: 6 }}
+                                />
+                              ))}
+                            </Space>
+                          </Image.PreviewGroup>
+                        )}
+
+                        {record.related_products.length > 0 && (
+                          <div style={{ fontSize: 12 }}>
+                            <Text type="secondary">搭配商品：</Text>
+                            <Space wrap style={{ marginTop: 4 }}>
+                              {record.related_products.map((item) => (
+                                <Link
+                                  key={item.id}
+                                  href={item.buy_url || item.detail_url}
+                                  target="_blank"
+                                >
+                                  {item.product_name}
+                                </Link>
+                              ))}
+                            </Space>
+                          </div>
+                        )}
+
+                        {record.error_message && (
+                          <Text type="danger">{record.error_message}</Text>
+                        )}
+                      </Space>
+                    </Card>
+                  ))
+                )}
+              </div>
+            </div>
           </div>
         )}
       </Drawer>

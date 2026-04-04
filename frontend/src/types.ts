@@ -109,6 +109,12 @@ export interface LLMSettings {
   embedding_model: string;
   embedding_base_url: string;
   embedding_api_key: string;
+  image_model: string;
+  image_base_url: string;
+  image_api_key: string;
+  image_size: string;
+  image_quality: string;
+  image_style: string;
   temperature: number;
   max_tokens: number;
 }
@@ -136,6 +142,31 @@ export interface TelegramBot {
   bot_username: string | null;
   description: string;
   is_running: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProductLink {
+  id: number;
+  product_name: string;
+  buy_url: string;
+  detail_url: string;
+}
+
+export interface SceneGenerationRecord {
+  id: number;
+  conversation_id: number | null;
+  primary_product_id: number;
+  primary_product_name: string;
+  scene_name: string;
+  style_hint: string;
+  request_text: string;
+  prompt_text: string;
+  related_products: ProductLink[];
+  image_urls: string[];
+  duration_ms: number;
+  status: string;
+  error_message: string;
   created_at: string;
   updated_at: string;
 }
