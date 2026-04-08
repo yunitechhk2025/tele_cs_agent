@@ -91,6 +91,27 @@ def _mime_type_from_filename(name: str) -> str:
     }.get(ext, "image/png")
 
 
+async def _download_remote_binary(
+    client: httpx.AsyncClient,
+    url: str,
+    attempts: int = 4,
+) -> bytes:
+    last_error: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            response = await client.get(url, follow_redirects=True)
+            response.raise_for_status()
+            return response.content
+        except Exception as exc:
+            last_error = exc
+            if attempt >= attempts:
+                break
+            await asyncio.sleep(min(2 * attempt, 5))
+    if last_error:
+        raise last_error
+    raise RuntimeError(f"Failed to download remote binary: {url}")
+
+
 def _build_scene_prompt(
     primary_product: ProductEntry,
     related_products: list[ProductEntry],
@@ -99,6 +120,7 @@ def _build_scene_prompt(
     user_request: str,
 ) -> str:
     primary_lines = [
+        f"Main product brand: {primary_product.brand}",
         f"Main product name: {primary_product.product_name}",
         f"Main product space: {primary_product.space}",
         f"Main product style: {primary_product.style}",
@@ -233,9 +255,7 @@ async def _generate_dashscope_kling_images(prompt: str, cfg: dict[str, str], cou
                 urls = [item.get("image") for item in contents if item.get("image")]
                 binaries: list[bytes] = []
                 for url in urls:
-                    image_resp = await client.get(url)
-                    image_resp.raise_for_status()
-                    binaries.append(image_resp.content)
+                    binaries.append(await _download_remote_binary(client, url))
                 if not binaries:
                     raise RuntimeError("DashScope task succeeded but returned no image URLs")
                 return binaries
@@ -445,6 +465,7 @@ async def generate_scene_images(
         user_message=user_request or primary_product.product_name,
         primary_product={
             "id": primary_product.id,
+            "brand": primary_product.brand,
             "name": primary_product.product_name,
             "space": primary_product.space,
             "style": primary_product.style,

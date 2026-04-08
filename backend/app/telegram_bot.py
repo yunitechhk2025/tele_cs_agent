@@ -214,6 +214,7 @@ async def get_products_for_bot() -> list[dict]:
         return [
             {
                 "id": e.id,
+                "brand": e.brand,
                 "name": e.product_name,
                 "series": e.series_name,
                 "space": e.space,

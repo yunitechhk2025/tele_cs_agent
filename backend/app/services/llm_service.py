@@ -442,7 +442,7 @@ async def select_scene_bundle_products(
     if not candidate_products:
         return []
     catalog = "\n".join(
-        f"ID:{p['id']} | {p['name']} | 空间:{p.get('space', '')} | 风格:{p.get('style', '')} | 材质:{p.get('material', '')}"
+        f"ID:{p['id']} | 品牌:{p.get('brand', '')} | {p['name']} | 空间:{p.get('space', '')} | 风格:{p.get('style', '')} | 材质:{p.get('material', '')}"
         for p in candidate_products[:50]
     )
     try:
@@ -455,7 +455,7 @@ async def select_scene_bundle_products(
                         "Choose up to 3 products that match the primary product and scene.\n"
                         "Prioritize products that fit the same room and style and can logically appear together.\n"
                         "Return ONLY a JSON array of numeric IDs, e.g. [12, 18].\n\n"
-                        f"Primary product: {primary_product['name']} | 空间:{primary_product.get('space', '')} "
+                        f"Primary product: 品牌:{primary_product.get('brand', '')} | {primary_product['name']} | 空间:{primary_product.get('space', '')} "
                         f"| 风格:{primary_product.get('style', '')} | 材质:{primary_product.get('material', '')}\n"
                         f"Requested scene: {scene_name}\n"
                         f"Style hint: {style_hint}\n"
@@ -491,7 +491,7 @@ async def ai_select_products(user_message: str, products: list[dict]) -> list[in
     if not products:
         return []
     catalog = "\n".join(
-        f"ID:{p['id']} | {p['name']} | 系列:{p['series']} | 空间:{p['space']} "
+        f"ID:{p['id']} | 品牌:{p.get('brand', '')} | {p['name']} | 系列:{p['series']} | 空间:{p['space']} "
         f"| 风格:{p['style']} | 颜色:{p['color']}"
         for p in products
     )
@@ -504,7 +504,7 @@ async def ai_select_products(user_message: str, products: list[dict]) -> list[in
                         "You are a furniture product matcher. The customer wants product recommendations.\n"
                         "Given the catalog below, pick up to 3 product IDs that BEST match the request.\n"
                         "RULES:\n"
-                        "- Match by style, space, color, series, or name.\n"
+                        "- Match by brand, style, space, color, series, or name.\n"
                         "- Return a JSON array of numeric IDs, e.g. [12, 45, 78]\n"
                         "- If nothing matches, return []\n"
                         "- Output ONLY the JSON array, no explanation.\n\n"
