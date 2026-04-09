@@ -194,7 +194,14 @@ export default function Products() {
     setGenSelectedImages((prev) => {
       const exists = prev.find((r) => r.product_id === ref.product_id && r.image_order === ref.image_order);
       if (exists) return prev.filter((r) => !(r.product_id === ref.product_id && r.image_order === ref.image_order));
-      if (prev.length >= 4) { message.warning('最多选择 4 张图片'); return prev; }
+      const sameProductIndex = prev.findIndex((r) => r.product_id === ref.product_id);
+      if (sameProductIndex >= 0) {
+        const next = [...prev];
+        next[sameProductIndex] = ref;
+        message.info('每个产品仅保留 1 张参考图，已替换为新选择的图片');
+        return next;
+      }
+      if (prev.length >= 4) { message.warning('最多选择 1 个主产品和 3 个副产品'); return prev; }
       return [...prev, ref];
     });
   };
@@ -644,7 +651,7 @@ export default function Products() {
             {genProducts.length > 0 && (
               <div style={{ marginTop: 14 }}>
                 <Text strong style={{ fontSize: 13 }}>
-                  选择图片（已选 {genSelectedImages.length}/4，点击图片选择/取消）
+                  选择参考图（主产品 1 个，副产品 0~3 个；每个产品仅选 1 张，当前 {genSelectedImages.length}/4）
                 </Text>
                 <div style={{
                   marginTop: 8, maxHeight: 200, overflowY: 'auto',
@@ -735,14 +742,24 @@ export default function Products() {
           <div>
             <div style={{ marginBottom: 12 }}>
               <Text strong style={{ display: 'block', marginBottom: 4 }}>已选图片预览</Text>
+              <Text type="secondary" style={{ display: 'block', marginBottom: 8, fontSize: 12 }}>
+                第 1 个为主产品，其余最多 3 个作为副产品参考图，一并送入 omni 模型约束外观。
+              </Text>
               <Space wrap>
                 {genSelectedImages.map((ref, idx) => (
-                  <div key={idx} style={{ position: 'relative', width: 80, height: 60, borderRadius: 6, overflow: 'hidden', border: '2px solid #1890ff' }}>
-                    <img
-                      src={`/api/products/${ref.product_id}/images/${ref.image_order}`}
-                      alt=""
-                      style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-                    />
+                  <div key={idx} style={{ position: 'relative', width: 92, borderRadius: 6 }}>
+                    <div style={{ position: 'relative', width: 92, height: 60, borderRadius: 6, overflow: 'hidden', border: '2px solid #1890ff' }}>
+                      <img
+                        src={`/api/products/${ref.product_id}/images/${ref.image_order}`}
+                        alt=""
+                        style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                      />
+                    </div>
+                    <div style={{ marginTop: 4, textAlign: 'center' }}>
+                      <Tag color={idx === 0 ? 'geekblue' : 'orange'} style={{ marginRight: 0, fontSize: 11 }}>
+                        {idx === 0 ? '主产品' : `副产品 ${idx}`}
+                      </Tag>
+                    </div>
                   </div>
                 ))}
               </Space>
