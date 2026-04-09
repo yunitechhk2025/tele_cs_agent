@@ -18,7 +18,7 @@ from app.services.llm_service import (
     analyze_scene_image_request, resolve_recent_product_reference,
 )
 from app.services.rag_service import search_knowledge_for_bot
-from app.services.scene_service import generate_scene_images
+from app.services.scene_service import CUSTOMER_SCENE_TIMEOUT_SECONDS, generate_scene_images
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -64,8 +64,8 @@ PRODUCT_REC_NONE = {
 }
 
 SCENE_FOLLOWUP_MESSAGES = {
-    "zh": "如果您愿意，我还可以继续为您生成其中某一款产品在{scene}中的 3 张搭配效果图，并附上相关商品链接。您可以回复商品编号（如 #3）或直接说商品名。",
-    "en": "If you'd like, I can also generate 3 styled scene images for any one of these products in a {scene} setting with matching product links. You can reply with the product number (for example #3) or the product name.",
+    "zh": "如果您愿意，我还可以继续为您生成其中某一款产品在{scene}中的搭配效果图，并附上相关商品链接。您可以回复商品编号（如 #3）或直接说商品名。",
+    "en": "If you'd like, I can also generate a styled scene image for any one of these products in a {scene} setting with matching product links. You can reply with the product number (for example #3) or the product name.",
 }
 
 SCENE_GENERATING_MESSAGES = {
@@ -76,6 +76,18 @@ SCENE_GENERATING_MESSAGES = {
 SCENE_FAILED_MESSAGES = {
     "zh": "抱歉，这次场景图生成失败了。您可以稍后再试，或告诉我更具体的场景和风格要求。",
     "en": "Sorry, the scene image generation failed this time. Please try again later or share a more specific scene/style request.",
+}
+
+SCENE_TIMEOUT_MESSAGES = {
+    "zh": "抱歉，这次场景图生成超时了。请稍后再试，或减少搭配要求后重新生成。",
+    "en": "Sorry, the scene image generation timed out. Please try again later or simplify the styling request.",
+}
+
+SCENE_KEYWORDS = {
+    "客厅": ["sofa", "couch", "coffee table", "tv cabinet", "tv stand", "sectional", "recliner", "沙发", "茶几", "电视柜", "边几"],
+    "餐厅": ["dining table", "dining chair", "sideboard", "buffet", "bar table", "bar stool", "餐桌", "餐椅", "餐边柜", "吧台", "吧椅"],
+    "卧室": ["bed", "nightstand", "wardrobe", "dresser", "mattress", "床", "床头柜", "衣柜", "斗柜", "床垫"],
+    "书房": ["desk", "bookcase", "bookshelf", "study", "office chair", "书桌", "书柜", "书架", "办公椅", "茶台"],
 }
 
 
@@ -281,8 +293,34 @@ async def clear_scene_state(conversation_id: int):
             await db.commit()
 
 
-def build_scene_followup_message(language: str, product: dict) -> str:
-    scene = product.get("space") or ("客厅" if language == "zh" else "living room")
+def infer_product_scene(product: dict) -> str:
+    explicit = (product.get("space") or "").strip()
+    if explicit:
+        return explicit
+    haystack = " ".join(
+        str(product.get(key) or "").lower()
+        for key in ["name", "series", "description"]
+    )
+    for scene, keywords in SCENE_KEYWORDS.items():
+        if any(keyword in haystack for keyword in keywords):
+            return scene
+    return ""
+
+
+def select_default_scene(products: list[dict], language: str) -> str:
+    counts: dict[str, int] = {}
+    for product in products:
+        scene = infer_product_scene(product)
+        if not scene:
+            continue
+        counts[scene] = counts.get(scene, 0) + 1
+    if counts:
+        return max(counts.items(), key=lambda item: (item[1], item[0]))[0]
+    return "客厅" if language == "zh" else "living room"
+
+
+def build_scene_followup_message(language: str, products: list[dict]) -> str:
+    scene = select_default_scene(products, language)
     template = SCENE_FOLLOWUP_MESSAGES.get(language, SCENE_FOLLOWUP_MESSAGES["en"])
     return template.format(scene=scene)
 
@@ -297,9 +335,9 @@ async def send_scene_generation_result(chat_id: str, language: str, record, bot)
 
     output_paths = json.loads(record.output_paths_json or "[]")
     intro = {
-        "zh": f"这是为您生成的 {record.scene_name or '场景'} 搭配效果图，共 {len(output_paths)} 张：",
-        "en": f"Here are {len(output_paths)} styled scene images for this product in {record.scene_name or 'the requested setting'}:",
-    }.get(language, f"Here are {len(output_paths)} styled scene images for this product:")
+        "zh": f"这是为您生成的 {record.scene_name or '场景'} 搭配效果图：",
+        "en": f"Here is the styled scene image for this product in {record.scene_name or 'the requested setting'}:",
+    }.get(language, "Here is the styled scene image for this product:")
     await bot.send_message(chat_id=int(chat_id), text=intro)
 
     for rel in output_paths:
@@ -602,14 +640,22 @@ def make_message_handler(bot_id: int):
                         await typing_task
                         await update.message.reply_text(generating)
                         await save_message(conversation.id, MessageRole.ASSISTANT, generating, language)
-                        record = await generate_scene_images(
-                            primary_product=primary_product,
-                            all_products=all_products,
-                            user_request=user_message if (referenced_id or scene_req.get("is_scene_request")) else (scene_state.last_customer_request or user_message),
-                            scene_name=default_scene or primary_product.space,
-                            style_hint=default_style or primary_product.style,
-                            conversation_id=conversation.id,
-                        )
+                        try:
+                            record = await generate_scene_images(
+                                primary_product=primary_product,
+                                all_products=all_products,
+                                user_request=user_message if (referenced_id or scene_req.get("is_scene_request")) else (scene_state.last_customer_request or user_message),
+                                scene_name=default_scene or primary_product.space,
+                                style_hint=default_style or primary_product.style,
+                                conversation_id=conversation.id,
+                                timeout_seconds=CUSTOMER_SCENE_TIMEOUT_SECONDS,
+                            )
+                        except asyncio.TimeoutError:
+                            timeout_text = SCENE_TIMEOUT_MESSAGES.get(language, SCENE_TIMEOUT_MESSAGES["en"])
+                            await update.message.reply_text(timeout_text)
+                            await save_message(conversation.id, MessageRole.ASSISTANT, timeout_text, language)
+                            await clear_scene_state(conversation.id)
+                            return
                         await send_scene_generation_result(chat_id, language, record, context.bot)
                         await clear_scene_state(conversation.id)
                         return
@@ -631,14 +677,21 @@ def make_message_handler(bot_id: int):
                         await typing_task
                         await update.message.reply_text(generating)
                         await save_message(conversation.id, MessageRole.ASSISTANT, generating, language)
-                        record = await generate_scene_images(
-                            primary_product=primary_product,
-                            all_products=all_products,
-                            user_request=user_message,
-                            scene_name=scene_req.get("scene_name") or primary_product.space,
-                            style_hint=scene_req.get("style_hint") or primary_product.style,
-                            conversation_id=conversation.id,
-                        )
+                        try:
+                            record = await generate_scene_images(
+                                primary_product=primary_product,
+                                all_products=all_products,
+                                user_request=user_message,
+                                scene_name=scene_req.get("scene_name") or primary_product.space,
+                                style_hint=scene_req.get("style_hint") or primary_product.style,
+                                conversation_id=conversation.id,
+                                timeout_seconds=CUSTOMER_SCENE_TIMEOUT_SECONDS,
+                            )
+                        except asyncio.TimeoutError:
+                            timeout_text = SCENE_TIMEOUT_MESSAGES.get(language, SCENE_TIMEOUT_MESSAGES["en"])
+                            await update.message.reply_text(timeout_text)
+                            await save_message(conversation.id, MessageRole.ASSISTANT, timeout_text, language)
+                            return
                         await send_scene_generation_result(chat_id, language, record, context.bot)
                         await save_scene_state(
                             conversation_id=conversation.id,
@@ -667,14 +720,15 @@ def make_message_handler(bot_id: int):
                     await save_message(conversation.id, MessageRole.ASSISTANT, intro, language)
                     await send_product_recommendations(chat_id, selected_products, language, context.bot)
                     primary_product = selected_products[0]
-                    followup = build_scene_followup_message(language, primary_product)
+                    suggested_scene = select_default_scene(selected_products, language)
+                    followup = build_scene_followup_message(language, selected_products)
                     await update.message.reply_text(followup)
                     await save_message(conversation.id, MessageRole.ASSISTANT, followup, language)
                     await save_scene_state(
                         conversation_id=conversation.id,
                         primary_product_id=primary_product["id"],
                         recommended_product_ids=selected_ids,
-                        suggested_scene=primary_product.get("space", ""),
+                        suggested_scene=suggested_scene,
                         suggested_style=primary_product.get("style", ""),
                         pending_confirmation=True,
                         reply_language=language,

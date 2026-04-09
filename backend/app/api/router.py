@@ -12,7 +12,7 @@ import jwt
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.responses import FileResponse, Response
-from sqlalchemy import select, func, desc
+from sqlalchemy import select, func, desc, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -49,7 +49,14 @@ from app.services.llm_service import (
     test_llm_connection, test_embedding_connection, test_image_connection,
     LLM_SETTING_KEYS, translate_text, detect_language,
 )
-from app.services.scene_service import generate_scene_images, build_scene_record_response, start_scene_generation
+from app.services.scene_service import (
+    generate_scene_images,
+    build_scene_record_response,
+    start_scene_generation,
+    _get_selected_reference_items,
+    cancel_scene_generation_task,
+    cleanup_stale_pending_scene_generations,
+)
 from app.services import bot_manager
 
 logger = logging.getLogger(__name__)
@@ -1219,8 +1226,19 @@ async def scene_generator_generate(
 ):
     if not req.product_image_refs or len(req.product_image_refs) > 4:
         raise HTTPException(status_code=400, detail="请选择 1~4 张产品图片")
+    unique_refs: list[dict[str, int]] = []
+    seen_product_ids: set[int] = set()
+    for ref in req.product_image_refs:
+        if ref.product_id in seen_product_ids:
+            raise HTTPException(status_code=400, detail="每个产品只能选择 1 张参考图")
+        seen_product_ids.add(ref.product_id)
+        unique_refs.append({"product_id": int(ref.product_id), "image_order": int(ref.image_order)})
 
-    product_ids = list(dict.fromkeys(ref.product_id for ref in req.product_image_refs))
+    product_ids = [ref["product_id"] for ref in unique_refs]
+    if len(product_ids) > 4:
+        raise HTTPException(status_code=400, detail="最多选择 1 个主产品和 3 个副产品")
+    if len(product_ids) > 1 and len(product_ids[1:]) > 3:
+        raise HTTPException(status_code=400, detail="副产品最多选择 3 个")
     result = await db.execute(
         select(ProductEntry).where(ProductEntry.id.in_(product_ids))
     )
@@ -1229,7 +1247,10 @@ async def scene_generator_generate(
         raise HTTPException(status_code=404, detail="未找到所选产品")
 
     primary_product = products_map[product_ids[0]]
-    related_ids = [pid for pid in product_ids[1:] if pid in products_map]
+    related_ids = [pid for pid in product_ids[1:] if pid in products_map][:3]
+    reference_items = await _get_selected_reference_items(unique_refs)
+    if len(reference_items) != len(unique_refs):
+        raise HTTPException(status_code=400, detail="所选参考图不可用，请更换图片后重试")
 
     all_result = await db.execute(select(ProductEntry).order_by(ProductEntry.id))
     all_products = [
@@ -1253,6 +1274,8 @@ async def scene_generator_generate(
         scene_name=req.scene_name or "",
         style_hint=req.style_hint or "",
         related_product_ids=related_ids or None,
+        reference_image_items=reference_items,
+        allow_reuse=False,
     )
     return _record_to_schema(await build_scene_record_response(record))
 
@@ -1278,6 +1301,7 @@ async def delete_scene_generation(
     db: AsyncSession = Depends(get_db),
     _: str = Depends(get_current_user),
 ):
+    await cancel_scene_generation_task(record_id)
     record = await db.get(SceneGenerationRecord, record_id)
     if not record:
         raise HTTPException(status_code=404, detail="Scene record not found")
@@ -1305,6 +1329,7 @@ async def get_scene_generation(
     db: AsyncSession = Depends(get_db),
     _: str = Depends(get_current_user),
 ):
+    await cleanup_stale_pending_scene_generations()
     record = await db.get(SceneGenerationRecord, record_id)
     if not record:
         raise HTTPException(status_code=404, detail="Scene record not found")
@@ -1319,6 +1344,7 @@ async def scene_library_filters(
     db: AsyncSession = Depends(get_db),
     _: str = Depends(get_current_user),
 ):
+    await cleanup_stale_pending_scene_generations()
     lib_filter = _scene_view_clause(view)
 
     result = await db.execute(
@@ -1363,6 +1389,7 @@ async def list_scene_library(
     db: AsyncSession = Depends(get_db),
     _: str = Depends(get_current_user),
 ):
+    await cleanup_stale_pending_scene_generations()
     query = (
         select(SceneGenerationRecord)
         .join(ProductEntry, SceneGenerationRecord.primary_product_id == ProductEntry.id)
