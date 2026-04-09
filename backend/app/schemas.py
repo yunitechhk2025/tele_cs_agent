@@ -334,6 +334,7 @@ class SceneGeneratorRequest(BaseModel):
 
 class SceneLibraryItemSchema(BaseModel):
     id: int
+    conversation_id: Optional[int] = None
     primary_product_id: int
     primary_product_name: str
     primary_product_brand: str = ""
@@ -341,8 +342,13 @@ class SceneLibraryItemSchema(BaseModel):
     primary_product_style: str = ""
     scene_name: str
     style_hint: str
+    request_text: str = ""
     related_products: list[ProductLinkSchema] = []
     image_urls: list[str] = []
     cover_url: str = ""
     duration_ms: int
+    status: str = ""
+    in_library: bool = False
+    error_message: str = ""
     created_at: datetime
+    updated_at: datetime

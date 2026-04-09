@@ -138,25 +138,39 @@ def _build_scene_prompt(
         for p in related_products
     ]
     related_text = "\n".join(related_lines) or "- No extra products"
+    ref_note = (
+        "IMPORTANT: The attached reference images show the EXACT products to use.\n"
+        "The FIRST reference image(s) are the MAIN product — place it as the visual focus.\n"
+    )
+    if related_products:
+        ref_note += (
+            "The LATER reference image(s) are the COMPLEMENTARY products listed below.\n"
+            "You MUST reproduce ALL referenced products faithfully in the scene — "
+            "keep their exact shape, material, color, texture, proportions, and design details.\n"
+            "Do NOT omit any complementary product that has a reference image.\n"
+        )
+    else:
+        ref_note += (
+            "You MUST reproduce this product faithfully — keep its exact shape, material, color, texture, "
+            "proportions, and design details.\n"
+        )
+
     return (
         "Create a photorealistic furniture showroom / home-interior scene image.\n"
         f"Requested scene: {scene_name}\n"
         f"Style hint: {style_hint or primary_product.style or '真实家居'}\n"
         f"Customer request: {user_request or primary_product.product_name}\n\n"
-        "IMPORTANT: The attached reference image(s) show the EXACT main product. "
-        "You MUST reproduce this product faithfully — keep its exact shape, material, color, texture, "
-        "proportions, and design details. Do NOT redesign or alter the product.\n"
-        "Place this exact product as the visual focus in the requested scene setting.\n"
-        "Complementary products can appear as supporting items in the same room.\n"
+        + ref_note
+        + "Do NOT redesign or alter any product. "
         "No people, no text overlay, no watermark, no logo, no fantasy styling.\n\n"
         "Main product facts:\n"
         + "\n".join(primary_lines)
-        + "\n\nComplementary products:\n"
+        + "\n\nComplementary products (MUST appear in scene):\n"
         + related_text
         + "\n\nOutput requirements:\n"
         "- realistic interior lighting\n"
         "- commercially usable composition\n"
-        "- the main product must look identical to the reference image(s)\n"
+        "- ALL products (main + complementary) must look identical to their reference images\n"
         "- make the room look complete and believable\n"
     )
 
@@ -451,16 +465,14 @@ async def build_scene_record_response(record: SceneGenerationRecord) -> dict[str
     }
 
 
-async def generate_scene_images(
+async def _create_scene_generation_record(
     primary_product: ProductEntry,
-    all_products: list[dict[str, Any]],
     user_request: str = "",
     scene_name: str = "",
     style_hint: str = "",
     related_product_ids: list[int] | None = None,
     conversation_id: int | None = None,
 ) -> SceneGenerationRecord:
-    cfg = await get_llm_settings()
     default_scene, default_style = _scene_defaults(primary_product)
     scene_name = scene_name.strip() or default_scene
     style_hint = style_hint.strip() or default_style
@@ -472,14 +484,42 @@ async def generate_scene_images(
         related_product_ids=related_product_ids,
     )
     if reusable:
-        logger.info(
-            "Reusing cached scene images for product %s scene=%s style=%s record=%s",
-            primary_product.id,
-            scene_name,
-            style_hint,
-            reusable.id,
-        )
         return reusable
+
+    record = SceneGenerationRecord(
+        conversation_id=conversation_id,
+        primary_product_id=primary_product.id,
+        scene_name=scene_name,
+        style_hint=style_hint,
+        request_text=user_request or "",
+        prompt_text="",
+        related_product_ids_json=json.dumps(related_product_ids or [], ensure_ascii=False),
+        output_paths_json="[]",
+        status="pending",
+        duration_ms=0,
+        error_message="",
+    )
+
+    async with AsyncSessionLocal() as db:
+        db.add(record)
+        await db.commit()
+        await db.refresh(record)
+        return record
+
+
+async def _run_scene_generation_for_record(
+    record_id: int,
+    primary_product: ProductEntry,
+    all_products: list[dict[str, Any]],
+    user_request: str = "",
+    scene_name: str = "",
+    style_hint: str = "",
+    related_product_ids: list[int] | None = None,
+) -> SceneGenerationRecord:
+    cfg = await get_llm_settings()
+    default_scene, default_style = _scene_defaults(primary_product)
+    scene_name = scene_name.strip() or default_scene
+    style_hint = style_hint.strip() or default_style
 
     candidate_products = [
         p for p in all_products
@@ -511,55 +551,56 @@ async def generate_scene_images(
     related_products = await _load_products(selected_related_ids)
     prompt = _build_scene_prompt(primary_product, related_products, scene_name, style_hint, user_request)
 
-    record = SceneGenerationRecord(
-        conversation_id=conversation_id,
-        primary_product_id=primary_product.id,
-        scene_name=scene_name,
-        style_hint=style_hint,
-        request_text=user_request or "",
-        prompt_text=prompt,
-        related_product_ids_json=json.dumps(selected_related_ids, ensure_ascii=False),
-        output_paths_json="[]",
-        status="pending",
-        duration_ms=0,
-        error_message="",
-    )
-
     async with AsyncSessionLocal() as db:
-        db.add(record)
+        current = await db.get(SceneGenerationRecord, record_id)
+        if not current:
+            raise RuntimeError(f"Scene generation record {record_id} not found")
+        current.scene_name = scene_name
+        current.style_hint = style_hint
+        current.request_text = user_request or ""
+        current.prompt_text = prompt
+        current.related_product_ids_json = json.dumps(selected_related_ids, ensure_ascii=False)
+        current.status = "pending"
+        current.error_message = ""
         await db.commit()
-        await db.refresh(record)
 
     start = time.perf_counter()
     output_paths: list[str] = []
     try:
-        upload_dir = _scene_upload_root() / str(record.id)
+        upload_dir = _scene_upload_root() / str(record_id)
         upload_dir.mkdir(parents=True, exist_ok=True)
         if (cfg.get("image_model") or "").startswith("kling/"):
-            ref_urls = await _get_product_image_urls(primary_product.id, limit=3)
+            ref_urls = await _get_product_image_urls(primary_product.id, limit=2)
+            for rp in related_products[:3]:
+                rp_urls = await _get_product_image_urls(rp.id, limit=1)
+                ref_urls.extend(rp_urls)
+            ref_urls = ref_urls[:5]
             if ref_urls:
-                logger.info("Using %d reference image(s) for product %s", len(ref_urls), primary_product.id)
-            binaries = await _generate_dashscope_kling_images(prompt, cfg, 3, reference_image_urls=ref_urls)
+                logger.info(
+                    "Using %d reference image(s): primary=%s + %d related products",
+                    len(ref_urls), primary_product.id, len(related_products[:3]),
+                )
+            binaries = await _generate_dashscope_kling_images(prompt, cfg, 1, reference_image_urls=ref_urls)
         else:
-            binaries = []
-            for _ in range(3):
-                binaries.append(await _generate_image_binary(prompt, cfg))
+            binaries = [await _generate_image_binary(prompt, cfg)]
 
         for idx, binary in enumerate(binaries):
             filename = f"{uuid.uuid4().hex}_{idx + 1}.png"
             full = upload_dir / filename
             full.write_bytes(binary)
-            rel = os.path.join("uploads", "generated_scenes", str(record.id), filename).replace("\\", "/")
+            rel = os.path.join("uploads", "generated_scenes", str(record_id), filename).replace("\\", "/")
             output_paths.append(rel)
 
         duration_ms = int((time.perf_counter() - start) * 1000)
         async with AsyncSessionLocal() as db:
-            current = await db.get(SceneGenerationRecord, record.id)
+            current = await db.get(SceneGenerationRecord, record_id)
+            if not current:
+                raise RuntimeError(f"Scene generation record {record_id} disappeared")
             await _save_record_images(db, current.id, binaries, ["image/png"] * len(binaries))
             current.output_paths_json = json.dumps(output_paths, ensure_ascii=False)
             current.duration_ms = duration_ms
             current.status = "completed"
-            current.updated_at = current.updated_at
+            current.error_message = ""
             await db.commit()
             await db.refresh(current)
             return current
@@ -567,10 +608,84 @@ async def generate_scene_images(
         duration_ms = int((time.perf_counter() - start) * 1000)
         logger.error("Scene image generation failed for product %s: %s", primary_product.id, e, exc_info=True)
         async with AsyncSessionLocal() as db:
-            current = await db.get(SceneGenerationRecord, record.id)
+            current = await db.get(SceneGenerationRecord, record_id)
+            if not current:
+                raise
             current.duration_ms = duration_ms
             current.status = "failed"
             current.error_message = str(e)[:2000]
             await db.commit()
             await db.refresh(current)
             return current
+
+
+async def start_scene_generation(
+    primary_product: ProductEntry,
+    all_products: list[dict[str, Any]],
+    user_request: str = "",
+    scene_name: str = "",
+    style_hint: str = "",
+    related_product_ids: list[int] | None = None,
+    conversation_id: int | None = None,
+) -> SceneGenerationRecord:
+    record = await _create_scene_generation_record(
+        primary_product=primary_product,
+        user_request=user_request,
+        scene_name=scene_name,
+        style_hint=style_hint,
+        related_product_ids=related_product_ids,
+        conversation_id=conversation_id,
+    )
+    if record.status == "completed":
+        return record
+
+    async def _job():
+        await _run_scene_generation_for_record(
+            record_id=record.id,
+            primary_product=primary_product,
+            all_products=all_products,
+            user_request=user_request,
+            scene_name=scene_name,
+            style_hint=style_hint,
+            related_product_ids=related_product_ids,
+        )
+
+    asyncio.create_task(_job())
+    return record
+
+
+async def generate_scene_images(
+    primary_product: ProductEntry,
+    all_products: list[dict[str, Any]],
+    user_request: str = "",
+    scene_name: str = "",
+    style_hint: str = "",
+    related_product_ids: list[int] | None = None,
+    conversation_id: int | None = None,
+) -> SceneGenerationRecord:
+    record = await _create_scene_generation_record(
+        primary_product=primary_product,
+        user_request=user_request,
+        scene_name=scene_name,
+        style_hint=style_hint,
+        related_product_ids=related_product_ids,
+        conversation_id=conversation_id,
+    )
+    if record.status == "completed":
+        logger.info(
+            "Reusing cached scene images for product %s scene=%s style=%s record=%s",
+            primary_product.id,
+            record.scene_name,
+            record.style_hint,
+            record.id,
+        )
+        return record
+    return await _run_scene_generation_for_record(
+        record_id=record.id,
+        primary_product=primary_product,
+        all_products=all_products,
+        user_request=user_request,
+        scene_name=scene_name,
+        style_hint=style_hint,
+        related_product_ids=related_product_ids,
+    )
