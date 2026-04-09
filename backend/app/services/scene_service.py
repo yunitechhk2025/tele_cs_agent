@@ -138,25 +138,39 @@ def _build_scene_prompt(
         for p in related_products
     ]
     related_text = "\n".join(related_lines) or "- No extra products"
+    ref_note = (
+        "IMPORTANT: The attached reference images show the EXACT products to use.\n"
+        "The FIRST reference image(s) are the MAIN product — place it as the visual focus.\n"
+    )
+    if related_products:
+        ref_note += (
+            "The LATER reference image(s) are the COMPLEMENTARY products listed below.\n"
+            "You MUST reproduce ALL referenced products faithfully in the scene — "
+            "keep their exact shape, material, color, texture, proportions, and design details.\n"
+            "Do NOT omit any complementary product that has a reference image.\n"
+        )
+    else:
+        ref_note += (
+            "You MUST reproduce this product faithfully — keep its exact shape, material, color, texture, "
+            "proportions, and design details.\n"
+        )
+
     return (
         "Create a photorealistic furniture showroom / home-interior scene image.\n"
         f"Requested scene: {scene_name}\n"
         f"Style hint: {style_hint or primary_product.style or '真实家居'}\n"
         f"Customer request: {user_request or primary_product.product_name}\n\n"
-        "IMPORTANT: The attached reference image(s) show the EXACT main product. "
-        "You MUST reproduce this product faithfully — keep its exact shape, material, color, texture, "
-        "proportions, and design details. Do NOT redesign or alter the product.\n"
-        "Place this exact product as the visual focus in the requested scene setting.\n"
-        "Complementary products can appear as supporting items in the same room.\n"
+        + ref_note
+        + "Do NOT redesign or alter any product. "
         "No people, no text overlay, no watermark, no logo, no fantasy styling.\n\n"
         "Main product facts:\n"
         + "\n".join(primary_lines)
-        + "\n\nComplementary products:\n"
+        + "\n\nComplementary products (MUST appear in scene):\n"
         + related_text
         + "\n\nOutput requirements:\n"
         "- realistic interior lighting\n"
         "- commercially usable composition\n"
-        "- the main product must look identical to the reference image(s)\n"
+        "- ALL products (main + complementary) must look identical to their reference images\n"
         "- make the room look complete and believable\n"
     )
 
@@ -556,14 +570,19 @@ async def _run_scene_generation_for_record(
         upload_dir = _scene_upload_root() / str(record_id)
         upload_dir.mkdir(parents=True, exist_ok=True)
         if (cfg.get("image_model") or "").startswith("kling/"):
-            ref_urls = await _get_product_image_urls(primary_product.id, limit=3)
+            ref_urls = await _get_product_image_urls(primary_product.id, limit=2)
+            for rp in related_products[:3]:
+                rp_urls = await _get_product_image_urls(rp.id, limit=1)
+                ref_urls.extend(rp_urls)
+            ref_urls = ref_urls[:5]
             if ref_urls:
-                logger.info("Using %d reference image(s) for product %s", len(ref_urls), primary_product.id)
-            binaries = await _generate_dashscope_kling_images(prompt, cfg, 3, reference_image_urls=ref_urls)
+                logger.info(
+                    "Using %d reference image(s): primary=%s + %d related products",
+                    len(ref_urls), primary_product.id, len(related_products[:3]),
+                )
+            binaries = await _generate_dashscope_kling_images(prompt, cfg, 1, reference_image_urls=ref_urls)
         else:
-            binaries = []
-            for _ in range(3):
-                binaries.append(await _generate_image_binary(prompt, cfg))
+            binaries = [await _generate_image_binary(prompt, cfg)]
 
         for idx, binary in enumerate(binaries):
             filename = f"{uuid.uuid4().hex}_{idx + 1}.png"
