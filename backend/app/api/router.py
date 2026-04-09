@@ -30,6 +30,7 @@ from app.schemas import (
     TelegramBotSchema, TelegramBotCreateRequest, TelegramBotUpdateRequest,
     ContractTemplateSchema,
     ProductEntrySchema, ProductEntryListSchema, ProductImageSchema, SceneGenerationRequest, SceneGenerationRecordSchema,
+    SceneLibraryItemSchema, SceneGeneratorRequest,
 )
 from app.services.rag_service import (
     add_to_knowledge_base, remove_from_knowledge_base,
@@ -44,7 +45,8 @@ from app.services.contract_service import (
 )
 from app.services.llm_service import (
     get_llm_settings, save_llm_settings, invalidate_llm_cache,
-    test_llm_connection, LLM_SETTING_KEYS, translate_text, detect_language,
+    test_llm_connection, test_embedding_connection, test_image_connection,
+    LLM_SETTING_KEYS, translate_text, detect_language,
 )
 from app.services.scene_service import generate_scene_images, build_scene_record_response
 from app.services import bot_manager
@@ -681,6 +683,26 @@ async def test_llm_endpoint(req: LLMSettingsUpdateRequest, _: str = Depends(get_
     return await test_llm_connection(provider, api_key, base_url, model)
 
 
+@router.post("/settings/llm/test-embedding")
+async def test_embedding_endpoint(req: LLMSettingsUpdateRequest, _: str = Depends(get_current_user)):
+    cfg = await get_llm_settings()
+    api_key = req.embedding_api_key if (req.embedding_api_key and "****" not in req.embedding_api_key) else cfg.get("embedding_api_key", "") or cfg.get("llm_api_key", "")
+    base_url = req.embedding_base_url or cfg.get("embedding_base_url", "") or cfg.get("llm_base_url", "")
+    model = req.embedding_model or cfg.get("embedding_model", "text-embedding-3-small")
+    return await test_embedding_connection(api_key, base_url, model)
+
+
+@router.post("/settings/llm/test-image")
+async def test_image_endpoint(req: LLMSettingsUpdateRequest, _: str = Depends(get_current_user)):
+    cfg = await get_llm_settings()
+    api_key = req.image_api_key if (req.image_api_key and "****" not in req.image_api_key) else cfg.get("image_api_key", "") or cfg.get("llm_api_key", "")
+    base_url = req.image_base_url or cfg.get("image_base_url", "") or cfg.get("llm_base_url", "")
+    model = req.image_model or cfg.get("image_model", "gpt-image-1")
+    size = req.image_size or cfg.get("image_size", "1536x1024")
+    quality = req.image_quality or cfg.get("image_quality", "high")
+    return await test_image_connection(api_key, base_url, model, size, quality)
+
+
 # ─── File Library ─────────────────────────────────────────────────────────────
 
 def _ensure_upload_dir():
@@ -1184,3 +1206,158 @@ async def trigger_product_import(
     if proc.returncode != 0:
         raise HTTPException(status_code=500, detail=proc.stderr[-2000:])
     return {"status": "ok", "output": proc.stdout[-2000:]}
+
+
+# ─── Scene Generator ─────────────────────────────────────────────────────────
+
+@router.post("/scene-generator/generate", response_model=SceneGenerationRecordSchema)
+async def scene_generator_generate(
+    req: SceneGeneratorRequest,
+    db: AsyncSession = Depends(get_db),
+    _: str = Depends(get_current_user),
+):
+    if not req.product_image_refs or len(req.product_image_refs) > 4:
+        raise HTTPException(status_code=400, detail="请选择 1~4 张产品图片")
+
+    product_ids = list(dict.fromkeys(ref.product_id for ref in req.product_image_refs))
+    result = await db.execute(
+        select(ProductEntry).where(ProductEntry.id.in_(product_ids))
+    )
+    products_map = {p.id: p for p in result.scalars().all()}
+    if not products_map:
+        raise HTTPException(status_code=404, detail="未找到所选产品")
+
+    primary_product = products_map[product_ids[0]]
+    related_ids = [pid for pid in product_ids[1:] if pid in products_map]
+
+    all_result = await db.execute(select(ProductEntry).order_by(ProductEntry.id))
+    all_products = [
+        {
+            "id": e.id,
+            "name": e.product_name,
+            "space": e.space,
+            "style": e.style,
+            "color": e.color,
+            "material": e.material,
+            "buy_url": e.buy_url,
+            "detail_url": e.detail_url,
+        }
+        for e in all_result.scalars().all()
+    ]
+
+    record = await generate_scene_images(
+        primary_product=primary_product,
+        all_products=all_products,
+        user_request=req.user_request or "",
+        scene_name=req.scene_name or "",
+        style_hint=req.style_hint or "",
+        related_product_ids=related_ids or None,
+    )
+    return _record_to_schema(await build_scene_record_response(record))
+
+
+@router.post("/scene-generations/{record_id}/toggle-library")
+async def toggle_scene_library(
+    record_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: str = Depends(get_current_user),
+):
+    record = await db.get(SceneGenerationRecord, record_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="Scene record not found")
+    record.in_library = not record.in_library
+    await db.commit()
+    await db.refresh(record)
+    return {"id": record.id, "in_library": record.in_library}
+
+
+# ─── Scene Library ───────────────────────────────────────────────────────────
+
+@router.get("/scene-library/filters")
+async def scene_library_filters(
+    db: AsyncSession = Depends(get_db),
+    _: str = Depends(get_current_user),
+):
+    lib_filter = (SceneGenerationRecord.status == "completed") & (SceneGenerationRecord.in_library == True)
+
+    result = await db.execute(
+        select(func.distinct(ProductEntry.brand))
+        .join(SceneGenerationRecord, SceneGenerationRecord.primary_product_id == ProductEntry.id)
+        .where(lib_filter)
+    )
+    brands = sorted(b for (b,) in result.all() if b)
+
+    result = await db.execute(
+        select(func.distinct(ProductEntry.space))
+        .join(SceneGenerationRecord, SceneGenerationRecord.primary_product_id == ProductEntry.id)
+        .where(lib_filter)
+    )
+    spaces = sorted(s for (s,) in result.all() if s)
+
+    result = await db.execute(
+        select(func.distinct(ProductEntry.style))
+        .join(SceneGenerationRecord, SceneGenerationRecord.primary_product_id == ProductEntry.id)
+        .where(lib_filter)
+    )
+    styles = sorted(s for (s,) in result.all() if s)
+
+    result = await db.execute(
+        select(func.distinct(SceneGenerationRecord.scene_name))
+        .where(lib_filter)
+    )
+    scene_names = sorted(s for (s,) in result.all() if s)
+
+    return {"brands": brands, "spaces": spaces, "styles": styles, "scene_names": scene_names}
+
+
+@router.get("/scene-library", response_model=list[SceneLibraryItemSchema])
+async def list_scene_library(
+    brand: Optional[str] = Query(None),
+    space: Optional[str] = Query(None),
+    style: Optional[str] = Query(None),
+    scene_name: Optional[str] = Query(None),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+    _: str = Depends(get_current_user),
+):
+    query = (
+        select(SceneGenerationRecord)
+        .join(ProductEntry, SceneGenerationRecord.primary_product_id == ProductEntry.id)
+        .where(SceneGenerationRecord.status == "completed")
+        .where(SceneGenerationRecord.in_library == True)
+    )
+    if brand:
+        query = query.where(ProductEntry.brand == brand)
+    if space:
+        query = query.where(ProductEntry.space == space)
+    if style:
+        query = query.where(ProductEntry.style == style)
+    if scene_name:
+        query = query.where(SceneGenerationRecord.scene_name == scene_name)
+
+    query = query.order_by(desc(SceneGenerationRecord.created_at)).offset(skip).limit(limit)
+    result = await db.execute(query)
+    records = result.scalars().all()
+
+    items: list[SceneLibraryItemSchema] = []
+    for record in records:
+        resp = await build_scene_record_response(record)
+        primary = await db.get(ProductEntry, record.primary_product_id)
+        image_urls = resp.get("image_urls", [])
+        items.append(SceneLibraryItemSchema(
+            id=record.id,
+            primary_product_id=record.primary_product_id,
+            primary_product_name=resp.get("primary_product_name", ""),
+            primary_product_brand=primary.brand if primary else "",
+            primary_product_space=primary.space if primary else "",
+            primary_product_style=primary.style if primary else "",
+            scene_name=record.scene_name or "",
+            style_hint=record.style_hint or "",
+            related_products=resp.get("related_products", []),
+            image_urls=image_urls,
+            cover_url=image_urls[0] if image_urls else "",
+            duration_ms=record.duration_ms or 0,
+            created_at=record.created_at,
+        ))
+    return items

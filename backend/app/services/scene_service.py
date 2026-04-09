@@ -14,7 +14,7 @@ from sqlalchemy import delete, select
 
 from app.config import get_settings
 from app.database import AsyncSessionLocal
-from app.models import ProductEntry, SceneGenerationImage, SceneGenerationRecord
+from app.models import ProductEntry, ProductImage, SceneGenerationImage, SceneGenerationRecord
 from app.services.llm_service import (
     build_image_client,
     get_llm_settings,
@@ -143,11 +143,12 @@ def _build_scene_prompt(
         f"Requested scene: {scene_name}\n"
         f"Style hint: {style_hint or primary_product.style or '真实家居'}\n"
         f"Customer request: {user_request or primary_product.product_name}\n\n"
-        "The main product MUST remain faithful to the real catalog item. Do NOT change its material, color, "
-        "shape, silhouette, armrest/backrest/leg structure, proportions, size relationship, or visible design details.\n"
-        "Keep the main product as the visual focus and place it naturally inside the requested scene.\n"
-        "Complementary products can appear as supporting items in the same room if they help the composition.\n"
-        "No people, no text overlay, no watermark, no logo, no fantasy styling. Keep it realistic, premium, and sellable.\n\n"
+        "IMPORTANT: The attached reference image(s) show the EXACT main product. "
+        "You MUST reproduce this product faithfully — keep its exact shape, material, color, texture, "
+        "proportions, and design details. Do NOT redesign or alter the product.\n"
+        "Place this exact product as the visual focus in the requested scene setting.\n"
+        "Complementary products can appear as supporting items in the same room.\n"
+        "No people, no text overlay, no watermark, no logo, no fantasy styling.\n\n"
         "Main product facts:\n"
         + "\n".join(primary_lines)
         + "\n\nComplementary products:\n"
@@ -155,7 +156,7 @@ def _build_scene_prompt(
         + "\n\nOutput requirements:\n"
         "- realistic interior lighting\n"
         "- commercially usable composition\n"
-        "- preserve exact product characteristics\n"
+        "- the main product must look identical to the reference image(s)\n"
         "- make the room look complete and believable\n"
     )
 
@@ -202,7 +203,12 @@ async def _generate_image_binary(prompt: str, cfg: dict[str, str]) -> bytes:
     raise RuntimeError("Image generation returned no image data")
 
 
-async def _generate_dashscope_kling_images(prompt: str, cfg: dict[str, str], count: int) -> list[bytes]:
+async def _generate_dashscope_kling_images(
+    prompt: str,
+    cfg: dict[str, str],
+    count: int,
+    reference_image_urls: list[str] | None = None,
+) -> list[bytes]:
     api_key = cfg.get("image_api_key") or cfg.get("llm_api_key", "")
     base_url = _compatible_root(cfg.get("image_base_url") or cfg.get("llm_base_url", ""))
     if not api_key:
@@ -217,13 +223,22 @@ async def _generate_dashscope_kling_images(prompt: str, cfg: dict[str, str], cou
         "Content-Type": "application/json",
         "X-DashScope-Async": "enable",
     }
+
+    content: list[dict[str, str]] = [{"text": prompt}]
+    if reference_image_urls:
+        for url in reference_image_urls[:5]:
+            content.append({"image": url})
+        if "omni" not in model:
+            model = model.replace("kling-v3-image-generation", "kling-v3-omni-image-generation")
+            logger.info("Switched to omni model for multi-image reference: %s", model)
+
     payload = {
         "model": model,
         "input": {
             "messages": [
                 {
                     "role": "user",
-                    "content": [{"text": prompt}],
+                    "content": content,
                 }
             ]
         },
@@ -264,6 +279,19 @@ async def _generate_dashscope_kling_images(prompt: str, cfg: dict[str, str], cou
             await asyncio.sleep(5)
 
     raise RuntimeError("DashScope image generation timed out")
+
+
+async def _get_product_image_urls(product_id: int, limit: int = 3) -> list[str]:
+    """Fetch original source URLs for a product's images (for use as reference in image generation)."""
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(ProductImage)
+            .where(ProductImage.product_entry_id == product_id)
+            .order_by(ProductImage.display_order)
+            .limit(limit)
+        )
+        images = result.scalars().all()
+    return [img.source_url for img in images if img.source_url]
 
 
 async def _load_products(ids: list[int]) -> list[ProductEntry]:
@@ -407,6 +435,7 @@ async def build_scene_record_response(record: SceneGenerationRecord) -> dict[str
             {
                 "id": p.id,
                 "product_name": p.product_name,
+                "brand": p.brand or "",
                 "buy_url": p.buy_url or "",
                 "detail_url": p.detail_url or "",
             }
@@ -415,6 +444,7 @@ async def build_scene_record_response(record: SceneGenerationRecord) -> dict[str
         "image_urls": image_urls,
         "duration_ms": record.duration_ms or 0,
         "status": record.status or "",
+        "in_library": bool(getattr(record, "in_library", False)),
         "error_message": record.error_message or "",
         "created_at": record.created_at,
         "updated_at": record.updated_at,
@@ -506,7 +536,10 @@ async def generate_scene_images(
         upload_dir = _scene_upload_root() / str(record.id)
         upload_dir.mkdir(parents=True, exist_ok=True)
         if (cfg.get("image_model") or "").startswith("kling/"):
-            binaries = await _generate_dashscope_kling_images(prompt, cfg, 3)
+            ref_urls = await _get_product_image_urls(primary_product.id, limit=3)
+            if ref_urls:
+                logger.info("Using %d reference image(s) for product %s", len(ref_urls), primary_product.id)
+            binaries = await _generate_dashscope_kling_images(prompt, cfg, 3, reference_image_urls=ref_urls)
         else:
             binaries = []
             for _ in range(3):

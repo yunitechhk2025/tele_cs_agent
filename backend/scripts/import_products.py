@@ -57,6 +57,17 @@ def _parse_paths(raw: str) -> list[str]:
     return [p.strip() for p in raw.split("|") if p.strip()]
 
 
+def _parse_urls(raw: str) -> list[str]:
+    """Split '|'-separated URLs and strip thumbnail query params for full-size images."""
+    urls = [u.strip() for u in raw.split("|") if u.strip()]
+    cleaned = []
+    for u in urls:
+        if "?" in u:
+            u = u.split("?")[0]
+        cleaned.append(u)
+    return cleaned
+
+
 def _derive_redapple_product_id(row: dict[str, str]) -> str:
     detail_url = row.get("detail_url", "").strip()
     if detail_url:
@@ -246,6 +257,7 @@ async def import_csv(csv_path: Path, images_root: Path, uploads_dir: Path):
 
             # Handle images
             raw_paths = _parse_paths(row.get("display_image_local_paths", ""))
+            raw_urls = _parse_urls(row.get("display_image_urls", ""))
             for order, rel_path in enumerate(raw_paths):
                 # CSV may use Windows backslashes; split on both / and \
                 parts = [p for p in re.split(r'[/\\]', rel_path.strip()) if p]
@@ -280,6 +292,7 @@ async def import_csv(csv_path: Path, images_root: Path, uploads_dir: Path):
                 img = ProductImage(
                     product_entry_id=entry.id,
                     local_path=stored_rel,
+                    source_url=raw_urls[order] if order < len(raw_urls) else "",
                     display_order=order,
                 )
                 db.add(img)

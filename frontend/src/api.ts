@@ -2,7 +2,8 @@ import axios from 'axios';
 import type {
   Conversation, ConversationDetail, KnowledgeEntry,
   Contract, ContractTemplate, DashboardStats, LLMSettings, FileEntry, TelegramBot,
-  ProductEntry, SceneGenerationRecord,
+  ProductEntry, SceneGenerationRecord, SceneLibraryItem, SceneLibraryFilters,
+  SceneGeneratorRequest,
 } from './types';
 
 const api = axios.create({ baseURL: '/api' });
@@ -102,6 +103,10 @@ export const settingsApi = {
   updateLLM: (data: Partial<LLMSettings>) => api.put<LLMSettings>('/settings/llm', data),
   testLLM: (data: Partial<LLMSettings>) =>
     api.post<{ ok: boolean; message: string }>('/settings/llm/test', data),
+  testEmbedding: (data: Partial<LLMSettings>) =>
+    api.post<{ ok: boolean; message: string }>('/settings/llm/test-embedding', data),
+  testImage: (data: Partial<LLMSettings>) =>
+    api.post<{ ok: boolean; message: string }>('/settings/llm/test-image', data),
 };
 
 export const fileApi = {
@@ -161,6 +166,19 @@ export const productApi = {
     related_product_ids?: number[];
     conversation_id?: number;
   }) => api.post<SceneGenerationRecord>(`/products/${productId}/scene-images`, data),
+};
+
+export const sceneGeneratorApi = {
+  generate: (data: SceneGeneratorRequest) =>
+    api.post<SceneGenerationRecord>('/scene-generator/generate', data),
+  toggleLibrary: (recordId: number) =>
+    api.post<{ id: number; in_library: boolean }>(`/scene-generations/${recordId}/toggle-library`),
+};
+
+export const sceneLibraryApi = {
+  filters: () => api.get<SceneLibraryFilters>('/scene-library/filters'),
+  list: (params?: { brand?: string; space?: string; style?: string; scene_name?: string; skip?: number; limit?: number }) =>
+    api.get<SceneLibraryItem[]>('/scene-library', { params }),
 };
 
 export default api;

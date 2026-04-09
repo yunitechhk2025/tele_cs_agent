@@ -21,7 +21,7 @@ services:
     image: redis:7-alpine
     restart: always
     ports:
-      - "6379:6379"
+      - "6380:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -39,9 +39,9 @@ services:
     volumes:
       - chroma_data:/app/chroma_data
       - file_uploads:/app/uploads
-      - ./Furniture-Crawler:/app/Furniture-Crawler:ro
+      - ./Furniture-Crawler/Furniture-Crawler:/app/Furniture-Crawler:ro
     ports:
-      - "8000:8000"
+      - "8001:8000"
     depends_on:
       db:
         condition: service_healthy

@@ -36,6 +36,14 @@ def _run_migrations(conn):
             "messages", "attachment_file_id",
             "ALTER TABLE messages ADD COLUMN attachment_file_id INTEGER"
         ),
+        (
+            "product_images", "source_url",
+            "ALTER TABLE product_images ADD COLUMN source_url VARCHAR(2000) DEFAULT ''"
+        ),
+        (
+            "scene_generation_records", "in_library",
+            "ALTER TABLE scene_generation_records ADD COLUMN in_library BOOLEAN DEFAULT FALSE"
+        ),
     ]
     for table, column, ddl in migrations:
         result = conn.execute(text(
