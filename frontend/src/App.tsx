@@ -8,6 +8,7 @@ import Contracts from './pages/Contracts';
 import Settings from './pages/Settings';
 import BotManagement from './pages/BotManagement';
 import Products from './pages/Products';
+import SceneLibrary from './pages/SceneLibrary';
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const token = localStorage.getItem('token');
@@ -32,6 +33,7 @@ export default function App() {
                 <Route path="/contracts" element={<Contracts />} />
                 <Route path="/bots" element={<BotManagement />} />
                 <Route path="/products" element={<Products />} />
+                <Route path="/scenes" element={<SceneLibrary />} />
                 <Route path="/settings" element={<Settings />} />
                 <Route path="*" element={<Navigate to="/" replace />} />
               </Routes>

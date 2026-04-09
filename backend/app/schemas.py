@@ -288,6 +288,7 @@ class ProductEntryListSchema(BaseModel):
 class ProductLinkSchema(BaseModel):
     id: int
     product_name: str
+    brand: str = ""
     buy_url: str
     detail_url: str
 
@@ -313,6 +314,35 @@ class SceneGenerationRecordSchema(BaseModel):
     image_urls: list[str] = []
     duration_ms: int
     status: str
+    in_library: bool = False
     error_message: str
     created_at: datetime
     updated_at: datetime
+
+
+class ProductImageRef(BaseModel):
+    product_id: int
+    image_order: int = 0
+
+
+class SceneGeneratorRequest(BaseModel):
+    product_image_refs: list[ProductImageRef]
+    scene_name: Optional[str] = None
+    style_hint: Optional[str] = None
+    user_request: Optional[str] = None
+
+
+class SceneLibraryItemSchema(BaseModel):
+    id: int
+    primary_product_id: int
+    primary_product_name: str
+    primary_product_brand: str = ""
+    primary_product_space: str = ""
+    primary_product_style: str = ""
+    scene_name: str
+    style_hint: str
+    related_products: list[ProductLinkSchema] = []
+    image_urls: list[str] = []
+    cover_url: str = ""
+    duration_ms: int
+    created_at: datetime

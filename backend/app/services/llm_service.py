@@ -705,6 +705,97 @@ async def test_llm_connection(provider: str, api_key: str, base_url: str, model:
         return {"ok": False, "message": str(e)}
 
 
+async def test_embedding_connection(api_key: str, base_url: str, model: str) -> dict:
+    """Test the embedding model connection. Returns {ok, message}."""
+    try:
+        client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+        resp = await client.embeddings.create(model=model, input="hello")
+        dim = len(resp.data[0].embedding)
+        return {"ok": True, "message": f"Embedding OK — dimension: {dim}"}
+    except Exception as e:
+        return {"ok": False, "message": str(e)}
+
+
+async def test_image_connection(api_key: str, base_url: str, model: str, size: str, quality: str) -> dict:
+    """Test the image generation model. Returns {ok, message}."""
+    import httpx, asyncio
+    from urllib.parse import urlparse
+
+    if model.startswith("kling/"):
+        return await _test_dashscope_kling(api_key, base_url, model, size)
+
+    try:
+        client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+        resp = await client.images.generate(
+            model=model,
+            prompt="A single white dot on a black background",
+            n=1,
+            size=size,
+            quality=quality,
+        )
+        url_or_b64 = resp.data[0].url or (resp.data[0].b64_json or "")[:30]
+        return {"ok": True, "message": f"Image generation OK — result: {url_or_b64[:80]}"}
+    except Exception as e:
+        return {"ok": False, "message": str(e)}
+
+
+async def _test_dashscope_kling(api_key: str, base_url: str, model: str, size: str) -> dict:
+    """Test DashScope Kling image generation with a minimal request."""
+    import httpx, asyncio
+    from urllib.parse import urlparse
+
+    parsed = urlparse(base_url)
+    root = f"{parsed.scheme}://{parsed.netloc}" if parsed.scheme and parsed.netloc else base_url.rstrip("/")
+
+    create_url = f"{root}/api/v1/services/aigc/image-generation/generation"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "X-DashScope-Async": "enable",
+    }
+
+    def _aspect_ratio(s: str) -> str:
+        try:
+            w, h = s.lower().split("x", 1)
+            return "1:1" if abs(int(w) - int(h)) < 50 else ("16:9" if int(w) > int(h) else "9:16")
+        except Exception:
+            return "1:1"
+
+    payload = {
+        "model": model,
+        "input": {
+            "messages": [{"role": "user", "content": [{"text": "A single white dot on a black background"}]}]
+        },
+        "parameters": {"n": 1, "aspect_ratio": _aspect_ratio(size), "resolution": "1k", "watermark": False},
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=180) as client:
+            create_resp = await client.post(create_url, headers=headers, json=payload)
+            create_resp.raise_for_status()
+            created = create_resp.json()
+            task_id = ((created.get("output") or {}).get("task_id"))
+            if not task_id:
+                return {"ok": False, "message": created.get("message") or "Task creation failed — no task_id returned"}
+
+            query_url = f"{root}/api/v1/tasks/{task_id}"
+            for _ in range(36):
+                await asyncio.sleep(5)
+                poll_resp = await client.get(query_url, headers={"Authorization": f"Bearer {api_key}"})
+                poll_resp.raise_for_status()
+                output = (poll_resp.json().get("output") or {})
+                status = output.get("task_status")
+                if status == "SUCCEEDED":
+                    contents = ((output.get("choices") or [{}])[0].get("message") or {}).get("content") or []
+                    urls = [item.get("image") for item in contents if item.get("image")]
+                    return {"ok": True, "message": f"Kling image generation OK — got {len(urls)} image(s)"}
+                if status == "FAILED":
+                    return {"ok": False, "message": poll_resp.json().get("message") or "Kling task failed"}
+            return {"ok": False, "message": "Kling image generation timed out (3 min)"}
+    except Exception as e:
+        return {"ok": False, "message": str(e)}
+
+
 async def translate_text(text: str, target_language: str) -> str | None:
     """Translate text into the target language. Returns None on failure."""
     lang_name = LANGUAGE_NAMES.get(target_language, target_language)

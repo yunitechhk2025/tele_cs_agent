@@ -149,6 +149,7 @@ export interface TelegramBot {
 export interface ProductLink {
   id: number;
   product_name: string;
+  brand: string;
   buy_url: string;
   detail_url: string;
 }
@@ -166,7 +167,43 @@ export interface SceneGenerationRecord {
   image_urls: string[];
   duration_ms: number;
   status: string;
+  in_library: boolean;
   error_message: string;
   created_at: string;
   updated_at: string;
+}
+
+export interface ProductImageRef {
+  product_id: number;
+  image_order: number;
+}
+
+export interface SceneGeneratorRequest {
+  product_image_refs: ProductImageRef[];
+  scene_name?: string;
+  style_hint?: string;
+  user_request?: string;
+}
+
+export interface SceneLibraryItem {
+  id: number;
+  primary_product_id: number;
+  primary_product_name: string;
+  primary_product_brand: string;
+  primary_product_space: string;
+  primary_product_style: string;
+  scene_name: string;
+  style_hint: string;
+  related_products: ProductLink[];
+  image_urls: string[];
+  cover_url: string;
+  duration_ms: number;
+  created_at: string;
+}
+
+export interface SceneLibraryFilters {
+  brands: string[];
+  spaces: string[];
+  styles: string[];
+  scene_names: string[];
 }

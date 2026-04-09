@@ -165,6 +165,7 @@ class ProductImage(Base):
     id = Column(Integer, primary_key=True, index=True)
     product_entry_id = Column(Integer, ForeignKey("product_entries.id"), index=True, nullable=False)
     local_path = Column(String(1000), nullable=False)
+    source_url = Column(String(2000), default="")
     display_order = Column(Integer, default=0)
     created_at = Column(DateTime, default=datetime.utcnow)
 
@@ -204,6 +205,7 @@ class SceneGenerationRecord(Base):
     output_paths_json = Column(Text, default="[]")
     duration_ms = Column(Integer, default=0)
     status = Column(String(50), default="pending")
+    in_library = Column(Boolean, default=False)
     error_message = Column(Text, default="")
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

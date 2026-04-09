@@ -83,12 +83,15 @@ export default function Settings() {
   const [form] = Form.useForm<LLMSettings>();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [testing, setTesting] = useState(false);
+  const [testingLLM, setTestingLLM] = useState(false);
+  const [testingEmbedding, setTestingEmbedding] = useState(false);
+  const [testingImage, setTestingImage] = useState(false);
   const [testResult, setTestResult] = useState<{
     open: boolean;
     ok: boolean;
     text: string;
-  }>({ open: false, ok: false, text: '' });
+    title: string;
+  }>({ open: false, ok: false, text: '', title: '' });
 
   const provider = Form.useWatch('provider', form) as string | undefined;
   const temperature = Form.useWatch('temperature', form) as number | undefined;
@@ -134,18 +137,48 @@ export default function Settings() {
     }
   };
 
-  const handleTest = async () => {
+  const handleTestLLM = async () => {
     try {
       const values = await form.validateFields();
-      setTesting(true);
+      setTestingLLM(true);
       const res = await settingsApi.testLLM(buildLLMPayload(values));
       const { ok, message: msg } = res.data;
-      setTestResult({ open: true, ok, text: msg });
+      setTestResult({ open: true, ok, text: msg, title: ok ? '主模型连接成功' : '主模型连接失败' });
     } catch (e) {
       if (e && typeof e === 'object' && 'errorFields' in e) return;
-      message.error('连接测试失败');
+      message.error('主模型测试失败');
     } finally {
-      setTesting(false);
+      setTestingLLM(false);
+    }
+  };
+
+  const handleTestEmbedding = async () => {
+    try {
+      const values = await form.validateFields();
+      setTestingEmbedding(true);
+      const res = await settingsApi.testEmbedding(buildLLMPayload(values));
+      const { ok, message: msg } = res.data;
+      setTestResult({ open: true, ok, text: msg, title: ok ? '嵌入模型连接成功' : '嵌入模型连接失败' });
+    } catch (e) {
+      if (e && typeof e === 'object' && 'errorFields' in e) return;
+      message.error('嵌入模型测试失败');
+    } finally {
+      setTestingEmbedding(false);
+    }
+  };
+
+  const handleTestImage = async () => {
+    try {
+      const values = await form.validateFields();
+      setTestingImage(true);
+      const res = await settingsApi.testImage(buildLLMPayload(values));
+      const { ok, message: msg } = res.data;
+      setTestResult({ open: true, ok, text: msg, title: ok ? '生图模型连接成功' : '生图模型连接失败' });
+    } catch (e) {
+      if (e && typeof e === 'object' && 'errorFields' in e) return;
+      message.error('生图模型测试失败');
+    } finally {
+      setTestingImage(false);
     }
   };
 
@@ -228,6 +261,17 @@ export default function Settings() {
                 <Input placeholder={modelPlaceholder} />
               </Form.Item>
 
+              <Form.Item wrapperCol={{ offset: 6, span: 14 }}>
+                <Button
+                  icon={<ThunderboltOutlined />}
+                  onClick={() => void handleTestLLM()}
+                  loading={testingLLM}
+                  disabled={loading}
+                >
+                  测试主模型
+                </Button>
+              </Form.Item>
+
               <Divider orientation="left" plain>
                 向量嵌入设置
               </Divider>
@@ -253,6 +297,17 @@ export default function Settings() {
                   placeholder="可选 — 仅在与主 API 密钥不同时填写"
                   autoComplete="off"
                 />
+              </Form.Item>
+
+              <Form.Item wrapperCol={{ offset: 6, span: 14 }}>
+                <Button
+                  icon={<ThunderboltOutlined />}
+                  onClick={() => void handleTestEmbedding()}
+                  loading={testingEmbedding}
+                  disabled={loading}
+                >
+                  测试嵌入模型
+                </Button>
               </Form.Item>
 
               <Divider orientation="left" plain>
@@ -311,6 +366,21 @@ export default function Settings() {
                 />
               </Form.Item>
 
+              <Form.Item wrapperCol={{ offset: 6, span: 14 }}>
+                <Button
+                  icon={<ThunderboltOutlined />}
+                  onClick={() => void handleTestImage()}
+                  loading={testingImage}
+                  disabled={loading}
+                >
+                  测试生图模型
+                </Button>
+              </Form.Item>
+
+              <Divider orientation="left" plain>
+                生成参数
+              </Divider>
+
               <Form.Item
                 label="温度"
                 name="temperature"
@@ -339,25 +409,15 @@ export default function Settings() {
               </Form.Item>
 
               <Form.Item wrapperCol={{ offset: 6, span: 14 }} style={{ marginBottom: 0 }}>
-                <Space size="middle" wrap>
-                  <Button
-                    icon={<ThunderboltOutlined />}
-                    onClick={() => void handleTest()}
-                    loading={testing}
-                    disabled={loading}
-                  >
-                    测试连接
-                  </Button>
-                  <Button
-                    type="primary"
-                    icon={<SaveOutlined />}
-                    onClick={() => void handleSave()}
-                    loading={saving}
-                    disabled={loading}
-                  >
-                    保存设置
-                  </Button>
-                </Space>
+                <Button
+                  type="primary"
+                  icon={<SaveOutlined />}
+                  onClick={() => void handleSave()}
+                  loading={saving}
+                  disabled={loading}
+                >
+                  保存设置
+                </Button>
               </Form.Item>
             </Form>
           </Card>
@@ -365,7 +425,7 @@ export default function Settings() {
       </Space>
 
       <Modal
-        title={testResult.ok ? '连接成功' : '连接测试'}
+        title={testResult.title || '连接测试'}
         open={testResult.open}
         onCancel={() => setTestResult((s) => ({ ...s, open: false }))}
         footer={[
