@@ -451,16 +451,14 @@ async def build_scene_record_response(record: SceneGenerationRecord) -> dict[str
     }
 
 
-async def generate_scene_images(
+async def _create_scene_generation_record(
     primary_product: ProductEntry,
-    all_products: list[dict[str, Any]],
     user_request: str = "",
     scene_name: str = "",
     style_hint: str = "",
     related_product_ids: list[int] | None = None,
     conversation_id: int | None = None,
 ) -> SceneGenerationRecord:
-    cfg = await get_llm_settings()
     default_scene, default_style = _scene_defaults(primary_product)
     scene_name = scene_name.strip() or default_scene
     style_hint = style_hint.strip() or default_style
@@ -472,14 +470,42 @@ async def generate_scene_images(
         related_product_ids=related_product_ids,
     )
     if reusable:
-        logger.info(
-            "Reusing cached scene images for product %s scene=%s style=%s record=%s",
-            primary_product.id,
-            scene_name,
-            style_hint,
-            reusable.id,
-        )
         return reusable
+
+    record = SceneGenerationRecord(
+        conversation_id=conversation_id,
+        primary_product_id=primary_product.id,
+        scene_name=scene_name,
+        style_hint=style_hint,
+        request_text=user_request or "",
+        prompt_text="",
+        related_product_ids_json=json.dumps(related_product_ids or [], ensure_ascii=False),
+        output_paths_json="[]",
+        status="pending",
+        duration_ms=0,
+        error_message="",
+    )
+
+    async with AsyncSessionLocal() as db:
+        db.add(record)
+        await db.commit()
+        await db.refresh(record)
+        return record
+
+
+async def _run_scene_generation_for_record(
+    record_id: int,
+    primary_product: ProductEntry,
+    all_products: list[dict[str, Any]],
+    user_request: str = "",
+    scene_name: str = "",
+    style_hint: str = "",
+    related_product_ids: list[int] | None = None,
+) -> SceneGenerationRecord:
+    cfg = await get_llm_settings()
+    default_scene, default_style = _scene_defaults(primary_product)
+    scene_name = scene_name.strip() or default_scene
+    style_hint = style_hint.strip() or default_style
 
     candidate_products = [
         p for p in all_products
@@ -511,29 +537,23 @@ async def generate_scene_images(
     related_products = await _load_products(selected_related_ids)
     prompt = _build_scene_prompt(primary_product, related_products, scene_name, style_hint, user_request)
 
-    record = SceneGenerationRecord(
-        conversation_id=conversation_id,
-        primary_product_id=primary_product.id,
-        scene_name=scene_name,
-        style_hint=style_hint,
-        request_text=user_request or "",
-        prompt_text=prompt,
-        related_product_ids_json=json.dumps(selected_related_ids, ensure_ascii=False),
-        output_paths_json="[]",
-        status="pending",
-        duration_ms=0,
-        error_message="",
-    )
-
     async with AsyncSessionLocal() as db:
-        db.add(record)
+        current = await db.get(SceneGenerationRecord, record_id)
+        if not current:
+            raise RuntimeError(f"Scene generation record {record_id} not found")
+        current.scene_name = scene_name
+        current.style_hint = style_hint
+        current.request_text = user_request or ""
+        current.prompt_text = prompt
+        current.related_product_ids_json = json.dumps(selected_related_ids, ensure_ascii=False)
+        current.status = "pending"
+        current.error_message = ""
         await db.commit()
-        await db.refresh(record)
 
     start = time.perf_counter()
     output_paths: list[str] = []
     try:
-        upload_dir = _scene_upload_root() / str(record.id)
+        upload_dir = _scene_upload_root() / str(record_id)
         upload_dir.mkdir(parents=True, exist_ok=True)
         if (cfg.get("image_model") or "").startswith("kling/"):
             ref_urls = await _get_product_image_urls(primary_product.id, limit=3)
@@ -549,17 +569,19 @@ async def generate_scene_images(
             filename = f"{uuid.uuid4().hex}_{idx + 1}.png"
             full = upload_dir / filename
             full.write_bytes(binary)
-            rel = os.path.join("uploads", "generated_scenes", str(record.id), filename).replace("\\", "/")
+            rel = os.path.join("uploads", "generated_scenes", str(record_id), filename).replace("\\", "/")
             output_paths.append(rel)
 
         duration_ms = int((time.perf_counter() - start) * 1000)
         async with AsyncSessionLocal() as db:
-            current = await db.get(SceneGenerationRecord, record.id)
+            current = await db.get(SceneGenerationRecord, record_id)
+            if not current:
+                raise RuntimeError(f"Scene generation record {record_id} disappeared")
             await _save_record_images(db, current.id, binaries, ["image/png"] * len(binaries))
             current.output_paths_json = json.dumps(output_paths, ensure_ascii=False)
             current.duration_ms = duration_ms
             current.status = "completed"
-            current.updated_at = current.updated_at
+            current.error_message = ""
             await db.commit()
             await db.refresh(current)
             return current
@@ -567,10 +589,84 @@ async def generate_scene_images(
         duration_ms = int((time.perf_counter() - start) * 1000)
         logger.error("Scene image generation failed for product %s: %s", primary_product.id, e, exc_info=True)
         async with AsyncSessionLocal() as db:
-            current = await db.get(SceneGenerationRecord, record.id)
+            current = await db.get(SceneGenerationRecord, record_id)
+            if not current:
+                raise
             current.duration_ms = duration_ms
             current.status = "failed"
             current.error_message = str(e)[:2000]
             await db.commit()
             await db.refresh(current)
             return current
+
+
+async def start_scene_generation(
+    primary_product: ProductEntry,
+    all_products: list[dict[str, Any]],
+    user_request: str = "",
+    scene_name: str = "",
+    style_hint: str = "",
+    related_product_ids: list[int] | None = None,
+    conversation_id: int | None = None,
+) -> SceneGenerationRecord:
+    record = await _create_scene_generation_record(
+        primary_product=primary_product,
+        user_request=user_request,
+        scene_name=scene_name,
+        style_hint=style_hint,
+        related_product_ids=related_product_ids,
+        conversation_id=conversation_id,
+    )
+    if record.status == "completed":
+        return record
+
+    async def _job():
+        await _run_scene_generation_for_record(
+            record_id=record.id,
+            primary_product=primary_product,
+            all_products=all_products,
+            user_request=user_request,
+            scene_name=scene_name,
+            style_hint=style_hint,
+            related_product_ids=related_product_ids,
+        )
+
+    asyncio.create_task(_job())
+    return record
+
+
+async def generate_scene_images(
+    primary_product: ProductEntry,
+    all_products: list[dict[str, Any]],
+    user_request: str = "",
+    scene_name: str = "",
+    style_hint: str = "",
+    related_product_ids: list[int] | None = None,
+    conversation_id: int | None = None,
+) -> SceneGenerationRecord:
+    record = await _create_scene_generation_record(
+        primary_product=primary_product,
+        user_request=user_request,
+        scene_name=scene_name,
+        style_hint=style_hint,
+        related_product_ids=related_product_ids,
+        conversation_id=conversation_id,
+    )
+    if record.status == "completed":
+        logger.info(
+            "Reusing cached scene images for product %s scene=%s style=%s record=%s",
+            primary_product.id,
+            record.scene_name,
+            record.style_hint,
+            record.id,
+        )
+        return record
+    return await _run_scene_generation_for_record(
+        record_id=record.id,
+        primary_product=primary_product,
+        all_products=all_products,
+        user_request=user_request,
+        scene_name=scene_name,
+        style_hint=style_hint,
+        related_product_ids=related_product_ids,
+    )

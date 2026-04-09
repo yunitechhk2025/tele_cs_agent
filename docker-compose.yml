@@ -39,7 +39,7 @@ services:
     volumes:
       - chroma_data:/app/chroma_data
       - file_uploads:/app/uploads
-      - ./Furniture-Crawler/Furniture-Crawler:/app/Furniture-Crawler:ro
+      - ./Furniture-Crawler:/app/Furniture-Crawler:ro
     ports:
       - "8001:8000"
     depends_on:

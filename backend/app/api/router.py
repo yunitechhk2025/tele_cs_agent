@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import shutil
 import uuid
 from io import BytesIO
 from datetime import datetime, timedelta
@@ -48,7 +49,7 @@ from app.services.llm_service import (
     test_llm_connection, test_embedding_connection, test_image_connection,
     LLM_SETTING_KEYS, translate_text, detect_language,
 )
-from app.services.scene_service import generate_scene_images, build_scene_record_response
+from app.services.scene_service import generate_scene_images, build_scene_record_response, start_scene_generation
 from app.services import bot_manager
 
 logger = logging.getLogger(__name__)
@@ -1245,7 +1246,7 @@ async def scene_generator_generate(
         for e in all_result.scalars().all()
     ]
 
-    record = await generate_scene_images(
+    record = await start_scene_generation(
         primary_product=primary_product,
         all_products=all_products,
         user_request=req.user_request or "",
@@ -1271,14 +1272,54 @@ async def toggle_scene_library(
     return {"id": record.id, "in_library": record.in_library}
 
 
+@router.delete("/scene-generations/{record_id}")
+async def delete_scene_generation(
+    record_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: str = Depends(get_current_user),
+):
+    record = await db.get(SceneGenerationRecord, record_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="Scene record not found")
+
+    await db.execute(delete(SceneGenerationImage).where(SceneGenerationImage.record_id == record_id))
+    await db.delete(record)
+    await db.commit()
+
+    scene_dir = os.path.join(settings.FILE_STORAGE_DIR, "generated_scenes", str(record_id))
+    shutil.rmtree(scene_dir, ignore_errors=True)
+    return {"status": "deleted", "id": record_id}
+
+
+def _scene_view_clause(view: str):
+    if view == "review":
+        return (SceneGenerationRecord.status == "completed") & (SceneGenerationRecord.in_library == False)
+    if view == "generating":
+        return SceneGenerationRecord.status.in_(["pending", "failed"])
+    return (SceneGenerationRecord.status == "completed") & (SceneGenerationRecord.in_library == True)
+
+
+@router.get("/scene-generations/{record_id}", response_model=SceneGenerationRecordSchema)
+async def get_scene_generation(
+    record_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: str = Depends(get_current_user),
+):
+    record = await db.get(SceneGenerationRecord, record_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="Scene record not found")
+    return _record_to_schema(await build_scene_record_response(record))
+
+
 # ─── Scene Library ───────────────────────────────────────────────────────────
 
 @router.get("/scene-library/filters")
 async def scene_library_filters(
+    view: str = Query("library", pattern="^(library|review|generating)$"),
     db: AsyncSession = Depends(get_db),
     _: str = Depends(get_current_user),
 ):
-    lib_filter = (SceneGenerationRecord.status == "completed") & (SceneGenerationRecord.in_library == True)
+    lib_filter = _scene_view_clause(view)
 
     result = await db.execute(
         select(func.distinct(ProductEntry.brand))
@@ -1312,6 +1353,7 @@ async def scene_library_filters(
 
 @router.get("/scene-library", response_model=list[SceneLibraryItemSchema])
 async def list_scene_library(
+    view: str = Query("library", pattern="^(library|review|generating)$"),
     brand: Optional[str] = Query(None),
     space: Optional[str] = Query(None),
     style: Optional[str] = Query(None),
@@ -1324,8 +1366,7 @@ async def list_scene_library(
     query = (
         select(SceneGenerationRecord)
         .join(ProductEntry, SceneGenerationRecord.primary_product_id == ProductEntry.id)
-        .where(SceneGenerationRecord.status == "completed")
-        .where(SceneGenerationRecord.in_library == True)
+        .where(_scene_view_clause(view))
     )
     if brand:
         query = query.where(ProductEntry.brand == brand)
@@ -1347,6 +1388,7 @@ async def list_scene_library(
         image_urls = resp.get("image_urls", [])
         items.append(SceneLibraryItemSchema(
             id=record.id,
+            conversation_id=record.conversation_id,
             primary_product_id=record.primary_product_id,
             primary_product_name=resp.get("primary_product_name", ""),
             primary_product_brand=primary.brand if primary else "",
@@ -1354,10 +1396,15 @@ async def list_scene_library(
             primary_product_style=primary.style if primary else "",
             scene_name=record.scene_name or "",
             style_hint=record.style_hint or "",
+            request_text=record.request_text or "",
             related_products=resp.get("related_products", []),
             image_urls=image_urls,
             cover_url=image_urls[0] if image_urls else "",
             duration_ms=record.duration_ms or 0,
+            status=record.status or "",
+            in_library=bool(record.in_library),
+            error_message=record.error_message or "",
             created_at=record.created_at,
+            updated_at=record.updated_at,
         ))
     return items

@@ -187,6 +187,7 @@ export interface SceneGeneratorRequest {
 
 export interface SceneLibraryItem {
   id: number;
+  conversation_id: number | null;
   primary_product_id: number;
   primary_product_name: string;
   primary_product_brand: string;
@@ -194,11 +195,16 @@ export interface SceneLibraryItem {
   primary_product_style: string;
   scene_name: string;
   style_hint: string;
+  request_text: string;
   related_products: ProductLink[];
   image_urls: string[];
   cover_url: string;
   duration_ms: number;
+  status: string;
+  in_library: boolean;
+  error_message: string;
   created_at: string;
+  updated_at: string;
 }
 
 export interface SceneLibraryFilters {

@@ -171,13 +171,18 @@ export const productApi = {
 export const sceneGeneratorApi = {
   generate: (data: SceneGeneratorRequest) =>
     api.post<SceneGenerationRecord>('/scene-generator/generate', data),
+  get: (recordId: number) =>
+    api.get<SceneGenerationRecord>(`/scene-generations/${recordId}`),
+  delete: (recordId: number) =>
+    api.delete<{ status: string; id: number }>(`/scene-generations/${recordId}`),
   toggleLibrary: (recordId: number) =>
     api.post<{ id: number; in_library: boolean }>(`/scene-generations/${recordId}/toggle-library`),
 };
 
 export const sceneLibraryApi = {
-  filters: () => api.get<SceneLibraryFilters>('/scene-library/filters'),
-  list: (params?: { brand?: string; space?: string; style?: string; scene_name?: string; skip?: number; limit?: number }) =>
+  filters: (params?: { view?: 'library' | 'review' | 'generating' }) =>
+    api.get<SceneLibraryFilters>('/scene-library/filters', { params }),
+  list: (params?: { view?: 'library' | 'review' | 'generating'; brand?: string; space?: string; style?: string; scene_name?: string; skip?: number; limit?: number }) =>
     api.get<SceneLibraryItem[]>('/scene-library', { params }),
 };
 

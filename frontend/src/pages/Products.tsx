@@ -23,6 +23,7 @@ import {
 import {
   CheckCircleOutlined,
   CloseOutlined,
+  ClockCircleOutlined,
   ReloadOutlined,
   SearchOutlined,
   ShoppingCartOutlined,
@@ -30,6 +31,7 @@ import {
   StarOutlined,
   StarFilled,
 } from '@ant-design/icons';
+import { useNavigate } from 'react-router-dom';
 import { productApi, sceneGeneratorApi } from '../api';
 import type { ProductEntry, SceneGenerationRecord, ProductImageRef } from '../types';
 
@@ -48,6 +50,7 @@ function tagColor(label: string) {
 }
 
 export default function Products() {
+  const navigate = useNavigate();
   const [loading, setLoading] = useState(false);
   const [products, setProducts] = useState<ProductEntry[]>([]);
   const [keyword, setKeyword] = useState('');
@@ -211,6 +214,9 @@ export default function Products() {
         user_request: genUserRequest || undefined,
       });
       setGenResult(res.data);
+      if (res.data.status === 'pending') {
+        message.success('生成任务已创建，可前往“场景图管理 > 生成中”查看进度');
+      }
     } catch (e: unknown) {
       const detail = (e as { response?: { data?: { detail?: string } } }).response?.data?.detail;
       message.error(detail ? `生成失败: ${detail.slice(0, 200)}` : '场景生成失败');
@@ -786,7 +792,7 @@ export default function Products() {
               <div style={{ textAlign: 'center', padding: 60 }}>
                 <Spin size="large" />
                 <div style={{ marginTop: 16, color: '#666' }}>场景图生成中，请耐心等待...</div>
-                <div style={{ marginTop: 8, color: '#999', fontSize: 12 }}>通常需要 30~120 秒</div>
+                <div style={{ marginTop: 8, color: '#999', fontSize: 12 }}>任务创建后会自动转入“场景图管理”的生成中列表</div>
               </div>
             ) : genResult ? (
               <div>
@@ -837,6 +843,31 @@ export default function Products() {
                       </Space>
                     </div>
                   </>
+                ) : genResult.status === 'pending' ? (
+                  <Result
+                    status="info"
+                    icon={<ClockCircleOutlined />}
+                    title="生成任务已提交"
+                    subTitle="场景图正在后台生成。你可以关闭当前窗口，去“场景图管理 > 生成中”查看进度；生成完成后会自动流转到“待加入场景库”。"
+                    extra={[
+                      <Button
+                        key="goto-scenes"
+                        type="primary"
+                        onClick={() => {
+                          setGenModalOpen(false);
+                          navigate('/scenes?tab=generating');
+                        }}
+                      >
+                        去生成中查看
+                      </Button>,
+                      <Button key="close" onClick={() => setGenModalOpen(false)}>
+                        关闭
+                      </Button>,
+                      <Button key="retry" onClick={openGenModal}>
+                        继续新建
+                      </Button>,
+                    ]}
+                  />
                 ) : (
                   <Result
                     status="error"
