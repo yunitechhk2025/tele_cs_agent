@@ -25,7 +25,7 @@ LLM_SETTING_KEYS = {
     "image_model": "gpt-image-1",
     "image_base_url": settings.OPENAI_BASE_URL,
     "image_api_key": "",
-    "image_size": "1536x1024",
+    "image_size": "1024x1024",
     "image_quality": "high",
     "image_style": "natural",
 }

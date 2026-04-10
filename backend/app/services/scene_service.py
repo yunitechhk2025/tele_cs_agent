@@ -203,7 +203,7 @@ def _build_scene_prompt(
 async def _generate_image_binary(prompt: str, cfg: dict[str, str]) -> bytes:
     client = build_image_client(cfg)
     model = cfg.get("image_model") or cfg.get("llm_model", "gpt-image-1")
-    size = cfg.get("image_size") or "1536x1024"
+    size = cfg.get("image_size") or "1024x1024"
     quality = cfg.get("image_quality") or "high"
     style = cfg.get("image_style") or "natural"
 
@@ -283,8 +283,8 @@ async def _generate_dashscope_kling_images(
         },
         "parameters": {
             "n": count,
-            "aspect_ratio": _aspect_ratio_from_size(cfg.get("image_size", "1536x1024")),
-            "resolution": _resolution_from_size(cfg.get("image_size", "1536x1024")),
+            "aspect_ratio": _aspect_ratio_from_size(cfg.get("image_size", "1024x1024")),
+            "resolution": _resolution_from_size(cfg.get("image_size", "1024x1024")),
             "watermark": False,
         },
     }

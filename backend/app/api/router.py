@@ -633,7 +633,7 @@ async def get_settings_llm(_: str = Depends(get_current_user)):
         image_model=cfg.get("image_model", "gpt-image-1"),
         image_base_url=cfg.get("image_base_url", cfg.get("llm_base_url", "")),
         image_api_key=masked_image_key,
-        image_size=cfg.get("image_size", "1536x1024"),
+        image_size=cfg.get("image_size", "1024x1024"),
         image_quality=cfg.get("image_quality", "high"),
         image_style=cfg.get("image_style", "natural"),
         temperature=float(cfg.get("llm_temperature", "0.7")),
@@ -706,7 +706,7 @@ async def test_image_endpoint(req: LLMSettingsUpdateRequest, _: str = Depends(ge
     api_key = req.image_api_key if (req.image_api_key and "****" not in req.image_api_key) else cfg.get("image_api_key", "") or cfg.get("llm_api_key", "")
     base_url = req.image_base_url or cfg.get("image_base_url", "") or cfg.get("llm_base_url", "")
     model = req.image_model or cfg.get("image_model", "gpt-image-1")
-    size = req.image_size or cfg.get("image_size", "1536x1024")
+    size = req.image_size or cfg.get("image_size", "1024x1024")
     quality = req.image_quality or cfg.get("image_quality", "high")
     return await test_image_connection(api_key, base_url, model, size, quality)
 

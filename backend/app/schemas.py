@@ -139,7 +139,7 @@ class LLMSettingsSchema(BaseModel):
     image_model: str = "gpt-image-1"
     image_base_url: str = "https://api.openai.com/v1"
     image_api_key: str = ""
-    image_size: str = "1536x1024"
+    image_size: str = "1024x1024"
     image_quality: str = "high"
     image_style: str = "natural"
     temperature: float = 0.7
