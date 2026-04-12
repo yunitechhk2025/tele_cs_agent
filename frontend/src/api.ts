@@ -1,6 +1,6 @@
 import axios from 'axios';
 import type {
-  Conversation, ConversationDetail, KnowledgeEntry,
+  Conversation, ConversationDetail, KnowledgeEntry, Message,
   Contract, ContractTemplate, DashboardStats, LLMSettings, FileEntry, TelegramBot,
   ProductEntry, SceneGenerationRecord, SceneLibraryItem, SceneLibraryFilters,
   SceneGeneratorRequest,
@@ -184,6 +184,21 @@ export const sceneLibraryApi = {
     api.get<SceneLibraryFilters>('/scene-library/filters', { params }),
   list: (params?: { view?: 'library' | 'review' | 'generating'; brand?: string; space?: string; style?: string; scene_name?: string; skip?: number; limit?: number }) =>
     api.get<SceneLibraryItem[]>('/scene-library', { params }),
+};
+
+export const simulatorApi = {
+  createSession: (botId: number, language?: string) =>
+    api.post<{ conversation_id: number; telegram_chat_id: string }>('/simulator/sessions', {
+      bot_id: botId,
+      language: language || 'zh',
+    }),
+  sendMessage: (conversationId: number, text: string) =>
+    api.post<{ conversation_id: number; outgoing: Array<Record<string, unknown>> }>(
+      `/simulator/sessions/${conversationId}/send`,
+      { text },
+    ),
+  getMessages: (conversationId: number) =>
+    api.get<Message[]>(`/simulator/sessions/${conversationId}/messages`),
 };
 
 export default api;

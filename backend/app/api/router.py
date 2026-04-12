@@ -12,7 +12,7 @@ import jwt
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.responses import FileResponse, Response
-from sqlalchemy import select, func, desc
+from sqlalchemy import select, func, desc, delete, not_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -26,6 +26,8 @@ from app.schemas import (
     LoginRequest, TokenResponse, ConversationSchema, ConversationDetailSchema,
     ReplyRequest, KnowledgeEntrySchema, KnowledgeCreateRequest,
     ContractSchema, ContractUpdateRequest, ContractGenerateRequest, SendContractRequest, DashboardStats,
+    TelegramSimulatorSessionCreate, TelegramSimulatorSessionResponse,
+    TelegramSimulatorSendRequest, TelegramSimulatorSendResponse,
     LLMSettingsSchema, LLMSettingsUpdateRequest,
     FileEntrySchema, FileEntryUpdateRequest,
     TelegramBotSchema, TelegramBotCreateRequest, TelegramBotUpdateRequest,
@@ -51,6 +53,7 @@ from app.services.llm_service import (
 )
 from app.services.scene_service import generate_scene_images, build_scene_record_response, start_scene_generation
 from app.services import bot_manager
+from app.telegram_bot import process_customer_text_message, SimulatorOutbound, save_message as tg_save_message
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -94,19 +97,32 @@ async def login(req: LoginRequest):
 
 # ─── Dashboard ───────────────────────────────────────────────────────────────
 
+def _not_simulator_conversation():
+    return not_(Conversation.telegram_chat_id.like("sim-%"))
+
+
 @router.get("/dashboard/stats", response_model=DashboardStats)
 async def dashboard_stats(
     db: AsyncSession = Depends(get_db),
     _: str = Depends(get_current_user),
 ):
-    total_conv = await db.scalar(select(func.count(Conversation.id)))
+    ns = _not_simulator_conversation()
+    total_conv = await db.scalar(select(func.count(Conversation.id)).where(ns))
     active_conv = await db.scalar(
-        select(func.count(Conversation.id)).where(Conversation.status == ConversationStatus.ACTIVE)
+        select(func.count(Conversation.id)).where(
+            Conversation.status == ConversationStatus.ACTIVE,
+            ns,
+        )
     )
     pending = await db.scalar(
-        select(func.count(Conversation.id)).where(Conversation.status == ConversationStatus.PENDING_HUMAN)
+        select(func.count(Conversation.id)).where(
+            Conversation.status == ConversationStatus.PENDING_HUMAN,
+            ns,
+        )
     )
-    total_msg = await db.scalar(select(func.count(Message.id)))
+    total_msg = await db.scalar(
+        select(func.count(Message.id)).join(Conversation, Message.conversation_id == Conversation.id).where(ns)
+    )
     total_kb = await db.scalar(select(func.count(KnowledgeEntry.id)))
     total_contracts = await db.scalar(select(func.count(Contract.id)))
     total_files = await db.scalar(select(func.count(FileEntry.id)))
@@ -116,7 +132,7 @@ async def dashboard_stats(
     )
 
     recent = await db.execute(
-        select(Conversation).order_by(desc(Conversation.updated_at)).limit(10)
+        select(Conversation).where(ns).order_by(desc(Conversation.updated_at)).limit(10)
     )
 
     return DashboardStats(
@@ -141,11 +157,14 @@ async def dashboard_stats(
 async def list_conversations(
     status: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
+    include_simulator: bool = Query(False),
     skip: int = 0, limit: int = 50,
     db: AsyncSession = Depends(get_db),
     _: str = Depends(get_current_user),
 ):
     query = select(Conversation).order_by(desc(Conversation.updated_at))
+    if not include_simulator:
+        query = query.where(_not_simulator_conversation())
     if status:
         query = query.where(Conversation.status == status)
     if search:
@@ -310,6 +329,90 @@ async def close_conversation(
     conversation.status = ConversationStatus.CLOSED
     await db.commit()
     return {"status": "closed"}
+
+
+# ─── Telegram simulator (dashboard) ─────────────────────────────────────────
+
+@router.post("/telegram-simulator/sessions", response_model=TelegramSimulatorSessionResponse)
+async def telegram_simulator_create_session(
+    req: TelegramSimulatorSessionCreate,
+    db: AsyncSession = Depends(get_db),
+    _: str = Depends(get_current_user),
+):
+    bot = await db.get(TelegramBot, req.bot_id)
+    if not bot:
+        raise HTTPException(status_code=404, detail="Bot not found")
+    lang = (req.language or "zh").strip()[:10] or "zh"
+    chat_id = f"sim-{uuid.uuid4().hex}"
+    conv = Conversation(
+        bot_id=req.bot_id,
+        telegram_chat_id=chat_id,
+        telegram_user_id="sim",
+        username="simulator",
+        first_name="模拟客户",
+        last_name=None,
+        language=lang,
+    )
+    db.add(conv)
+    await db.commit()
+    await db.refresh(conv)
+    return TelegramSimulatorSessionResponse(conversation_id=conv.id, telegram_chat_id=chat_id)
+
+
+@router.post(
+    "/telegram-simulator/sessions/{conversation_id}/messages",
+    response_model=TelegramSimulatorSendResponse,
+)
+async def telegram_simulator_send_message(
+    conversation_id: int,
+    req: TelegramSimulatorSendRequest,
+    db: AsyncSession = Depends(get_db),
+    _: str = Depends(get_current_user),
+):
+    conv = await db.get(Conversation, conversation_id)
+    if not conv or not (conv.telegram_chat_id or "").startswith("sim-"):
+        raise HTTPException(status_code=404, detail="Simulator session not found")
+    if conv.bot_id is None:
+        raise HTTPException(status_code=400, detail="Session has no bot_id")
+    text = (req.text or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Message text is required")
+
+    try:
+        language = await detect_language(text)
+    except Exception:
+        language = conv.language or "en"
+
+    try:
+        row = await db.get(Conversation, conversation_id)
+        if row:
+            row.language = language
+            await db.commit()
+    except Exception as e:
+        logger.error("Simulator: failed to update language: %s", e, exc_info=True)
+
+    await tg_save_message(conversation_id, MessageRole.USER, text, language)
+
+    fresh = await db.get(Conversation, conversation_id)
+    current_status = fresh.status if fresh else ConversationStatus.ACTIVE
+
+    outbound = SimulatorOutbound()
+    stop_typing = asyncio.Event()
+    stop_typing.set()
+    typing_task = asyncio.create_task(asyncio.sleep(0))
+    await process_customer_text_message(
+        bot_id=conv.bot_id,
+        conversation_id=conversation_id,
+        user_message=text,
+        language=language,
+        current_status=current_status,
+        outbound=outbound,
+        run_notify_admin=False,
+        notify_bot=None,
+        stop_typing=stop_typing,
+        typing_task=typing_task,
+    )
+    return TelegramSimulatorSendResponse(conversation_id=conversation_id, outgoing=outbound.events)
 
 
 # ─── Knowledge Base ──────────────────────────────────────────────────────────
@@ -1408,3 +1511,128 @@ async def list_scene_library(
             updated_at=record.updated_at,
         ))
     return items
+
+
+# ─── Telegram Simulator ──────────────────────────────────────────────────────
+
+SIM_CHAT_PREFIX = "sim-"
+
+
+@router.post("/simulator/sessions", response_model=TelegramSimulatorSessionResponse)
+async def simulator_create_session(
+    req: TelegramSimulatorSessionCreate,
+    db: AsyncSession = Depends(get_db),
+    _: str = Depends(get_current_user),
+):
+    """Create a fake conversation that mirrors Telegram flow but runs inside the dashboard."""
+    bot = await db.get(TelegramBot, req.bot_id)
+    if not bot:
+        raise HTTPException(status_code=404, detail="Bot not found")
+
+    sim_chat_id = f"{SIM_CHAT_PREFIX}{uuid.uuid4().hex[:12]}"
+    sim_user_id = sim_chat_id
+
+    from app.telegram_bot import get_or_create_conversation, WELCOME_MESSAGES, save_message
+
+    conversation = await get_or_create_conversation(
+        bot_id=req.bot_id,
+        chat_id=sim_chat_id,
+        user_id=sim_user_id,
+        username="simulator",
+        first_name="模拟用户",
+        last_name="",
+        language=req.language or "zh",
+    )
+    welcome = bot.welcome_message if bot.welcome_message else WELCOME_MESSAGES.get(req.language or "zh", WELCOME_MESSAGES["en"])
+    await save_message(conversation.id, MessageRole.ASSISTANT, welcome, req.language or "zh")
+
+    return TelegramSimulatorSessionResponse(
+        conversation_id=conversation.id,
+        telegram_chat_id=sim_chat_id,
+    )
+
+
+@router.post("/simulator/sessions/{conversation_id}/send", response_model=TelegramSimulatorSendResponse)
+async def simulator_send_message(
+    conversation_id: int,
+    req: TelegramSimulatorSendRequest,
+    db: AsyncSession = Depends(get_db),
+    _: str = Depends(get_current_user),
+):
+    """Send a customer message and get back the full AI pipeline response list."""
+    conv = await db.get(Conversation, conversation_id)
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    if not (conv.telegram_chat_id or "").startswith(SIM_CHAT_PREFIX):
+        raise HTTPException(status_code=400, detail="Not a simulator conversation")
+
+    from app.telegram_bot import (
+        process_customer_text_message, SimulatorOutbound,
+        save_message,
+    )
+
+    user_message = req.text.strip()
+    if not user_message:
+        raise HTTPException(status_code=400, detail="Empty message")
+
+    try:
+        language = await detect_language(user_message)
+    except Exception:
+        language = conv.language or "en"
+
+    async with AsyncSessionLocal() as sess:
+        c = await sess.get(Conversation, conversation_id)
+        if c:
+            c.language = language
+            await sess.commit()
+
+    await save_message(conversation_id, MessageRole.USER, user_message, language)
+
+    async with AsyncSessionLocal() as sess:
+        c = await sess.get(Conversation, conversation_id)
+        current_status = c.status if c else ConversationStatus.ACTIVE
+
+    stop_typing = asyncio.Event()
+    stop_typing.set()
+
+    async def _noop():
+        pass
+
+    noop_task = asyncio.ensure_future(_noop())
+
+    outbound = SimulatorOutbound()
+    await process_customer_text_message(
+        bot_id=conv.bot_id or 0,
+        conversation_id=conversation_id,
+        user_message=user_message,
+        language=language,
+        current_status=current_status,
+        outbound=outbound,
+        run_notify_admin=False,
+        notify_bot=None,
+        stop_typing=stop_typing,
+        typing_task=noop_task,
+    )
+
+    return TelegramSimulatorSendResponse(
+        conversation_id=conversation_id,
+        outgoing=outbound.events,
+    )
+
+
+@router.get("/simulator/sessions/{conversation_id}/messages")
+async def simulator_get_messages(
+    conversation_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: str = Depends(get_current_user),
+):
+    """Return all messages for a simulator conversation."""
+    conv = await db.get(Conversation, conversation_id)
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    result = await db.execute(
+        select(Message).where(Message.conversation_id == conversation_id).order_by(Message.created_at)
+    )
+    messages = result.scalars().all()
+    from app.schemas import MessageSchema
+    return [MessageSchema.model_validate(m) for m in messages]

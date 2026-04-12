@@ -168,7 +168,26 @@ def build_image_client(cfg: dict[str, str] | None = None) -> AsyncOpenAI:
 
 # ─── Public API (used by bot and other services) ─────────────────────────────
 
+def _heuristic_language(text: str) -> str | None:
+    """Fast character-based language detection as fallback."""
+    import re
+    if re.search(r'[\u4e00-\u9fff]', text):
+        return "zh"
+    if re.search(r'[\u3040-\u30ff]', text):
+        return "ja"
+    if re.search(r'[\uac00-\ud7af]', text):
+        return "ko"
+    if re.search(r'[\u0600-\u06ff]', text):
+        return "ar"
+    if re.search(r'[\u0400-\u04ff]', text):
+        return "ru"
+    return None
+
+
 async def detect_language(text: str) -> str:
+    heuristic = _heuristic_language(text)
+    if heuristic:
+        return heuristic
     try:
         result = await _chat_completion(
             messages=[

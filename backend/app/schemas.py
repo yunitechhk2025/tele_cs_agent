@@ -1,6 +1,6 @@
 from datetime import datetime
-from typing import Optional
-from pydantic import BaseModel
+from typing import Any, Optional
+from pydantic import BaseModel, Field
 
 
 class LoginRequest(BaseModel):
@@ -124,6 +124,25 @@ class DashboardStats(BaseModel):
     total_bots: int
     active_bots: int
     recent_conversations: list[ConversationSchema]
+
+
+class TelegramSimulatorSessionCreate(BaseModel):
+    bot_id: int
+    language: Optional[str] = "zh"
+
+
+class TelegramSimulatorSessionResponse(BaseModel):
+    conversation_id: int
+    telegram_chat_id: str
+
+
+class TelegramSimulatorSendRequest(BaseModel):
+    text: str
+
+
+class TelegramSimulatorSendResponse(BaseModel):
+    conversation_id: int
+    outgoing: list[dict[str, Any]] = Field(default_factory=list)
 
 
 # ─── LLM Settings ────────────────────────────────────────────────────────────

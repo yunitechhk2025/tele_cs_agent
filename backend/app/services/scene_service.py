@@ -5,12 +5,13 @@ import logging
 import os
 import time
 import uuid
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
 import httpx
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 
 from app.config import get_settings
 from app.database import AsyncSessionLocal
@@ -23,6 +24,8 @@ from app.services.llm_service import (
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
+
+_running_tasks: dict[int, asyncio.Task] = {}
 
 
 def _scene_upload_root() -> Path:
@@ -89,6 +92,23 @@ def _mime_type_from_filename(name: str) -> str:
         ".jpeg": "image/jpeg",
         ".webp": "image/webp",
     }.get(ext, "image/png")
+
+
+def _reference_items_to_data_urls(items: list[dict[str, Any]], limit: int = 5) -> list[str]:
+    """Build data: URLs from admin-selected local reference images for DashScope Kling."""
+    urls: list[str] = []
+    for item in items[:limit]:
+        path = (item.get("full_path") or "").strip()
+        if not path or not os.path.isfile(path):
+            continue
+        try:
+            data = Path(path).read_bytes()
+        except OSError:
+            continue
+        mime = _mime_type_from_filename(path)
+        b64 = base64.b64encode(data).decode("ascii")
+        urls.append(f"data:{mime};base64,{b64}")
+    return urls
 
 
 async def _download_remote_binary(
@@ -472,19 +492,21 @@ async def _create_scene_generation_record(
     style_hint: str = "",
     related_product_ids: list[int] | None = None,
     conversation_id: int | None = None,
+    allow_reuse: bool = True,
 ) -> SceneGenerationRecord:
     default_scene, default_style = _scene_defaults(primary_product)
     scene_name = scene_name.strip() or default_scene
     style_hint = style_hint.strip() or default_style
 
-    reusable = await _find_reusable_record(
-        primary_product_id=primary_product.id,
-        scene_name=scene_name,
-        style_hint=style_hint,
-        related_product_ids=related_product_ids,
-    )
-    if reusable:
-        return reusable
+    if allow_reuse:
+        reusable = await _find_reusable_record(
+            primary_product_id=primary_product.id,
+            scene_name=scene_name,
+            style_hint=style_hint,
+            related_product_ids=related_product_ids,
+        )
+        if reusable:
+            return reusable
 
     record = SceneGenerationRecord(
         conversation_id=conversation_id,
@@ -515,6 +537,7 @@ async def _run_scene_generation_for_record(
     scene_name: str = "",
     style_hint: str = "",
     related_product_ids: list[int] | None = None,
+    reference_image_items: list[dict[str, Any]] | None = None,
 ) -> SceneGenerationRecord:
     cfg = await get_llm_settings()
     default_scene, default_style = _scene_defaults(primary_product)
@@ -570,11 +593,14 @@ async def _run_scene_generation_for_record(
         upload_dir = _scene_upload_root() / str(record_id)
         upload_dir.mkdir(parents=True, exist_ok=True)
         if (cfg.get("image_model") or "").startswith("kling/"):
-            ref_urls = await _get_product_image_urls(primary_product.id, limit=2)
-            for rp in related_products[:3]:
-                rp_urls = await _get_product_image_urls(rp.id, limit=1)
-                ref_urls.extend(rp_urls)
-            ref_urls = ref_urls[:5]
+            if reference_image_items:
+                ref_urls = _reference_items_to_data_urls(reference_image_items, limit=5)
+            else:
+                ref_urls = await _get_product_image_urls(primary_product.id, limit=2)
+                for rp in related_products[:3]:
+                    rp_urls = await _get_product_image_urls(rp.id, limit=1)
+                    ref_urls.extend(rp_urls)
+                ref_urls = ref_urls[:5]
             if ref_urls:
                 logger.info(
                     "Using %d reference image(s): primary=%s + %d related products",
@@ -627,6 +653,8 @@ async def start_scene_generation(
     style_hint: str = "",
     related_product_ids: list[int] | None = None,
     conversation_id: int | None = None,
+    reference_image_items: list[dict[str, Any]] | None = None,
+    allow_reuse: bool = True,
 ) -> SceneGenerationRecord:
     record = await _create_scene_generation_record(
         primary_product=primary_product,
@@ -635,23 +663,32 @@ async def start_scene_generation(
         style_hint=style_hint,
         related_product_ids=related_product_ids,
         conversation_id=conversation_id,
+        allow_reuse=allow_reuse,
     )
     if record.status == "completed":
         return record
 
     async def _job():
-        await _run_scene_generation_for_record(
-            record_id=record.id,
-            primary_product=primary_product,
-            all_products=all_products,
-            user_request=user_request,
-            scene_name=scene_name,
-            style_hint=style_hint,
-            related_product_ids=related_product_ids,
-        )
+        try:
+            await _run_scene_generation_for_record(
+                record_id=record.id,
+                primary_product=primary_product,
+                all_products=all_products,
+                user_request=user_request,
+                scene_name=scene_name,
+                style_hint=style_hint,
+                related_product_ids=related_product_ids,
+                reference_image_items=reference_image_items,
+            )
+        finally:
+            _running_tasks.pop(record.id, None)
 
-    asyncio.create_task(_job())
+    task = asyncio.create_task(_job())
+    _running_tasks[record.id] = task
     return record
+
+
+CUSTOMER_SCENE_TIMEOUT_SECONDS = 300.0
 
 
 async def generate_scene_images(
@@ -662,6 +699,8 @@ async def generate_scene_images(
     style_hint: str = "",
     related_product_ids: list[int] | None = None,
     conversation_id: int | None = None,
+    timeout_seconds: float | None = None,
+    reference_image_items: list[dict[str, Any]] | None = None,
 ) -> SceneGenerationRecord:
     record = await _create_scene_generation_record(
         primary_product=primary_product,
@@ -670,6 +709,7 @@ async def generate_scene_images(
         style_hint=style_hint,
         related_product_ids=related_product_ids,
         conversation_id=conversation_id,
+        allow_reuse=True,
     )
     if record.status == "completed":
         logger.info(
@@ -680,7 +720,7 @@ async def generate_scene_images(
             record.id,
         )
         return record
-    return await _run_scene_generation_for_record(
+    coro = _run_scene_generation_for_record(
         record_id=record.id,
         primary_product=primary_product,
         all_products=all_products,
@@ -688,4 +728,60 @@ async def generate_scene_images(
         scene_name=scene_name,
         style_hint=style_hint,
         related_product_ids=related_product_ids,
+        reference_image_items=reference_image_items,
     )
+    if timeout_seconds is not None and timeout_seconds > 0:
+        return await asyncio.wait_for(coro, timeout=timeout_seconds)
+    return await coro
+
+
+async def _get_selected_reference_items(refs: list[dict[str, int]]) -> list[dict[str, Any]]:
+    """Validate and return image paths for user-selected product image references."""
+    items: list[dict[str, Any]] = []
+    async with AsyncSessionLocal() as db:
+        for ref in refs:
+            pid = ref["product_id"]
+            order = ref.get("image_order", 0)
+            result = await db.execute(
+                select(ProductImage)
+                .where(ProductImage.product_entry_id == pid, ProductImage.display_order == order)
+            )
+            img = result.scalar_one_or_none()
+            if not img:
+                continue
+            full_path = os.path.join("/app", img.local_path)
+            if not os.path.exists(full_path):
+                continue
+            items.append({
+                "product_id": pid,
+                "image_order": order,
+                "local_path": img.local_path,
+                "full_path": full_path,
+            })
+    return items
+
+
+async def cancel_scene_generation_task(record_id: int):
+    """Cancel a running generation task if one exists."""
+    task = _running_tasks.pop(record_id, None)
+    if task and not task.done():
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+
+async def cleanup_stale_pending_scene_generations():
+    """Mark pending records older than 30 minutes as failed."""
+    cutoff = datetime.utcnow() - timedelta(minutes=30)
+    async with AsyncSessionLocal() as db:
+        await db.execute(
+            update(SceneGenerationRecord)
+            .where(
+                SceneGenerationRecord.status == "pending",
+                SceneGenerationRecord.created_at < cutoff,
+            )
+            .values(status="failed", error_message="Generation timed out")
+        )
+        await db.commit()
