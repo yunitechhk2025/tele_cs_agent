@@ -51,8 +51,9 @@ services:
   frontend:
     build: ./frontend
     restart: always
+    # 3001 常被 Typebot 等占用；改用 3010，可按需改成其它未占用端口
     ports:
-      - "3001:80"
+      - "3010:80"
     depends_on:
       - backend
 
