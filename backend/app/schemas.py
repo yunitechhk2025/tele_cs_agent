@@ -332,6 +332,20 @@ class SceneGeneratorRequest(BaseModel):
     user_request: Optional[str] = None
 
 
+class SceneBatchActionRequest(BaseModel):
+    record_ids: list[int]
+    action: str
+
+
+class SceneBatchActionResponse(BaseModel):
+    action: str
+    requested_count: int
+    success_count: int
+    failed_count: int
+    affected_ids: list[int] = []
+    failed_ids: list[int] = []
+
+
 class SceneLibraryItemSchema(BaseModel):
     id: int
     conversation_id: Optional[int] = None

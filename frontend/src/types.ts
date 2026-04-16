@@ -213,3 +213,12 @@ export interface SceneLibraryFilters {
   styles: string[];
   scene_names: string[];
 }
+
+export interface SceneBatchActionResponse {
+  action: string;
+  requested_count: number;
+  success_count: number;
+  failed_count: number;
+  affected_ids: number[];
+  failed_ids: number[];
+}

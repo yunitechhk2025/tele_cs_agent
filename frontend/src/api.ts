@@ -3,7 +3,7 @@ import type {
   Conversation, ConversationDetail, KnowledgeEntry,
   Contract, ContractTemplate, DashboardStats, LLMSettings, FileEntry, TelegramBot,
   ProductEntry, SceneGenerationRecord, SceneLibraryItem, SceneLibraryFilters,
-  SceneGeneratorRequest,
+  SceneGeneratorRequest, SceneBatchActionResponse,
 } from './types';
 
 const api = axios.create({ baseURL: '/api' });
@@ -173,16 +173,20 @@ export const sceneGeneratorApi = {
     api.post<SceneGenerationRecord>('/scene-generator/generate', data),
   get: (recordId: number) =>
     api.get<SceneGenerationRecord>(`/scene-generations/${recordId}`),
+  retry: (recordId: number) =>
+    api.post<SceneGenerationRecord>(`/scene-generations/${recordId}/retry`),
   delete: (recordId: number) =>
     api.delete<{ status: string; id: number }>(`/scene-generations/${recordId}`),
   toggleLibrary: (recordId: number) =>
     api.post<{ id: number; in_library: boolean }>(`/scene-generations/${recordId}/toggle-library`),
+  batchAction: (data: { record_ids: number[]; action: 'delete' | 'add_to_library' | 'remove_from_library' | 'retry' }) =>
+    api.post<SceneBatchActionResponse>('/scene-generations/batch', data),
 };
 
 export const sceneLibraryApi = {
-  filters: (params?: { view?: 'library' | 'review' | 'generating' }) =>
+  filters: (params?: { view?: 'library' | 'review' | 'generating' | 'failed' }) =>
     api.get<SceneLibraryFilters>('/scene-library/filters', { params }),
-  list: (params?: { view?: 'library' | 'review' | 'generating'; brand?: string; space?: string; style?: string; scene_name?: string; skip?: number; limit?: number }) =>
+  list: (params?: { view?: 'library' | 'review' | 'generating' | 'failed'; brand?: string; space?: string; style?: string; scene_name?: string; skip?: number; limit?: number }) =>
     api.get<SceneLibraryItem[]>('/scene-library', { params }),
 };
 

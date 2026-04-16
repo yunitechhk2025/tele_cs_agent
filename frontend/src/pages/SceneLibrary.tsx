@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Badge,
   Button,
   Card,
+  Checkbox,
   Col,
   Empty,
   Image,
@@ -25,7 +26,7 @@ import type { SceneLibraryFilters, SceneLibraryItem } from '../types';
 const { Text, Title } = Typography;
 const { Option } = Select;
 
-type SceneTabKey = 'library' | 'review' | 'generating';
+type SceneTabKey = 'library' | 'review' | 'generating' | 'failed';
 
 function tagColor(label: string) {
   const map: Record<string, string> = {
@@ -40,6 +41,7 @@ function tagColor(label: string) {
 function tabTitle(tab: SceneTabKey) {
   if (tab === 'review') return '待加入场景库';
   if (tab === 'generating') return '生成中';
+  if (tab === 'failed') return '生成失败';
   return '当前场景库';
 }
 
@@ -53,7 +55,7 @@ function statusTag(item: SceneLibraryItem) {
 export default function SceneLibrary() {
   const [searchParams, setSearchParams] = useSearchParams();
   const tabParam = searchParams.get('tab');
-  const tab: SceneTabKey = tabParam === 'review' || tabParam === 'generating' ? tabParam : 'library';
+  const tab: SceneTabKey = tabParam === 'review' || tabParam === 'generating' || tabParam === 'failed' ? tabParam : 'library';
   const [loading, setLoading] = useState(false);
   const [items, setItems] = useState<SceneLibraryItem[]>([]);
   const [filters, setFilters] = useState<SceneLibraryFilters>({ brands: [], spaces: [], styles: [], scene_names: [] });
@@ -67,6 +69,9 @@ export default function SceneLibrary() {
   const [modalOpen, setModalOpen] = useState(false);
   const [togglingId, setTogglingId] = useState<number | null>(null);
   const [deletingId, setDeletingId] = useState<number | null>(null);
+  const [retryingId, setRetryingId] = useState<number | null>(null);
+  const [selectedIds, setSelectedIds] = useState<number[]>([]);
+  const [batchLoading, setBatchLoading] = useState(false);
 
   const fetchFilters = useCallback(async () => {
     try {
@@ -93,6 +98,7 @@ export default function SceneLibrary() {
         if (!prev) return prev;
         return res.data.find((item) => item.id === prev.id) || prev;
       });
+      setSelectedIds((prev) => prev.filter((id) => res.data.some((item) => item.id === id)));
     } catch {
       message.error('加载场景图列表失败');
     } finally {
@@ -118,10 +124,13 @@ export default function SceneLibrary() {
     setSpaceFilter(undefined);
     setStyleFilter(undefined);
     setSceneNameFilter(undefined);
+    setSelectedIds([]);
   };
 
   const handleTabChange = (key: string) => {
     resetFilters();
+    setSelected(null);
+    setModalOpen(false);
     const next = new URLSearchParams(searchParams);
     next.set('tab', key);
     setSearchParams(next, { replace: true });
@@ -164,6 +173,71 @@ export default function SceneLibrary() {
       setDeletingId(null);
     }
   };
+
+  const handleRetry = async (item: SceneLibraryItem) => {
+    setRetryingId(item.id);
+    try {
+      await sceneGeneratorApi.retry(item.id);
+      message.success('已重新提交生成任务，可前往“生成中”查看');
+      if (selected?.id === item.id) {
+        setModalOpen(false);
+        setSelected(null);
+      }
+      setSelectedIds((prev) => prev.filter((id) => id !== item.id));
+      if (tab === 'failed') {
+        const next = new URLSearchParams(searchParams);
+        next.set('tab', 'generating');
+        setSearchParams(next, { replace: true });
+      } else {
+        await fetchItems();
+      }
+    } catch {
+      message.error('重试失败');
+    } finally {
+      setRetryingId(null);
+    }
+  };
+
+  const performBatchAction = async (action: 'delete' | 'add_to_library' | 'remove_from_library' | 'retry') => {
+    if (selectedIds.length === 0) {
+      message.warning('请先选择任务');
+      return;
+    }
+    setBatchLoading(true);
+    try {
+      const res = await sceneGeneratorApi.batchAction({ record_ids: selectedIds, action });
+      const { success_count, failed_count } = res.data;
+      if (success_count > 0) {
+        if (action === 'retry') {
+          message.success(`已重新提交 ${success_count} 个任务`);
+        } else if (action === 'add_to_library') {
+          message.success(`已加入场景库 ${success_count} 项`);
+        } else if (action === 'remove_from_library') {
+          message.success(`已移出场景库 ${success_count} 项`);
+        } else {
+          message.success(`已处理 ${success_count} 项`);
+        }
+      }
+      if (failed_count > 0) {
+        message.warning(`${failed_count} 项操作失败`);
+      }
+      setSelectedIds([]);
+      if (action === 'retry' && tab === 'failed') {
+        const next = new URLSearchParams(searchParams);
+        next.set('tab', 'generating');
+        setSearchParams(next, { replace: true });
+      } else {
+        await fetchItems();
+      }
+    } catch {
+      message.error('批量操作失败');
+    } finally {
+      setBatchLoading(false);
+    }
+  };
+
+  const allCurrentIds = useMemo(() => items.map((item) => item.id), [items]);
+  const allSelected = allCurrentIds.length > 0 && allCurrentIds.every((id) => selectedIds.includes(id));
 
   return (
     <div style={{ padding: 0 }}>
@@ -246,13 +320,100 @@ export default function SceneLibrary() {
           { key: 'library', label: '当前场景库' },
           { key: 'review', label: '待加入场景库' },
           { key: 'generating', label: '生成中' },
+          { key: 'failed', label: '生成失败' },
         ]}
       />
 
       <div style={{ marginBottom: 14, color: '#666', fontSize: 13 }}>
         {tab === 'library' && '这里展示已经入库、可复用的正式场景图。'}
         {tab === 'review' && '这里展示已生成完成但尚未入库的场景图，包括 agent 在客户对话中生成的结果。'}
-        {tab === 'generating' && '这里展示仍在生成中或生成失败的任务。新建场景图后可来这里查看最新状态。'}
+        {tab === 'generating' && '这里展示仍在生成中的任务。新建场景图后可来这里查看最新状态。'}
+        {tab === 'failed' && '这里展示生成失败的任务。可重试，或直接丢弃。'}
+      </div>
+
+      <div
+        style={{
+          marginBottom: 16,
+          padding: '10px 12px',
+          border: '1px solid #f0f0f0',
+          borderRadius: 10,
+          background: '#fafafa',
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          gap: 12,
+          flexWrap: 'wrap',
+        }}
+      >
+        <Space wrap>
+          <Checkbox
+            checked={allSelected}
+            indeterminate={selectedIds.length > 0 && !allSelected}
+            onChange={(e) => setSelectedIds(e.target.checked ? allCurrentIds : [])}
+            disabled={allCurrentIds.length === 0}
+          >
+            全选当前页
+          </Checkbox>
+          <Text type="secondary">
+            已选择 {selectedIds.length} 项
+          </Text>
+          {selectedIds.length > 0 && (
+            <Button size="small" onClick={() => setSelectedIds([])}>
+              清空选择
+            </Button>
+          )}
+        </Space>
+        <Space wrap>
+          {tab === 'review' && (
+            <Button
+              type="primary"
+              icon={<CheckCircleOutlined />}
+              loading={batchLoading}
+              disabled={selectedIds.length === 0}
+              onClick={() => performBatchAction('add_to_library')}
+            >
+              批量加入场景库
+            </Button>
+          )}
+          {tab === 'library' && (
+            <Button
+              loading={batchLoading}
+              disabled={selectedIds.length === 0}
+              onClick={() => performBatchAction('remove_from_library')}
+            >
+              批量移出场景库
+            </Button>
+          )}
+          {tab === 'failed' && (
+            <Button
+              type="primary"
+              icon={<SyncOutlined />}
+              loading={batchLoading}
+              disabled={selectedIds.length === 0}
+              onClick={() => performBatchAction('retry')}
+            >
+              批量重试
+            </Button>
+          )}
+          <Popconfirm
+            title={tab === 'library' ? '确认批量删除已入库场景图？' : '确认批量丢弃选中任务？'}
+            description="删除后将同时移除图片文件和数据库记录。"
+            okText={tab === 'library' ? '删除' : '丢弃'}
+            cancelText="取消"
+            okButtonProps={{ danger: true, loading: batchLoading }}
+            onConfirm={() => performBatchAction('delete')}
+            disabled={selectedIds.length === 0}
+          >
+            <Button
+              danger
+              icon={<DeleteOutlined />}
+              loading={batchLoading}
+              disabled={selectedIds.length === 0}
+            >
+              {tab === 'library' ? '批量删除' : '批量丢弃'}
+            </Button>
+          </Popconfirm>
+        </Space>
       </div>
 
       <Spin spinning={loading}>
@@ -266,31 +427,55 @@ export default function SceneLibrary() {
                   hoverable
                   style={{ borderRadius: 10, overflow: 'hidden' }}
                   cover={
-                    item.cover_url ? (
-                      <img
-                        src={item.cover_url}
-                        alt={item.primary_product_name}
-                        style={{ width: '100%', height: 200, objectFit: 'cover', display: 'block' }}
-                      />
-                    ) : (
+                    <div style={{ position: 'relative' }}>
                       <div
                         style={{
-                          height: 200,
-                          background: '#f5f5f5',
-                          display: 'flex',
-                          flexDirection: 'column',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          color: '#999',
-                          gap: 8,
+                          position: 'absolute',
+                          top: 10,
+                          left: 10,
+                          zIndex: 2,
+                          background: 'rgba(255,255,255,0.92)',
+                          borderRadius: 8,
+                          padding: '4px 8px',
                         }}
+                        onClick={(e) => e.stopPropagation()}
                       >
-                        {item.status === 'failed' ? <Text type="danger">生成失败</Text> : <ClockCircleOutlined style={{ fontSize: 28 }} />}
-                        <Text type="secondary" style={{ fontSize: 12 }}>
-                          {item.status === 'failed' ? '请查看详情中的错误信息' : '图片生成完成后会自动显示在这里'}
-                        </Text>
+                        <Checkbox
+                          checked={selectedIds.includes(item.id)}
+                          onChange={(e) => {
+                            const checked = e.target.checked;
+                            setSelectedIds((prev) =>
+                              checked ? Array.from(new Set([...prev, item.id])) : prev.filter((id) => id !== item.id)
+                            );
+                          }}
+                        />
                       </div>
-                    )
+                      {item.cover_url ? (
+                        <img
+                          src={item.cover_url}
+                          alt={item.primary_product_name}
+                          style={{ width: '100%', height: 200, objectFit: 'cover', display: 'block' }}
+                        />
+                      ) : (
+                        <div
+                          style={{
+                            height: 200,
+                            background: '#f5f5f5',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            color: '#999',
+                            gap: 8,
+                          }}
+                        >
+                          {item.status === 'failed' ? <Text type="danger">生成失败</Text> : <ClockCircleOutlined style={{ fontSize: 28 }} />}
+                          <Text type="secondary" style={{ fontSize: 12 }}>
+                            {item.status === 'failed' ? '请查看详情中的错误信息' : '图片生成完成后会自动显示在这里'}
+                          </Text>
+                        </div>
+                      )}
+                    </div>
                   }
                   onClick={() => openDetail(item)}
                   bodyStyle={{ padding: '10px 14px' }}
@@ -385,6 +570,68 @@ export default function SceneLibrary() {
                             onClick={(e) => e.stopPropagation()}
                           >
                             删除
+                          </Button>
+                        </Popconfirm>
+                      </Space>
+                    )}
+                    {tab === 'failed' && (
+                      <Space size={8}>
+                        <Button
+                          type="primary"
+                          size="small"
+                          icon={<SyncOutlined />}
+                          loading={retryingId === item.id}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleRetry(item);
+                          }}
+                        >
+                          重试
+                        </Button>
+                        <Popconfirm
+                          title="确认丢弃这条失败任务？"
+                          description="删除后将同时移除图片文件和数据库记录。"
+                          okText="丢弃"
+                          cancelText="取消"
+                          okButtonProps={{ danger: true, loading: deletingId === item.id }}
+                          onConfirm={(e) => {
+                            e?.stopPropagation();
+                            return handleDelete(item);
+                          }}
+                        >
+                          <Button
+                            size="small"
+                            danger
+                            icon={<DeleteOutlined />}
+                            loading={deletingId === item.id}
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            丢弃
+                          </Button>
+                        </Popconfirm>
+                      </Space>
+                    )}
+                    {tab === 'generating' && (
+                      <Space size={8}>
+                        <Popconfirm
+                          title="确认丢弃这条生成任务？"
+                          description="删除后将同时移除图片文件和数据库记录。"
+                          okText="丢弃"
+                          cancelText="取消"
+                          okButtonProps={{ danger: true, loading: deletingId === item.id }}
+                          onConfirm={(e) => {
+                            e?.stopPropagation();
+                            return handleDelete(item);
+                          }}
+                        >
+                          <Button
+                            size="small"
+                            danger
+                            icon={<DeleteOutlined />}
+                            loading={deletingId === item.id}
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            丢弃
                           </Button>
                         </Popconfirm>
                       </Space>
@@ -551,6 +798,16 @@ export default function SceneLibrary() {
                     {selected.in_library ? '删除' : '丢弃'}
                   </Button>
                 </Popconfirm>
+              )}
+              {selected.status === 'failed' && (
+                <Button
+                  type="primary"
+                  icon={<SyncOutlined />}
+                  loading={retryingId === selected.id}
+                  onClick={() => handleRetry(selected)}
+                >
+                  重试
+                </Button>
               )}
               {tab === 'generating' && <Button onClick={fetchItems}>刷新状态</Button>}
             </Space>

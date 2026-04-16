@@ -28,6 +28,7 @@ settings = get_settings()
 SCENE_OUTPUT_COUNT = 1
 CUSTOMER_SCENE_TIMEOUT_SECONDS = 300
 BACKEND_SCENE_TIMEOUT_SECONDS = 600
+MAX_DASHSCOPE_PROMPT_CHARS = 2400
 ACTIVE_SCENE_TASKS: dict[int, asyncio.Task[Any]] = {}
 
 
@@ -116,6 +117,34 @@ def _product_image_reference_value(image: ProductImage | None) -> str:
     return f"data:{mime_type};base64,{encoded}"
 
 
+def _compact_text(value: str | None, limit: int) -> str:
+    text = " ".join((value or "").split())
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 1)].rstrip() + "…"
+
+
+def _compose_limited_prompt(sections: list[str], limit: int = MAX_DASHSCOPE_PROMPT_CHARS) -> str:
+    parts: list[str] = []
+    current = 0
+    separator = "\n\n"
+    for section in sections:
+        section = section.strip()
+        if not section:
+            continue
+        extra = len(section) if not parts else len(separator) + len(section)
+        if current + extra <= limit:
+            parts.append(section)
+            current += extra
+            continue
+
+        remaining = limit - current - (0 if not parts else len(separator))
+        if remaining > 32:
+            parts.append(_compact_text(section, remaining))
+        break
+    return separator.join(parts)
+
+
 async def _download_remote_binary(
     client: httpx.AsyncClient,
     url: str,
@@ -146,58 +175,70 @@ def _build_scene_prompt(
     reference_items: list[dict[str, Any]] | None = None,
 ) -> str:
     primary_lines = [
-        f"Main product brand: {primary_product.brand}",
-        f"Main product name: {primary_product.product_name}",
-        f"Main product space: {primary_product.space}",
-        f"Main product style: {primary_product.style}",
-        f"Main product color: {primary_product.color}",
-        f"Main product material: {primary_product.material}",
-        f"Main product size: {primary_product.size}",
-        f"Main product serial/model: {primary_product.serial_number}",
-        f"Main product description: {primary_product.description_text}",
+        f"brand={_compact_text(primary_product.brand, 40)}",
+        f"name={_compact_text(primary_product.product_name, 120)}",
+        f"space={_compact_text(primary_product.space, 20)}",
+        f"style={_compact_text(primary_product.style, 30)}",
+        f"color={_compact_text(primary_product.color, 40)}",
+        f"material={_compact_text(primary_product.material, 60)}",
+        f"size={_compact_text(primary_product.size, 50)}",
+        f"model={_compact_text(primary_product.serial_number, 40)}",
+        f"desc={_compact_text(primary_product.description_text, 180)}",
     ]
     related_lines = [
         (
-            f"- {p.product_name} | 空间:{p.space} | 风格:{p.style} | 颜色:{p.color} "
-            f"| 材质:{p.material} | 尺寸:{p.size}"
+            f"- { _compact_text(p.product_name, 80) } | 品牌:{ _compact_text(p.brand, 20) } "
+            f"| 颜色:{ _compact_text(p.color, 30) } | 材质:{ _compact_text(p.material, 40) } "
+            f"| 风格:{ _compact_text(p.style, 20) }"
         )
         for p in related_products
     ]
     related_text = "\n".join(related_lines) or "- No extra products"
+    related_color_material_lines = [
+        (
+            f"- {_compact_text(p.product_name, 60)}: keep exact color={_compact_text(p.color, 24) or 'reference'}; "
+            f"material={_compact_text(p.material, 30) or 'reference'}"
+        )
+        for p in related_products
+    ]
+    related_color_material_text = "\n".join(related_color_material_lines) or "- No extra products"
     reference_lines = []
     for idx, item in enumerate(reference_items or [], start=1):
         role = "MAIN PRODUCT" if item.get("role") == "main" else "COMPLEMENTARY PRODUCT"
         reference_lines.append(
-            f"- Reference image #{idx}: {role} | Brand:{item.get('brand', '')} | "
-            f"Name:{item.get('product_name', '')} | Product ID:{item.get('product_id', '')}"
+            f"- Ref#{idx}: {role} | Brand:{_compact_text(item.get('brand', ''), 20)} | "
+            f"Name:{_compact_text(item.get('product_name', ''), 70)} | ID:{item.get('product_id', '')}"
         )
     reference_text = "\n".join(reference_lines) or "- No reference images attached"
-    return (
-        "Create a photorealistic furniture showroom / home-interior scene image.\n"
-        f"Requested scene: {scene_name}\n"
-        f"Style hint: {style_hint or primary_product.style or '真实家居'}\n"
-        f"Customer request: {user_request or primary_product.product_name}\n\n"
-        "IMPORTANT: Every attached reference image corresponds to a real catalog product. "
-        "You MUST reproduce each referenced product faithfully — keep its exact shape, material, color, texture, "
-        "proportions, silhouette, and visible design details. Do NOT redesign, simplify, or replace any referenced product with generic furniture.\n"
-        "Place the exact main product as the visual focus in the requested scene setting.\n"
-        "Complementary products may appear as supporting items in the same room, but if they have reference images attached they must also remain faithful to those references.\n"
-        "No people, no text overlay, no watermark, no logo, no fantasy styling.\n\n"
-        "Attached reference image mapping:\n"
-        + reference_text
-        + "\n\n"
-        "Main product facts:\n"
-        + "\n".join(primary_lines)
-        + "\n\nComplementary products:\n"
-        + related_text
-        + "\n\nOutput requirements:\n"
-        "- realistic interior lighting\n"
-        "- commercially usable composition\n"
-        "- the main product must look identical to its reference image\n"
-        "- every referenced complementary product must also match its own reference image\n"
-        "- do not invent unrelated side furniture when a referenced complementary product is provided\n"
-        "- make the room look complete and believable\n"
-    )
+    sections = [
+        (
+            "Create one photorealistic furniture interior image.\n"
+            f"Scene: {_compact_text(scene_name, 40)}\n"
+            f"Style: {_compact_text(style_hint or primary_product.style or '真实家居', 30)}\n"
+            f"Customer request: {_compact_text(user_request or primary_product.product_name, 120)}"
+        ),
+        (
+            "Hard rules:\n"
+            "- Every attached reference image is a real catalog product.\n"
+            "- Reproduce every referenced product faithfully: exact shape, proportions, silhouette, visible details.\n"
+            "- Keep exact dominant color and material/finish for all referenced products.\n"
+            "- Never recolor a referenced white product into red, brown, black, wood-tone, or any accent color.\n"
+            "- Never replace a referenced product with generic furniture.\n"
+            "- If a side product cannot stay faithful, reduce its prominence instead of changing its color/material.\n"
+            "- No people, no text, no watermark, no logo."
+        ),
+        (
+            "Output requirements:\n"
+            "- Main product is the visual focus and must look identical to its reference.\n"
+            "- Referenced side products must also match their references.\n"
+            "- Realistic lighting, believable composition, commercially usable result."
+        ),
+        "Reference mapping:\n" + reference_text,
+        "Main product facts:\n" + "\n".join(primary_lines),
+        "Complementary products:\n" + related_text,
+        "Complementary product hard constraints:\n" + related_color_material_text,
+    ]
+    return _compose_limited_prompt(sections)
 
 
 async def _generate_image_binary(prompt: str, cfg: dict[str, str]) -> bytes:

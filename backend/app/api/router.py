@@ -6,7 +6,7 @@ import shutil
 import uuid
 from io import BytesIO
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Any, Optional
 
 import jwt
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
@@ -31,7 +31,7 @@ from app.schemas import (
     TelegramBotSchema, TelegramBotCreateRequest, TelegramBotUpdateRequest,
     ContractTemplateSchema,
     ProductEntrySchema, ProductEntryListSchema, ProductImageSchema, SceneGenerationRequest, SceneGenerationRecordSchema,
-    SceneLibraryItemSchema, SceneGeneratorRequest,
+    SceneLibraryItemSchema, SceneGeneratorRequest, SceneBatchActionRequest, SceneBatchActionResponse,
 )
 from app.services.rag_service import (
     add_to_knowledge_base, remove_from_knowledge_base,
@@ -1319,8 +1319,126 @@ def _scene_view_clause(view: str):
     if view == "review":
         return (SceneGenerationRecord.status == "completed") & (SceneGenerationRecord.in_library == False)
     if view == "generating":
-        return SceneGenerationRecord.status.in_(["pending", "failed"])
+        return SceneGenerationRecord.status == "pending"
+    if view == "failed":
+        return SceneGenerationRecord.status == "failed"
     return (SceneGenerationRecord.status == "completed") & (SceneGenerationRecord.in_library == True)
+
+
+async def _load_all_products_for_scene_generation(db: AsyncSession) -> list[dict[str, Any]]:
+    all_result = await db.execute(select(ProductEntry).order_by(ProductEntry.id))
+    return [
+        {
+            "id": e.id,
+            "name": e.product_name,
+            "space": e.space,
+            "style": e.style,
+            "color": e.color,
+            "material": e.material,
+            "buy_url": e.buy_url,
+            "detail_url": e.detail_url,
+        }
+        for e in all_result.scalars().all()
+    ]
+
+
+async def _retry_scene_generation_record(record_id: int, db: AsyncSession) -> SceneGenerationRecord:
+    source = await db.get(SceneGenerationRecord, record_id)
+    if not source:
+        raise HTTPException(status_code=404, detail="Scene record not found")
+
+    primary_product = await db.get(ProductEntry, source.primary_product_id)
+    if not primary_product:
+        raise HTTPException(status_code=404, detail="Primary product not found")
+
+    related_ids = [int(x) for x in json.loads(source.related_product_ids_json or "[]") if str(x).isdigit()]
+    all_products = await _load_all_products_for_scene_generation(db)
+    return await start_scene_generation(
+        primary_product=primary_product,
+        all_products=all_products,
+        user_request=source.request_text or "",
+        scene_name=source.scene_name or "",
+        style_hint=source.style_hint or "",
+        related_product_ids=related_ids or None,
+        conversation_id=source.conversation_id,
+        allow_reuse=False,
+    )
+
+
+@router.post("/scene-generations/{record_id}/retry", response_model=SceneGenerationRecordSchema)
+async def retry_scene_generation(
+    record_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: str = Depends(get_current_user),
+):
+    record = await _retry_scene_generation_record(record_id, db)
+    return _record_to_schema(await build_scene_record_response(record))
+
+
+@router.post("/scene-generations/batch", response_model=SceneBatchActionResponse)
+async def batch_scene_generation_action(
+    req: SceneBatchActionRequest,
+    db: AsyncSession = Depends(get_db),
+    _: str = Depends(get_current_user),
+):
+    record_ids = [int(x) for x in req.record_ids if int(x) > 0]
+    if not record_ids:
+        raise HTTPException(status_code=400, detail="No valid scene record ids provided")
+
+    action = (req.action or "").strip()
+    allowed_actions = {"delete", "add_to_library", "remove_from_library", "retry"}
+    if action not in allowed_actions:
+        raise HTTPException(status_code=400, detail="Unsupported batch action")
+
+    success_ids: list[int] = []
+    failed_ids: list[int] = []
+
+    for record_id in record_ids:
+        try:
+            record = await db.get(SceneGenerationRecord, record_id)
+            if not record:
+                failed_ids.append(record_id)
+                continue
+
+            if action == "delete":
+                await cancel_scene_generation_task(record_id)
+                await db.execute(delete(SceneGenerationImage).where(SceneGenerationImage.record_id == record_id))
+                await db.delete(record)
+                await db.commit()
+                scene_dir = os.path.join(settings.FILE_STORAGE_DIR, "generated_scenes", str(record_id))
+                shutil.rmtree(scene_dir, ignore_errors=True)
+                success_ids.append(record_id)
+                continue
+
+            if action == "add_to_library":
+                record.in_library = True
+                await db.commit()
+                success_ids.append(record_id)
+                continue
+
+            if action == "remove_from_library":
+                record.in_library = False
+                await db.commit()
+                success_ids.append(record_id)
+                continue
+
+            if action == "retry":
+                new_record = await _retry_scene_generation_record(record_id, db)
+                success_ids.append(new_record.id)
+                continue
+        except Exception:
+            await db.rollback()
+            logger.exception("Batch scene action failed: action=%s record_id=%s", action, record_id)
+            failed_ids.append(record_id)
+
+    return SceneBatchActionResponse(
+        action=action,
+        requested_count=len(record_ids),
+        success_count=len(success_ids),
+        failed_count=len(failed_ids),
+        affected_ids=success_ids,
+        failed_ids=failed_ids,
+    )
 
 
 @router.get("/scene-generations/{record_id}", response_model=SceneGenerationRecordSchema)
@@ -1340,7 +1458,7 @@ async def get_scene_generation(
 
 @router.get("/scene-library/filters")
 async def scene_library_filters(
-    view: str = Query("library", pattern="^(library|review|generating)$"),
+    view: str = Query("library", pattern="^(library|review|generating|failed)$"),
     db: AsyncSession = Depends(get_db),
     _: str = Depends(get_current_user),
 ):
@@ -1379,7 +1497,7 @@ async def scene_library_filters(
 
 @router.get("/scene-library", response_model=list[SceneLibraryItemSchema])
 async def list_scene_library(
-    view: str = Query("library", pattern="^(library|review|generating)$"),
+    view: str = Query("library", pattern="^(library|review|generating|failed)$"),
     brand: Optional[str] = Query(None),
     space: Optional[str] = Query(None),
     style: Optional[str] = Query(None),
