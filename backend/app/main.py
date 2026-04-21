@@ -9,6 +9,7 @@ from app.config import get_settings
 from app.database import init_db
 from app.api.router import router
 from app.services.llm_service import load_llm_settings
+from app.services.customer_service_service import restore_pending_ai_reply_tasks
 from app.services import bot_manager
 
 logging.basicConfig(
@@ -29,6 +30,9 @@ async def lifespan(app: FastAPI):
 
     await load_llm_settings()
     logger.info("LLM settings loaded")
+
+    await restore_pending_ai_reply_tasks()
+    logger.info("Pending AI reply tasks restored")
 
     await bot_manager.start_all_active_bots()
 

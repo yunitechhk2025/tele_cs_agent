@@ -1,7 +1,7 @@
 import axios from 'axios';
 import type {
   Conversation, ConversationDetail, KnowledgeEntry, Message,
-  Contract, ContractTemplate, DashboardStats, LLMSettings, FileEntry, TelegramBot,
+  Contract, ContractTemplate, DashboardStats, LLMSettings, CustomerServiceSettings, FileEntry, TelegramBot,
   ProductEntry, SceneGenerationRecord, SceneLibraryItem, SceneLibraryFilters,
   SceneGeneratorRequest, SceneBatchActionResponse, TelegramSimulatorSessionResponse, SimulatorOutgoingEvent,
 } from './types';
@@ -43,6 +43,15 @@ export const conversationApi = {
     api.get<ConversationDetail>(`/conversations/${id}`),
   reply: (id: number, content: string) =>
     api.post(`/conversations/${id}/reply`, { content }),
+  sendAiDraft: (id: number, content?: string, sendAsHumanAgent?: boolean) =>
+    api.post(`/conversations/${id}/ai-draft/send`, {
+      content,
+      send_as_human_agent: Boolean(sendAsHumanAgent),
+    }),
+  pauseAiDraft: (id: number) =>
+    api.post(`/conversations/${id}/ai-draft/pause`),
+  cancelAiDraft: (id: number) =>
+    api.post(`/conversations/${id}/ai-draft/cancel`),
   close: (id: number) =>
     api.post(`/conversations/${id}/close`),
   delete: (id: number) =>
@@ -103,6 +112,9 @@ export const contractTemplateApi = {
 export const settingsApi = {
   getLLM: () => api.get<LLMSettings>('/settings/llm'),
   updateLLM: (data: Partial<LLMSettings>) => api.put<LLMSettings>('/settings/llm', data),
+  getCustomerService: () => api.get<CustomerServiceSettings>('/settings/customer-service'),
+  updateCustomerService: (data: Partial<CustomerServiceSettings>) =>
+    api.put<CustomerServiceSettings>('/settings/customer-service', data),
   testLLM: (data: Partial<LLMSettings>) =>
     api.post<{ ok: boolean; message: string }>('/settings/llm/test', data),
   testEmbedding: (data: Partial<LLMSettings>) =>

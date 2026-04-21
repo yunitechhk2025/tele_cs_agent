@@ -45,10 +45,45 @@ class ConversationSchema(BaseModel):
 
 class ConversationDetailSchema(ConversationSchema):
     messages: list[MessageSchema] = []
+    ai_draft: Optional["PendingAIReplySchema"] = None
 
 
 class ReplyRequest(BaseModel):
     content: str
+
+
+class PendingAIReplySchema(BaseModel):
+    id: int
+    conversation_id: int
+    draft_text: str
+    final_text: str = ""
+    language: str
+    status: str
+    auto_send_at: datetime
+    auto_send_paused: bool = False
+    sent_at: Optional[datetime] = None
+    error_message: str = ""
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class SendPendingAIReplyRequest(BaseModel):
+    content: Optional[str] = None
+    send_as_human_agent: bool = False
+
+
+class CustomerServiceSettingsSchema(BaseModel):
+    feature_name: str = "客服应答模式"
+    mode: str = "ai_auto"
+    auto_send_seconds: int = 10
+
+
+class CustomerServiceSettingsUpdateRequest(BaseModel):
+    mode: str
+    auto_send_seconds: Optional[int] = None
 
 
 class KnowledgeEntrySchema(BaseModel):

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime';
+import utc from 'dayjs/plugin/utc';
 import 'dayjs/locale/zh-cn';
 import {
   Badge,
@@ -26,6 +27,7 @@ import {
   CloseCircleOutlined,
   CustomerServiceOutlined,
   DeleteOutlined,
+  EditOutlined,
   ExportOutlined,
   FileTextOutlined,
   RobotOutlined,
@@ -34,10 +36,18 @@ import {
   SwapOutlined,
   UserOutlined,
 } from '@ant-design/icons';
-import { conversationApi, contractApi, contractTemplateApi } from '../api';
-import type { Contract, ContractTemplate, Conversation, ConversationDetail, Message } from '../types';
+import { conversationApi, contractApi, contractTemplateApi, settingsApi } from '../api';
+import type {
+  Contract,
+  ContractTemplate,
+  Conversation,
+  ConversationDetail,
+  CustomerServiceSettings,
+  Message,
+} from '../types';
 
 dayjs.extend(relativeTime);
+dayjs.extend(utc);
 dayjs.locale('zh-cn');
 
 const { Text, Title } = Typography;
@@ -101,6 +111,31 @@ function languageLabel(code: string) {
 
 function isSimulatorConversation(c: Pick<Conversation, 'telegram_chat_id'>) {
   return (c.telegram_chat_id || '').startsWith('sim-');
+}
+
+function parseServerUtc(value?: string | null) {
+  if (!value) return null;
+  const parsed = dayjs.utc(value);
+  return parsed.isValid() ? parsed : null;
+}
+
+function modeConfig(mode?: CustomerServiceSettings['mode']) {
+  switch (mode) {
+    case 'ai_auto':
+      return { text: 'mode1: ai_auto', color: 'blue' as const, label: '模式1：全AI客服答复' };
+    case 'ai_assist':
+      return { text: 'mode2: ai_assist', color: 'gold' as const, label: '模式2：人工确认AI生成内容后答复' };
+    case 'human_only':
+      return { text: 'mode3: human_only', color: 'volcano' as const, label: '模式3：无AI，完全人工客服答复' };
+    default:
+      return { text: 'mode?: unknown', color: 'default' as const, label: '未知模式' };
+  }
+}
+
+function draftAutoSendLabel(detail: ConversationDetail | null, draftCountdownSeconds: number | null) {
+  if (!detail?.ai_draft) return '—';
+  if (detail.ai_draft.auto_send_paused) return '已暂停自动发送';
+  return `${draftCountdownSeconds ?? '—'} 秒后自动发送`;
 }
 
 function MessageBubble({ msg }: { msg: Message }) {
@@ -193,9 +228,15 @@ export default function Conversations() {
 
   const [detailLoading, setDetailLoading] = useState(false);
   const [detail, setDetail] = useState<ConversationDetail | null>(null);
+  const [customerServiceSettings, setCustomerServiceSettings] = useState<CustomerServiceSettings | null>(null);
+  const [draftCountdownSeconds, setDraftCountdownSeconds] = useState<number | null>(null);
 
   const [replyText, setReplyText] = useState('');
   const [replySending, setReplySending] = useState(false);
+  const [aiDraftSending, setAiDraftSending] = useState(false);
+  const [aiDraftCancelling, setAiDraftCancelling] = useState(false);
+  const [editingAiDraft, setEditingAiDraft] = useState(false);
+  const [aiDraftText, setAiDraftText] = useState('');
   const [contractLoading, setContractLoading] = useState(false);
   const [closeLoading, setCloseLoading] = useState(false);
 
@@ -232,9 +273,22 @@ export default function Conversations() {
     }
   }, [debouncedSearch, filter]);
 
+  const loadCustomerServiceSettings = useCallback(async () => {
+    try {
+      const { data } = await settingsApi.getCustomerService();
+      setCustomerServiceSettings(data);
+    } catch {
+      setCustomerServiceSettings(null);
+    }
+  }, []);
+
   useEffect(() => {
     loadList();
   }, [loadList]);
+
+  useEffect(() => {
+    void loadCustomerServiceSettings();
+  }, [loadCustomerServiceSettings]);
 
   const loadDetail = useCallback(async (conversationId: number) => {
     setDetailLoading(true);
@@ -256,6 +310,47 @@ export default function Conversations() {
     }
     loadDetail(selectedId);
   }, [selectedId, loadDetail]);
+
+  useEffect(() => {
+    if (!detail?.ai_draft) {
+      setEditingAiDraft(false);
+      setAiDraftText('');
+      return;
+    }
+    if (!editingAiDraft) {
+      setAiDraftText(detail.ai_draft.draft_text || '');
+    }
+  }, [detail?.ai_draft?.id, detail?.ai_draft?.draft_text, editingAiDraft]);
+
+  useEffect(() => {
+    if (!detail?.ai_draft?.auto_send_at) {
+      setDraftCountdownSeconds(null);
+      return undefined;
+    }
+
+    const updateCountdown = () => {
+      const target = parseServerUtc(detail.ai_draft?.auto_send_at);
+      if (!target) {
+        setDraftCountdownSeconds(null);
+        return;
+      }
+      setDraftCountdownSeconds(Math.max(0, target.diff(dayjs.utc(), 'second')));
+    };
+
+    updateCountdown();
+    const timer = window.setInterval(updateCountdown, 1000);
+    return () => window.clearInterval(timer);
+  }, [detail?.ai_draft?.id, detail?.ai_draft?.auto_send_at]);
+
+  useEffect(() => {
+    if (selectedId == null) return undefined;
+    const timer = window.setInterval(() => {
+      void loadDetail(selectedId);
+      void loadList();
+      void loadCustomerServiceSettings();
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [selectedId, loadCustomerServiceSettings, loadDetail, loadList]);
 
   const handleSelectConversation = (conversationId: number) => {
     navigate(`/conversations/${conversationId}`);
@@ -308,6 +403,65 @@ export default function Conversations() {
     } finally {
       setReplySending(false);
     }
+  };
+
+  const handleSendAiDraft = async () => {
+    if (selectedId == null || !detail?.ai_draft) return;
+    setAiDraftSending(true);
+    try {
+      await conversationApi.sendAiDraft(
+        selectedId,
+        editingAiDraft ? aiDraftText.trim() : undefined,
+        editingAiDraft,
+      );
+      message.success(editingAiDraft ? '编辑后的 AI 回复已发送' : 'AI 回复已发送');
+      setEditingAiDraft(false);
+      await loadDetail(selectedId);
+      await loadList();
+    } catch {
+      message.error('发送 AI 草稿失败');
+    } finally {
+      setAiDraftSending(false);
+    }
+  };
+
+  const handleCancelAiDraft = async () => {
+    if (selectedId == null || !detail?.ai_draft) return;
+    setAiDraftCancelling(true);
+    try {
+      await conversationApi.cancelAiDraft(selectedId);
+      message.success('AI 草稿已取消');
+      setEditingAiDraft(false);
+      setAiDraftText('');
+      await loadDetail(selectedId);
+      await loadList();
+    } catch {
+      message.error('取消 AI 草稿失败');
+    } finally {
+      setAiDraftCancelling(false);
+    }
+  };
+
+  const handleToggleEditAiDraft = async () => {
+    if (!detail?.ai_draft) return;
+    if (editingAiDraft) {
+      setEditingAiDraft(false);
+      setAiDraftText(detail.ai_draft.draft_text || '');
+      return;
+    }
+
+    if (!detail.ai_draft.auto_send_paused) {
+      try {
+        await conversationApi.pauseAiDraft(detail.id);
+        await loadDetail(detail.id);
+        await loadList();
+      } catch {
+        message.error('暂停 AI 草稿自动发送失败');
+        return;
+      }
+    }
+
+    setEditingAiDraft(true);
   };
 
   const openGenerateModal = async () => {
@@ -411,6 +565,7 @@ export default function Conversations() {
   };
 
   const activeTabKey = filter;
+  const currentMode = modeConfig(customerServiceSettings?.mode);
 
   return (
     <div
@@ -517,6 +672,7 @@ export default function Conversations() {
                             {showDot ? <Badge status="processing" /> : null}
                           </div>
                           <Space size={[6, 6]} wrap>
+                            <Tag color="default">ID #{item.id}</Tag>
                             <Tooltip title={languageLabel(item.language)}>
                               <Tag>{item.language?.toUpperCase() || '—'}</Tag>
                             </Tooltip>
@@ -605,7 +761,13 @@ export default function Conversations() {
                   {detail ? customerDisplayName(detail) : '…'}
                 </Title>
                 {detail ? (
-                  <Tag color={statusConfig(detail.status).color}>{statusConfig(detail.status).label}</Tag>
+                  <>
+                    <Tag color="default">ID #{detail.id}</Tag>
+                    <Tag color={statusConfig(detail.status).color}>{statusConfig(detail.status).label}</Tag>
+                    <Tooltip title={currentMode.label}>
+                      <Tag color={currentMode.color}>{currentMode.text}</Tag>
+                    </Tooltip>
+                  </>
                 ) : (
                   <Tag>…</Tag>
                 )}
@@ -657,6 +819,70 @@ export default function Conversations() {
                 </Button>
               </Space>
             </div>
+
+            {detail?.ai_draft ? (
+              <div
+                style={{
+                  padding: '12px 20px',
+                  background: '#fffbe6',
+                  borderBottom: '1px solid #f0e6a6',
+                }}
+              >
+                <Card
+                  size="small"
+                  title="AI 待确认回复"
+                  extra={
+                    <Space size={8}>
+                      <Tag color="gold">
+                        {draftAutoSendLabel(detail, draftCountdownSeconds)}
+                      </Tag>
+                      {detail.ai_draft.error_message ? <Tag color="red">{detail.ai_draft.error_message}</Tag> : null}
+                    </Space>
+                  }
+                  styles={{ body: { paddingTop: 12 } }}
+                >
+                  <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+                    {editingAiDraft ? (
+                      <Input.TextArea
+                        value={aiDraftText}
+                        onChange={(e) => setAiDraftText(e.target.value)}
+                        autoSize={{ minRows: 4, maxRows: 10 }}
+                      />
+                    ) : (
+                      <div
+                        style={{
+                          whiteSpace: 'pre-wrap',
+                          wordBreak: 'break-word',
+                          lineHeight: 1.6,
+                          fontSize: 14,
+                        }}
+                      >
+                        {detail.ai_draft.draft_text}
+                      </div>
+                    )}
+                    <Space wrap>
+                      <Button danger loading={aiDraftCancelling} onClick={() => void handleCancelAiDraft()}>
+                        取消
+                      </Button>
+                      <Button
+                        icon={<EditOutlined />}
+                        onClick={() => void handleToggleEditAiDraft()}
+                      >
+                        {editingAiDraft ? '取消编辑' : '编辑AI回复'}
+                      </Button>
+                      <Button
+                        type="primary"
+                        icon={<SendOutlined />}
+                        loading={aiDraftSending}
+                        onClick={() => void handleSendAiDraft()}
+                      >
+                        {editingAiDraft ? '发送编辑后的回复' : '直接发送'}
+                      </Button>
+                    </Space>
+                  </Space>
+                </Card>
+              </div>
+            ) : null}
 
             <div
               style={{

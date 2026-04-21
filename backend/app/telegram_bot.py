@@ -25,6 +25,10 @@ from app.services.llm_service import (
 )
 from app.services.rag_service import search_knowledge_for_bot
 from app.services.scene_service import CUSTOMER_SCENE_TIMEOUT_SECONDS, generate_scene_images
+from app.services.customer_service_service import (
+    get_customer_service_settings,
+    create_pending_ai_reply,
+)
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -49,6 +53,15 @@ HANDOFF_MESSAGES = {
     "ko": "견적 관련 문의이므로 담당자에게 연결해 드리겠습니다. 잠시만 기다려 주세요.",
     "es": "Su consulta involucra cotización. Le he conectado con un agente humano. Por favor espere.",
     "fr": "Votre demande concerne un devis. Je vous ai mis en relation avec un agent. Veuillez patienter.",
+}
+
+MANUAL_ONLY_WAIT_MESSAGES = {
+    "zh": "已为您转接人工客服，请稍候回复。",
+    "en": "I've routed your message to a human agent. Please wait for a reply.",
+    "ja": "担当者にお繋ぎしました。返信まで少々お待ちください。",
+    "ko": "상담원에게 연결했습니다. 답변을 잠시 기다려 주세요.",
+    "es": "He transferido su mensaje a un agente humano. Por favor espere la respuesta.",
+    "fr": "J'ai transmis votre message à un agent. Veuillez patienter pour la réponse.",
 }
 
 PRODUCT_REC_INTRO = {
@@ -750,6 +763,36 @@ async def process_customer_text_message(
         conversation = None
         async with AsyncSessionLocal() as db:
             conversation = await db.get(Conversation, conversation_id)
+        service_settings = await get_customer_service_settings()
+        service_mode = service_settings["mode"]
+
+        if service_mode == "human_only":
+            async with AsyncSessionLocal() as db:
+                conv = await db.get(Conversation, conversation_id)
+                if conv:
+                    conv.status = ConversationStatus.PENDING_HUMAN
+                    conv.quote_language = language
+                    await db.commit()
+
+            if current_status != ConversationStatus.PENDING_HUMAN:
+                wait_msg = MANUAL_ONLY_WAIT_MESSAGES.get(language, MANUAL_ONLY_WAIT_MESSAGES["en"])
+                await save_message(conversation_id, MessageRole.ASSISTANT, wait_msg, language)
+                stop_typing.set()
+                await typing_task
+                await outbound.reply_text(wait_msg)
+            else:
+                stop_typing.set()
+                await typing_task
+
+            if run_notify_admin and notify_bot and conversation:
+                await notify_admin(
+                    bot_id,
+                    conversation,
+                    user_message,
+                    notify_bot,
+                    is_followup=(current_status == ConversationStatus.PENDING_HUMAN),
+                )
+            return
 
         is_quote = await check_is_quote_related(user_message)
         logger.info(f"[Bot {bot_id}] Quote related: {is_quote}")
@@ -960,10 +1003,21 @@ async def process_customer_text_message(
         )
         logger.info(f"[Bot {bot_id}] AI response generated ({len(response_text)} chars)")
 
-        await save_message(conversation_id, MessageRole.ASSISTANT, response_text, language)
         stop_typing.set()
         await typing_task
+        if service_mode == "ai_assist":
+            await create_pending_ai_reply(conversation_id, response_text, language)
+            if run_notify_admin and notify_bot and conversation:
+                await notify_admin(
+                    bot_id,
+                    conversation,
+                    user_message,
+                    notify_bot,
+                    is_followup=(current_status in {ConversationStatus.PENDING_HUMAN, ConversationStatus.HUMAN_HANDLING}),
+                )
+            return
 
+        await save_message(conversation_id, MessageRole.ASSISTANT, response_text, language)
         await outbound.reply_text(response_text)
 
         if matched_file_ids:

@@ -21,7 +21,7 @@ from app.database import get_db, AsyncSessionLocal
 from app.models import (
     Conversation, Message, KnowledgeEntry, Contract, ContractTemplate, FileEntry, TelegramBot,
     ConversationStatus, MessageRole, ProductEntry, ProductImage, SceneGenerationImage, SceneGenerationRecord,
-    ConversationSceneState,
+    ConversationSceneState, PendingAIReply,
 )
 from app.schemas import (
     LoginRequest, TokenResponse, ConversationSchema, ConversationDetailSchema,
@@ -29,6 +29,8 @@ from app.schemas import (
     ContractSchema, ContractUpdateRequest, ContractGenerateRequest, SendContractRequest, DashboardStats,
     TelegramSimulatorSessionCreate, TelegramSimulatorSessionResponse,
     TelegramSimulatorSendRequest, TelegramSimulatorSendResponse, TelegramSimulatorEventSchema,
+    PendingAIReplySchema, SendPendingAIReplyRequest,
+    CustomerServiceSettingsSchema, CustomerServiceSettingsUpdateRequest,
     LLMSettingsSchema, LLMSettingsUpdateRequest,
     FileEntrySchema, FileEntryUpdateRequest,
     TelegramBotSchema, TelegramBotCreateRequest, TelegramBotUpdateRequest,
@@ -59,6 +61,15 @@ from app.services.scene_service import (
     _get_selected_reference_items,
     cancel_scene_generation_task,
     cleanup_stale_pending_scene_generations,
+)
+from app.services.customer_service_service import (
+    get_customer_service_settings,
+    save_customer_service_settings,
+    get_pending_ai_reply,
+    send_pending_ai_reply,
+    pause_pending_ai_reply,
+    cancel_pending_ai_reply,
+    dispatch_due_pending_ai_replies,
 )
 from app.services import bot_manager
 from app.telegram_bot import (
@@ -187,6 +198,7 @@ async def get_conversation(
     db: AsyncSession = Depends(get_db),
     _: str = Depends(get_current_user),
 ):
+    await dispatch_due_pending_ai_replies()
     result = await db.execute(
         select(Conversation).options(selectinload(Conversation.messages))
         .where(Conversation.id == conversation_id)
@@ -194,7 +206,10 @@ async def get_conversation(
     conversation = result.scalar_one_or_none()
     if not conversation:
         raise HTTPException(status_code=404, detail="Conversation not found")
-    return ConversationDetailSchema.model_validate(conversation)
+    detail = ConversationDetailSchema.model_validate(conversation)
+    pending_draft = await get_pending_ai_reply(conversation_id)
+    detail.ai_draft = PendingAIReplySchema.model_validate(pending_draft) if pending_draft else None
+    return detail
 
 
 @router.post("/conversations/{conversation_id}/reply")
@@ -207,6 +222,7 @@ async def reply_to_conversation(
     if not conversation:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
+    await cancel_pending_ai_reply(conversation_id)
     message = Message(conversation_id=conversation_id, role=MessageRole.HUMAN_AGENT, content=req.content)
     db.add(message)
     conversation.status = ConversationStatus.ACTIVE
@@ -242,6 +258,44 @@ async def reply_to_conversation(
             )
 
     return {"status": "sent"}
+
+
+@router.post("/conversations/{conversation_id}/ai-draft/send")
+async def send_conversation_ai_draft(
+    conversation_id: int,
+    req: SendPendingAIReplyRequest,
+    _: str = Depends(get_current_user),
+):
+    draft = await send_pending_ai_reply(
+        conversation_id,
+        content_override=req.content,
+        send_as_human_agent=req.send_as_human_agent,
+    )
+    if not draft:
+        raise HTTPException(status_code=404, detail="Pending AI draft not found")
+    return {"status": "sent", "draft_id": draft.id}
+
+
+@router.post("/conversations/{conversation_id}/ai-draft/cancel")
+async def cancel_conversation_ai_draft(
+    conversation_id: int,
+    _: str = Depends(get_current_user),
+):
+    draft = await cancel_pending_ai_reply(conversation_id)
+    if not draft:
+        raise HTTPException(status_code=404, detail="Pending AI draft not found")
+    return {"status": "cancelled", "draft_id": draft.id}
+
+
+@router.post("/conversations/{conversation_id}/ai-draft/pause")
+async def pause_conversation_ai_draft(
+    conversation_id: int,
+    _: str = Depends(get_current_user),
+):
+    draft = await pause_pending_ai_reply(conversation_id)
+    if not draft:
+        raise HTTPException(status_code=404, detail="Pending AI draft not found")
+    return {"status": "paused", "draft_id": draft.id}
 
 
 async def _send_translation(bot_instance, chat_id: int, conversation_id: int, text: str, target_lang: str):
@@ -361,6 +415,7 @@ async def delete_conversation(
         await db.execute(delete(SceneGenerationImage).where(SceneGenerationImage.record_id.in_(scene_record_ids)))
         await db.execute(delete(SceneGenerationRecord).where(SceneGenerationRecord.id.in_(scene_record_ids)))
 
+    await db.execute(delete(PendingAIReply).where(PendingAIReply.conversation_id == conversation_id))
     await db.execute(delete(ConversationSceneState).where(ConversationSceneState.conversation_id == conversation_id))
     await db.execute(delete(Contract).where(Contract.conversation_id == conversation_id))
     await db.execute(delete(Message).where(Message.conversation_id == conversation_id))
@@ -372,6 +427,32 @@ async def delete_conversation(
         shutil.rmtree(scene_dir, ignore_errors=True)
 
     return {"status": "deleted", "id": conversation_id}
+
+
+@router.get("/settings/customer-service", response_model=CustomerServiceSettingsSchema)
+async def get_customer_service_mode_settings(_: str = Depends(get_current_user)):
+    cfg = await get_customer_service_settings()
+    return CustomerServiceSettingsSchema(
+        feature_name="客服应答模式",
+        mode=cfg["mode"],
+        auto_send_seconds=cfg["auto_send_seconds"],
+    )
+
+
+@router.put("/settings/customer-service", response_model=CustomerServiceSettingsSchema)
+async def update_customer_service_mode_settings(
+    req: CustomerServiceSettingsUpdateRequest,
+    _: str = Depends(get_current_user),
+):
+    cfg = await save_customer_service_settings(
+        mode=req.mode,
+        auto_send_seconds=req.auto_send_seconds or 10,
+    )
+    return CustomerServiceSettingsSchema(
+        feature_name="客服应答模式",
+        mode=cfg["mode"],
+        auto_send_seconds=cfg["auto_send_seconds"],
+    )
 
 
 # ─── Telegram Simulator ──────────────────────────────────────────────────────

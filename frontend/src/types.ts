@@ -24,6 +24,22 @@ export interface Conversation {
 
 export interface ConversationDetail extends Conversation {
   messages: Message[];
+  ai_draft?: PendingAIReply | null;
+}
+
+export interface PendingAIReply {
+  id: number;
+  conversation_id: number;
+  draft_text: string;
+  final_text: string;
+  language: string;
+  status: string;
+  auto_send_at: string;
+  auto_send_paused: boolean;
+  sent_at: string | null;
+  error_message: string;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface KnowledgeEntry {
@@ -117,6 +133,12 @@ export interface LLMSettings {
   image_style: string;
   temperature: number;
   max_tokens: number;
+}
+
+export interface CustomerServiceSettings {
+  feature_name: string;
+  mode: 'ai_auto' | 'ai_assist' | 'human_only';
+  auto_send_seconds: number;
 }
 
 export interface FileEntry {

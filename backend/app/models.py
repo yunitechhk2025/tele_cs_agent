@@ -191,6 +191,25 @@ class ConversationSceneState(Base):
     primary_product = relationship("ProductEntry")
 
 
+class PendingAIReply(Base):
+    __tablename__ = "pending_ai_replies"
+
+    id = Column(Integer, primary_key=True, index=True)
+    conversation_id = Column(Integer, ForeignKey("conversations.id"), unique=True, index=True, nullable=False)
+    draft_text = Column(Text, default="")
+    final_text = Column(Text, default="")
+    language = Column(String(10), default="en")
+    status = Column(String(50), default="pending")
+    auto_send_at = Column(DateTime, nullable=False)
+    auto_send_paused = Column(Boolean, default=False)
+    sent_at = Column(DateTime, nullable=True)
+    error_message = Column(Text, default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    conversation = relationship("Conversation")
+
+
 class SceneGenerationRecord(Base):
     __tablename__ = "scene_generation_records"
 

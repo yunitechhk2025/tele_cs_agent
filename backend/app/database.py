@@ -44,6 +44,10 @@ def _run_migrations(conn):
             "scene_generation_records", "in_library",
             "ALTER TABLE scene_generation_records ADD COLUMN in_library BOOLEAN DEFAULT FALSE"
         ),
+        (
+            "pending_ai_replies", "auto_send_paused",
+            "ALTER TABLE pending_ai_replies ADD COLUMN auto_send_paused BOOLEAN DEFAULT FALSE"
+        ),
     ]
     for table, column, ddl in migrations:
         result = conn.execute(text(

@@ -9,6 +9,7 @@ import {
   Input,
   InputNumber,
   Modal,
+  Radio,
   Row,
   Select,
   Slider,
@@ -24,7 +25,7 @@ import {
   ThunderboltOutlined,
 } from '@ant-design/icons';
 import { settingsApi } from '../api';
-import type { LLMSettings } from '../types';
+import type { CustomerServiceSettings, LLMSettings } from '../types';
 
 const { Title, Text } = Typography;
 
@@ -81,8 +82,10 @@ function buildLLMPayload(values: LLMSettings): Partial<LLMSettings> {
 
 export default function Settings() {
   const [form] = Form.useForm<LLMSettings>();
+  const [serviceForm] = Form.useForm<CustomerServiceSettings>();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [savingService, setSavingService] = useState(false);
   const [testingLLM, setTestingLLM] = useState(false);
   const [testingEmbedding, setTestingEmbedding] = useState(false);
   const [testingImage, setTestingImage] = useState(false);
@@ -109,14 +112,18 @@ export default function Settings() {
   const loadSettings = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await settingsApi.getLLM();
-      form.setFieldsValue(res.data);
+      const [llmRes, serviceRes] = await Promise.all([
+        settingsApi.getLLM(),
+        settingsApi.getCustomerService(),
+      ]);
+      form.setFieldsValue(llmRes.data);
+      serviceForm.setFieldsValue(serviceRes.data);
     } catch {
-      message.error('加载 LLM 设置失败');
+      message.error('加载系统设置失败');
     } finally {
       setLoading(false);
     }
-  }, [form]);
+  }, [form, serviceForm]);
 
   useEffect(() => {
     void loadSettings();
@@ -182,6 +189,24 @@ export default function Settings() {
     }
   };
 
+  const handleSaveCustomerService = async () => {
+    try {
+      const values = await serviceForm.validateFields();
+      setSavingService(true);
+      await settingsApi.updateCustomerService({
+        mode: values.mode,
+        auto_send_seconds: values.auto_send_seconds,
+      });
+      message.success('客服应答模式已保存');
+      await loadSettings();
+    } catch (e) {
+      if (e && typeof e === 'object' && 'errorFields' in e) return;
+      message.error('保存客服应答模式失败');
+    } finally {
+      setSavingService(false);
+    }
+  };
+
   return (
     <div style={{ maxWidth: 960, margin: '0 auto' }}>
       <Space direction="vertical" size="large" style={{ width: '100%' }}>
@@ -199,6 +224,59 @@ export default function Settings() {
         />
 
         <Spin spinning={loading}>
+          <Card
+            title={
+              <Space>
+                <SettingOutlined />
+                <span>客服应答模式</span>
+              </Space>
+            }
+            extra={
+              <Button type="primary" icon={<SaveOutlined />} loading={savingService} onClick={() => void handleSaveCustomerService()}>
+                保存模式
+              </Button>
+            }
+            styles={{ body: { paddingTop: 24 } }}
+          >
+            <Form<CustomerServiceSettings>
+              form={serviceForm}
+              layout="horizontal"
+              labelCol={{ span: 6 }}
+              wrapperCol={{ span: 14 }}
+              disabled={loading}
+              initialValues={{
+                feature_name: '客服应答模式',
+                mode: 'ai_auto',
+                auto_send_seconds: 10,
+              }}
+            >
+              <Form.Item label="特性名称" name="feature_name">
+                <Input disabled />
+              </Form.Item>
+              <Form.Item
+                label="应答模式"
+                name="mode"
+                rules={[{ required: true, message: '请选择应答模式' }]}
+                extra="推荐命名：客服应答模式。模式2下，AI 草稿先进入人工确认，超过设定时间后自动发出。"
+              >
+                <Radio.Group>
+                  <Space direction="vertical">
+                    <Radio value="ai_auto">模式1：全AI客服答复</Radio>
+                    <Radio value="ai_assist">模式2：人工确认AI生成内容后答复</Radio>
+                    <Radio value="human_only">模式3：无AI，完全人工客服答复</Radio>
+                  </Space>
+                </Radio.Group>
+              </Form.Item>
+              <Form.Item
+                label="自动发送秒数"
+                name="auto_send_seconds"
+                extra="仅模式2生效。超过该时间，系统会自动把 AI 草稿发送给客户。"
+              >
+                <InputNumber min={1} max={600} style={{ width: 180 }} />
+              </Form.Item>
+            </Form>
+          </Card>
+
           <Card
             title={
               <Space>
