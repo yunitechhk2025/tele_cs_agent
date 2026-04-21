@@ -25,11 +25,13 @@ import {
 import {
   CloseCircleOutlined,
   CustomerServiceOutlined,
+  DeleteOutlined,
   ExportOutlined,
   FileTextOutlined,
   RobotOutlined,
   SearchOutlined,
   SendOutlined,
+  SwapOutlined,
   UserOutlined,
 } from '@ant-design/icons';
 import { conversationApi, contractApi, contractTemplateApi } from '../api';
@@ -95,6 +97,10 @@ function languageLabel(code: string) {
   } catch {
     return upper;
   }
+}
+
+function isSimulatorConversation(c: Pick<Conversation, 'telegram_chat_id'>) {
+  return (c.telegram_chat_id || '').startsWith('sim-');
 }
 
 function MessageBubble({ msg }: { msg: Message }) {
@@ -253,6 +259,34 @@ export default function Conversations() {
 
   const handleSelectConversation = (conversationId: number) => {
     navigate(`/conversations/${conversationId}`);
+  };
+
+  const handleOpenSimulator = (conversationId: number) => {
+    navigate(`/simulator?conversationId=${conversationId}`);
+  };
+
+  const handleDeleteSimulatorConversation = (conversation: Conversation) => {
+    Modal.confirm({
+      title: '确认删除这个模拟对话？',
+      content: '删除后将移除该模拟会话的消息、场景状态和关联场景记录，且不可恢复。',
+      okText: '删除',
+      cancelText: '取消',
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        try {
+          await conversationApi.delete(conversation.id);
+          message.success('模拟对话已删除');
+          if (selectedId === conversation.id) {
+            setDetail(null);
+            setReplyText('');
+            navigate('/conversations');
+          }
+          await loadList();
+        } catch {
+          message.error('删除模拟对话失败');
+        }
+      },
+    });
   };
 
   const handleSendReply = async () => {
@@ -451,6 +485,7 @@ export default function Conversations() {
                   const selected = selectedId === item.id;
                   const st = statusConfig(item.status);
                   const showDot = item.status === 'pending_human';
+                  const isSimulator = isSimulatorConversation(item);
                   return (
                     <List.Item style={{ padding: '6px 0', border: 'none' }}>
                       <Card
@@ -486,7 +521,33 @@ export default function Conversations() {
                               <Tag>{item.language?.toUpperCase() || '—'}</Tag>
                             </Tooltip>
                             <Tag color={st.color}>{st.label}</Tag>
+                            {isSimulator ? <Tag color="geekblue">模拟对话</Tag> : null}
                           </Space>
+                          {isSimulator ? (
+                            <Space size={8} wrap>
+                              <Button
+                                size="small"
+                                icon={<SwapOutlined />}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleOpenSimulator(item.id);
+                                }}
+                              >
+                                打开模拟器
+                              </Button>
+                              <Button
+                                size="small"
+                                danger
+                                icon={<DeleteOutlined />}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleDeleteSimulatorConversation(item);
+                                }}
+                              >
+                                删除
+                              </Button>
+                            </Space>
+                          ) : null}
                           <Text type="secondary" style={{ fontSize: 12 }}>
                             更新于 {dayjs(item.updated_at).fromNow()}
                           </Text>
@@ -550,6 +611,23 @@ export default function Conversations() {
                 )}
               </Space>
               <Space wrap>
+                {detail && isSimulatorConversation(detail) ? (
+                  <>
+                    <Button
+                      icon={<SwapOutlined />}
+                      onClick={() => handleOpenSimulator(detail.id)}
+                    >
+                      打开模拟器
+                    </Button>
+                    <Button
+                      danger
+                      icon={<DeleteOutlined />}
+                      onClick={() => handleDeleteSimulatorConversation(detail)}
+                    >
+                      删除模拟对话
+                    </Button>
+                  </>
+                ) : null}
                 <Tooltip title="选择模板后根据聊天记录生成合同">
                   <Button
                     icon={<FileTextOutlined />}

@@ -21,11 +21,14 @@ from app.database import get_db, AsyncSessionLocal
 from app.models import (
     Conversation, Message, KnowledgeEntry, Contract, ContractTemplate, FileEntry, TelegramBot,
     ConversationStatus, MessageRole, ProductEntry, ProductImage, SceneGenerationImage, SceneGenerationRecord,
+    ConversationSceneState,
 )
 from app.schemas import (
     LoginRequest, TokenResponse, ConversationSchema, ConversationDetailSchema,
-    ReplyRequest, KnowledgeEntrySchema, KnowledgeCreateRequest,
+    ReplyRequest, KnowledgeEntrySchema, KnowledgeCreateRequest, MessageSchema,
     ContractSchema, ContractUpdateRequest, ContractGenerateRequest, SendContractRequest, DashboardStats,
+    TelegramSimulatorSessionCreate, TelegramSimulatorSessionResponse,
+    TelegramSimulatorSendRequest, TelegramSimulatorSendResponse, TelegramSimulatorEventSchema,
     LLMSettingsSchema, LLMSettingsUpdateRequest,
     FileEntrySchema, FileEntryUpdateRequest,
     TelegramBotSchema, TelegramBotCreateRequest, TelegramBotUpdateRequest,
@@ -58,6 +61,19 @@ from app.services.scene_service import (
     cleanup_stale_pending_scene_generations,
 )
 from app.services import bot_manager
+from app.telegram_bot import (
+    process_customer_text_message,
+    SimulatorOutbound,
+    save_message as tg_save_message,
+    get_or_create_conversation,
+    get_scene_state,
+    resolve_turn_language,
+    ui_scene_language,
+    localize_scene_name,
+    SCENE_RESULT_MESSAGES,
+    SCENE_FAILED_MESSAGES,
+    SCENE_RESULT_LINK_LABELS,
+)
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -198,6 +214,9 @@ async def reply_to_conversation(
     conversation.quote_language = None
     await db.commit()
 
+    if (conversation.telegram_chat_id or "").startswith(SIM_CHAT_PREFIX):
+        return {"status": "sent"}
+
     bot_instance = None
     if conversation.bot_id:
         bot_instance = bot_manager.get_bot_instance(conversation.bot_id)
@@ -317,6 +336,272 @@ async def close_conversation(
     conversation.status = ConversationStatus.CLOSED
     await db.commit()
     return {"status": "closed"}
+
+
+@router.delete("/conversations/{conversation_id}")
+async def delete_conversation(
+    conversation_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: str = Depends(get_current_user),
+):
+    conversation = await db.get(Conversation, conversation_id)
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    if not (conversation.telegram_chat_id or "").startswith(SIM_CHAT_PREFIX):
+        raise HTTPException(status_code=400, detail="Only simulator conversations can be deleted")
+
+    scene_result = await db.execute(
+        select(SceneGenerationRecord.id).where(SceneGenerationRecord.conversation_id == conversation_id)
+    )
+    scene_record_ids = [row[0] for row in scene_result.all()]
+    for record_id in scene_record_ids:
+        await cancel_scene_generation_task(record_id)
+
+    if scene_record_ids:
+        await db.execute(delete(SceneGenerationImage).where(SceneGenerationImage.record_id.in_(scene_record_ids)))
+        await db.execute(delete(SceneGenerationRecord).where(SceneGenerationRecord.id.in_(scene_record_ids)))
+
+    await db.execute(delete(ConversationSceneState).where(ConversationSceneState.conversation_id == conversation_id))
+    await db.execute(delete(Contract).where(Contract.conversation_id == conversation_id))
+    await db.execute(delete(Message).where(Message.conversation_id == conversation_id))
+    await db.delete(conversation)
+    await db.commit()
+
+    for record_id in scene_record_ids:
+        scene_dir = os.path.join(settings.FILE_STORAGE_DIR, "generated_scenes", str(record_id))
+        shutil.rmtree(scene_dir, ignore_errors=True)
+
+    return {"status": "deleted", "id": conversation_id}
+
+
+# ─── Telegram Simulator ──────────────────────────────────────────────────────
+
+SIM_CHAT_PREFIX = "sim-"
+
+
+def _scene_fallback_name(ui_lang: str) -> str:
+    return {
+        "zh": "该场景",
+        "en": "requested setting",
+        "ja": "ご希望の空間",
+        "ko": "요청하신 공간",
+        "es": "ambiente solicitado",
+        "fr": "cadre demandé",
+    }.get(ui_lang, "requested setting")
+
+
+async def _build_simulator_scene_events(
+    record: SceneGenerationRecord,
+    conversation_language: str,
+    db: AsyncSession,
+) -> list[TelegramSimulatorEventSchema]:
+    ui_lang = ui_scene_language(conversation_language)
+    created_at = record.updated_at or record.created_at or datetime.utcnow()
+    events: list[TelegramSimulatorEventSchema] = []
+
+    if record.status == "failed":
+        text = SCENE_FAILED_MESSAGES.get(ui_lang, SCENE_FAILED_MESSAGES["en"])
+        events.append(TelegramSimulatorEventSchema(
+            id=f"scene-{record.id}-failed",
+            role="assistant",
+            type="text",
+            text=text,
+            created_at=created_at,
+        ))
+        return events
+
+    if record.status != "completed":
+        return events
+
+    localized_scene = localize_scene_name(record.scene_name or "", ui_lang) or _scene_fallback_name(ui_lang)
+    intro_template = SCENE_RESULT_MESSAGES.get(ui_lang, SCENE_RESULT_MESSAGES["en"])
+    events.append(TelegramSimulatorEventSchema(
+        id=f"scene-{record.id}-intro",
+        role="assistant",
+        type="text",
+        text=intro_template.format(scene=localized_scene),
+        created_at=created_at,
+    ))
+
+    resp = await build_scene_record_response(record)
+    image_urls = resp.get("image_urls", [])
+    for idx, image_url in enumerate(image_urls):
+        events.append(TelegramSimulatorEventSchema(
+            id=f"scene-{record.id}-image-{idx}",
+            role="assistant",
+            type="photo",
+            url=image_url,
+            created_at=created_at,
+        ))
+
+    labels = SCENE_RESULT_LINK_LABELS.get(ui_lang, SCENE_RESULT_LINK_LABELS["en"])
+    lines: list[str] = []
+    primary = await db.get(ProductEntry, record.primary_product_id)
+    if primary:
+        primary_link = primary.buy_url or primary.detail_url
+        if primary_link:
+            lines.append(f"{labels['main']}: [{primary.product_name}]({primary_link})")
+    for rel in resp.get("related_products", []):
+        link = rel.get("buy_url") or rel.get("detail_url")
+        if link:
+            lines.append(f"{labels['related']}: [{rel.get('product_name', '')}]({link})")
+    if lines:
+        events.append(TelegramSimulatorEventSchema(
+            id=f"scene-{record.id}-links",
+            role="assistant",
+            type="text",
+            text="\n".join(lines),
+            parse_mode="Markdown",
+            created_at=created_at,
+        ))
+    return events
+
+
+@router.post("/simulator/sessions", response_model=TelegramSimulatorSessionResponse)
+async def simulator_create_session(
+    req: TelegramSimulatorSessionCreate,
+    db: AsyncSession = Depends(get_db),
+    _: str = Depends(get_current_user),
+):
+    bot = await db.get(TelegramBot, req.bot_id)
+    if not bot:
+        raise HTTPException(status_code=404, detail="Bot not found")
+
+    sim_chat_id = f"{SIM_CHAT_PREFIX}{uuid.uuid4().hex[:12]}"
+    sim_user_id = sim_chat_id
+    language = (req.language or "zh").strip()[:10] or "zh"
+
+    conversation = await get_or_create_conversation(
+        bot_id=req.bot_id,
+        chat_id=sim_chat_id,
+        user_id=sim_user_id,
+        username="simulator",
+        first_name="模拟用户",
+        last_name="",
+        language=language,
+    )
+
+    welcome = bot.welcome_message or ""
+    if not welcome:
+        from app.telegram_bot import WELCOME_MESSAGES
+        welcome = WELCOME_MESSAGES.get(language, WELCOME_MESSAGES["en"])
+    await tg_save_message(conversation.id, MessageRole.ASSISTANT, welcome, language)
+
+    return TelegramSimulatorSessionResponse(
+        conversation_id=conversation.id,
+        telegram_chat_id=sim_chat_id,
+    )
+
+
+@router.post("/simulator/sessions/{conversation_id}/send", response_model=TelegramSimulatorSendResponse)
+async def simulator_send_message(
+    conversation_id: int,
+    req: TelegramSimulatorSendRequest,
+    db: AsyncSession = Depends(get_db),
+    _: str = Depends(get_current_user),
+):
+    conversation = await db.get(Conversation, conversation_id)
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    if not (conversation.telegram_chat_id or "").startswith(SIM_CHAT_PREFIX):
+        raise HTTPException(status_code=400, detail="Not a simulator conversation")
+
+    user_message = (req.text or "").strip()
+    if not user_message:
+        raise HTTPException(status_code=400, detail="Empty message")
+
+    try:
+        detected_language = await detect_language(user_message)
+    except Exception:
+        detected_language = conversation.language or "en"
+
+    scene_state = await get_scene_state(conversation_id)
+    language = resolve_turn_language(
+        user_message=user_message,
+        detected_language=detected_language,
+        conversation_language=conversation.language,
+        scene_reply_language=scene_state.reply_language if scene_state else None,
+    )
+
+    conversation.language = language
+    await db.commit()
+
+    await tg_save_message(conversation_id, MessageRole.USER, user_message, language)
+
+    fresh = await db.get(Conversation, conversation_id)
+    current_status = fresh.status if fresh else conversation.status
+
+    outbound = SimulatorOutbound()
+    stop_typing = asyncio.Event()
+    stop_typing.set()
+    typing_task = asyncio.create_task(asyncio.sleep(0))
+
+    await process_customer_text_message(
+        bot_id=conversation.bot_id or 0,
+        conversation_id=conversation_id,
+        user_message=user_message,
+        language=language,
+        current_status=current_status,
+        outbound=outbound,
+        run_notify_admin=False,
+        notify_bot=None,
+        stop_typing=stop_typing,
+        typing_task=typing_task,
+    )
+
+    return TelegramSimulatorSendResponse(
+        conversation_id=conversation_id,
+        outgoing=outbound.events,
+    )
+
+
+@router.get("/simulator/sessions/{conversation_id}/messages", response_model=list[MessageSchema])
+async def simulator_get_messages(
+    conversation_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: str = Depends(get_current_user),
+):
+    conversation = await db.get(Conversation, conversation_id)
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    if not (conversation.telegram_chat_id or "").startswith(SIM_CHAT_PREFIX):
+        raise HTTPException(status_code=400, detail="Not a simulator conversation")
+
+    result = await db.execute(
+        select(Message)
+        .where(Message.conversation_id == conversation_id)
+        .order_by(Message.created_at)
+    )
+    return [MessageSchema.model_validate(msg) for msg in result.scalars().all()]
+
+
+@router.get("/simulator/sessions/{conversation_id}/events", response_model=list[TelegramSimulatorEventSchema])
+async def simulator_get_events(
+    conversation_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: str = Depends(get_current_user),
+):
+    conversation = await db.get(Conversation, conversation_id)
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    if not (conversation.telegram_chat_id or "").startswith(SIM_CHAT_PREFIX):
+        raise HTTPException(status_code=400, detail="Not a simulator conversation")
+
+    await cleanup_stale_pending_scene_generations()
+    result = await db.execute(
+        select(SceneGenerationRecord)
+        .where(
+            SceneGenerationRecord.conversation_id == conversation_id,
+            SceneGenerationRecord.status.in_(["completed", "failed"]),
+        )
+        .order_by(SceneGenerationRecord.created_at)
+    )
+    records = result.scalars().all()
+
+    events: list[TelegramSimulatorEventSchema] = []
+    for record in records:
+        events.extend(await _build_simulator_scene_events(record, conversation.language or "en", db))
+    return events
 
 
 # ─── Knowledge Base ──────────────────────────────────────────────────────────

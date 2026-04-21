@@ -1,9 +1,9 @@
 import axios from 'axios';
 import type {
-  Conversation, ConversationDetail, KnowledgeEntry,
+  Conversation, ConversationDetail, KnowledgeEntry, Message,
   Contract, ContractTemplate, DashboardStats, LLMSettings, FileEntry, TelegramBot,
   ProductEntry, SceneGenerationRecord, SceneLibraryItem, SceneLibraryFilters,
-  SceneGeneratorRequest, SceneBatchActionResponse,
+  SceneGeneratorRequest, SceneBatchActionResponse, TelegramSimulatorSessionResponse, SimulatorOutgoingEvent,
 } from './types';
 
 const api = axios.create({ baseURL: '/api' });
@@ -45,6 +45,8 @@ export const conversationApi = {
     api.post(`/conversations/${id}/reply`, { content }),
   close: (id: number) =>
     api.post(`/conversations/${id}/close`),
+  delete: (id: number) =>
+    api.delete(`/conversations/${id}`),
   sendContract: (conversationId: number, contractId: number) =>
     api.post(`/conversations/${conversationId}/send-contract`, { contract_id: contractId }),
 };
@@ -188,6 +190,23 @@ export const sceneLibraryApi = {
     api.get<SceneLibraryFilters>('/scene-library/filters', { params }),
   list: (params?: { view?: 'library' | 'review' | 'generating' | 'failed'; brand?: string; space?: string; style?: string; scene_name?: string; skip?: number; limit?: number }) =>
     api.get<SceneLibraryItem[]>('/scene-library', { params }),
+};
+
+export const simulatorApi = {
+  createSession: (botId: number, language?: string) =>
+    api.post<TelegramSimulatorSessionResponse>('/simulator/sessions', {
+      bot_id: botId,
+      language: language || 'zh',
+    }),
+  sendMessage: (conversationId: number, text: string) =>
+    api.post<{ conversation_id: number; outgoing: SimulatorOutgoingEvent[] }>(
+      `/simulator/sessions/${conversationId}/send`,
+      { text },
+    ),
+  getMessages: (conversationId: number) =>
+    api.get<Message[]>(`/simulator/sessions/${conversationId}/messages`),
+  getEvents: (conversationId: number) =>
+    api.get<SimulatorOutgoingEvent[]>(`/simulator/sessions/${conversationId}/events`),
 };
 
 export default api;

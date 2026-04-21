@@ -222,3 +222,20 @@ export interface SceneBatchActionResponse {
   affected_ids: number[];
   failed_ids: number[];
 }
+
+export interface TelegramSimulatorSessionResponse {
+  conversation_id: number;
+  telegram_chat_id: string;
+}
+
+export interface SimulatorOutgoingEvent {
+  id: string;
+  type: 'text' | 'photo' | 'document';
+  role: 'user' | 'assistant' | 'human_agent';
+  text?: string;
+  caption?: string;
+  url?: string;
+  filename?: string;
+  parse_mode?: string | null;
+  created_at: string;
+}

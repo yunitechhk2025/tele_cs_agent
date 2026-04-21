@@ -14,6 +14,7 @@ import {
   ApiOutlined,
   ShopOutlined,
   PictureOutlined,
+  ExperimentOutlined,
 } from '@ant-design/icons';
 
 const { Header, Sider, Content } = Layout;
@@ -24,6 +25,7 @@ const menuItems = [
   { key: '/bots', icon: <ApiOutlined />, label: 'Bot 管理' },
   { key: '/products', icon: <ShopOutlined />, label: '产品库' },
   { key: '/scenes', icon: <PictureOutlined />, label: '场景库' },
+  { key: '/simulator', icon: <ExperimentOutlined />, label: '模拟对话' },
   { key: '/knowledge', icon: <BookOutlined />, label: '知识库' },
   { key: '/contracts', icon: <FileTextOutlined />, label: '合同管理' },
   { key: '/settings', icon: <SettingOutlined />, label: '系统设置' },

@@ -1,8 +1,13 @@
 import asyncio
+import base64
 import logging
+import mimetypes
 import os
 import re
+from datetime import datetime
 from io import BytesIO
+from pathlib import Path
+from typing import Any, Protocol
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, constants
 from telegram.ext import ContextTypes
 from sqlalchemy import select
@@ -132,6 +137,163 @@ SCENE_RESULT_LINK_LABELS = {
 }
 
 
+class CustomerOutbound(Protocol):
+    async def reply_text(
+        self,
+        text: str,
+        parse_mode: str | None = None,
+        disable_web_page_preview: bool = False,
+    ) -> None:
+        ...
+
+    async def send_local_photo(
+        self,
+        full_path: str,
+        caption: str | None = None,
+        parse_mode: str | None = None,
+    ) -> None:
+        ...
+
+    async def send_document_file(
+        self,
+        file_path: str,
+        filename: str,
+        caption: str | None = None,
+    ) -> None:
+        ...
+
+
+def _data_url_from_file(path: str) -> str:
+    mime_type = mimetypes.guess_type(path)[0] or "application/octet-stream"
+    encoded = base64.b64encode(Path(path).read_bytes()).decode("ascii")
+    return f"data:{mime_type};base64,{encoded}"
+
+
+class TelegramOutbound:
+    def __init__(self, chat_id: int, bot) -> None:
+        self.chat_id = chat_id
+        self.bot = bot
+
+    async def reply_text(
+        self,
+        text: str,
+        parse_mode: str | None = None,
+        disable_web_page_preview: bool = False,
+    ) -> None:
+        await self.bot.send_message(
+            chat_id=self.chat_id,
+            text=text,
+            parse_mode=parse_mode,
+            disable_web_page_preview=disable_web_page_preview,
+        )
+
+    async def send_local_photo(
+        self,
+        full_path: str,
+        caption: str | None = None,
+        parse_mode: str | None = None,
+    ) -> None:
+        with open(full_path, "rb") as fh:
+            bio = BytesIO(fh.read())
+        bio.name = os.path.basename(full_path)
+        bio.seek(0)
+        await self.bot.send_photo(
+            chat_id=self.chat_id,
+            photo=bio,
+            caption=caption,
+            parse_mode=parse_mode,
+        )
+
+    async def send_document_file(
+        self,
+        file_path: str,
+        filename: str,
+        caption: str | None = None,
+    ) -> None:
+        with open(file_path, "rb") as fh:
+            await self.bot.send_document(
+                chat_id=self.chat_id,
+                document=fh,
+                filename=filename,
+                caption=caption,
+            )
+
+
+class SimulatorOutbound:
+    def __init__(self) -> None:
+        self.events: list[dict[str, Any]] = []
+
+    def _append(self, payload: dict[str, Any]) -> None:
+        self.events.append(
+            {
+                "id": f"evt-{len(self.events) + 1}-{int(asyncio.get_running_loop().time() * 1000)}",
+                "role": "assistant",
+                "created_at": datetime.utcnow().isoformat(),
+                **payload,
+            }
+        )
+
+    async def reply_text(
+        self,
+        text: str,
+        parse_mode: str | None = None,
+        disable_web_page_preview: bool = False,
+    ) -> None:
+        self._append(
+            {
+                "type": "text",
+                "text": text,
+                "parse_mode": parse_mode,
+                "disable_web_page_preview": disable_web_page_preview,
+            }
+        )
+
+    async def send_local_photo(
+        self,
+        full_path: str,
+        caption: str | None = None,
+        parse_mode: str | None = None,
+    ) -> None:
+        self._append(
+            {
+                "type": "photo",
+                "url": _data_url_from_file(full_path),
+                "caption": caption or "",
+                "parse_mode": parse_mode,
+            }
+        )
+
+    async def send_document_file(
+        self,
+        file_path: str,
+        filename: str,
+        caption: str | None = None,
+    ) -> None:
+        self._append(
+            {
+                "type": "document",
+                "url": _data_url_from_file(file_path),
+                "filename": filename,
+                "caption": caption or "",
+            }
+        )
+
+    async def send_photo_url(
+        self,
+        url: str,
+        caption: str | None = None,
+        parse_mode: str | None = None,
+    ) -> None:
+        self._append(
+            {
+                "type": "photo",
+                "url": url,
+                "caption": caption or "",
+                "parse_mode": parse_mode,
+            }
+        )
+
+
 async def keep_typing(chat_id: int, bot, stop_event: asyncio.Event):
     """Continuously send 'typing...' action until stop_event is set."""
     while not stop_event.is_set():
@@ -238,19 +400,17 @@ async def get_file_entry_by_id(file_id: int) -> FileEntry | None:
         return await db.get(FileEntry, file_id)
 
 
-async def send_files_to_user(chat_id: str, file_ids: list[int], bot):
+async def send_files_to_user(file_ids: list[int], outbound: CustomerOutbound):
     for fid in file_ids:
         entry = await get_file_entry_by_id(fid)
         if not entry:
             continue
         try:
-            with open(entry.file_path, "rb") as f:
-                await bot.send_document(
-                    chat_id=int(chat_id),
-                    document=f,
-                    filename=entry.original_name,
-                    caption=entry.description[:200] if entry.description else None,
-                )
+            await outbound.send_document_file(
+                file_path=entry.file_path,
+                filename=entry.original_name,
+                caption=entry.description[:200] if entry.description else None,
+            )
         except Exception as e:
             logger.error(f"Failed to send file {entry.original_name}: {e}")
 
@@ -409,13 +569,13 @@ def build_scene_followup_message(language: str, products: list[dict]) -> str:
     return template.format(scene=scene)
 
 
-async def send_scene_generation_result(chat_id: str, language: str, record, bot):
+async def send_scene_generation_result(language: str, record, outbound: CustomerOutbound):
     import json
     ui_lang = ui_scene_language(language)
 
     if record.status != "completed":
         text = SCENE_FAILED_MESSAGES.get(ui_lang, SCENE_FAILED_MESSAGES["en"])
-        await bot.send_message(chat_id=int(chat_id), text=text)
+        await outbound.reply_text(text)
         return
 
     output_paths = json.loads(record.output_paths_json or "[]")
@@ -429,18 +589,14 @@ async def send_scene_generation_result(chat_id: str, language: str, record, bot)
     }.get(ui_lang, "requested setting")
     intro_template = SCENE_RESULT_MESSAGES.get(ui_lang, SCENE_RESULT_MESSAGES["en"])
     intro = intro_template.format(scene=localized_scene)
-    await bot.send_message(chat_id=int(chat_id), text=intro)
+    await outbound.reply_text(intro)
 
     for rel in output_paths:
         full = os.path.join("/app", rel)
         if not os.path.exists(full):
             continue
         try:
-            with open(full, "rb") as f:
-                bio = BytesIO(f.read())
-            bio.name = os.path.basename(full)
-            bio.seek(0)
-            await bot.send_photo(chat_id=int(chat_id), photo=bio)
+            await outbound.send_local_photo(full)
         except Exception as e:
             logger.error("Failed to send generated scene image %s: %s", full, e)
 
@@ -463,15 +619,14 @@ async def send_scene_generation_result(chat_id: str, language: str, record, bot)
         if link:
             lines.append(f"{labels['related']}: [{p.product_name}]({link})")
     if lines:
-        await bot.send_message(
-            chat_id=int(chat_id),
-            text="\n".join(lines),
+        await outbound.reply_text(
+            "\n".join(lines),
             parse_mode="Markdown",
             disable_web_page_preview=True,
         )
 
 
-async def send_product_recommendations(chat_id: str, products: list[dict], language: str, bot):
+async def send_product_recommendations(products: list[dict], language: str, outbound: CustomerOutbound):
     """Send 1-3 recommended products as Telegram photo cards."""
     ui_lang = ui_scene_language(language)
     labels = PRODUCT_CARD_LABELS.get(ui_lang, PRODUCT_CARD_LABELS["en"])
@@ -492,21 +647,23 @@ async def send_product_recommendations(chat_id: str, products: list[dict], langu
         caption = "\n".join(lines)[:1024]
 
         sent = False
-        for img_path in p.get("image_paths", []):
+        for image_order, img_path in enumerate(p.get("image_paths", [])):
             full = os.path.join("/app", img_path)
             if not os.path.exists(full):
                 continue
             try:
-                with open(full, "rb") as f:
-                    bio = BytesIO(f.read())
-                bio.name = os.path.basename(full)
-                bio.seek(0)
-                await bot.send_photo(
-                    chat_id=int(chat_id),
-                    photo=bio,
-                    caption=caption,
-                    parse_mode="Markdown",
-                )
+                if isinstance(outbound, SimulatorOutbound):
+                    await outbound.send_photo_url(
+                        f"/api/products/{p['id']}/images/{image_order}",
+                        caption=caption,
+                        parse_mode="Markdown",
+                    )
+                else:
+                    await outbound.send_local_photo(
+                        full,
+                        caption=caption,
+                        parse_mode="Markdown",
+                    )
                 sent = True
                 break
             except Exception as e:
@@ -514,9 +671,8 @@ async def send_product_recommendations(chat_id: str, products: list[dict], langu
 
         if not sent:
             try:
-                await bot.send_message(
-                    chat_id=int(chat_id),
-                    text=caption,
+                await outbound.reply_text(
+                    caption,
                     parse_mode="Markdown",
                 )
             except Exception as e:
@@ -578,6 +734,254 @@ async def notify_admin(bot_id: int, conversation: Conversation, user_message: st
         logger.error(f"[Bot {bot_id}] Failed to notify admin at chat_id={admin_chat_id}: {e}", exc_info=True)
 
 
+async def process_customer_text_message(
+    bot_id: int,
+    conversation_id: int,
+    user_message: str,
+    language: str,
+    current_status: str,
+    outbound: CustomerOutbound,
+    run_notify_admin: bool,
+    notify_bot,
+    stop_typing: asyncio.Event,
+    typing_task: asyncio.Task,
+):
+    try:
+        conversation = None
+        async with AsyncSessionLocal() as db:
+            conversation = await db.get(Conversation, conversation_id)
+
+        is_quote = await check_is_quote_related(user_message)
+        logger.info(f"[Bot {bot_id}] Quote related: {is_quote}")
+        if is_quote:
+            async with AsyncSessionLocal() as db:
+                conv = await db.get(Conversation, conversation_id)
+                if conv:
+                    conv.status = ConversationStatus.PENDING_HUMAN
+                    conv.quote_language = language
+                    await db.commit()
+
+            handoff_msg = HANDOFF_MESSAGES.get(language, HANDOFF_MESSAGES["en"])
+            await save_message(conversation_id, MessageRole.ASSISTANT, handoff_msg, language)
+            stop_typing.set()
+            await typing_task
+            await outbound.reply_text(handoff_msg)
+            if run_notify_admin and notify_bot and conversation:
+                await notify_admin(
+                    bot_id,
+                    conversation,
+                    user_message,
+                    notify_bot,
+                    is_followup=(current_status == ConversationStatus.PENDING_HUMAN),
+                )
+            return
+
+        if current_status == ConversationStatus.PENDING_HUMAN and run_notify_admin and notify_bot and conversation:
+            await notify_admin(bot_id, conversation, user_message, notify_bot, is_followup=True)
+
+        scene_state = await get_scene_state(conversation_id)
+        recent_scene_product_ids: list[int] = []
+        if scene_state:
+            try:
+                recent_scene_product_ids = [
+                    int(x) for x in json.loads(scene_state.recommended_product_ids_json or "[]")
+                ]
+            except Exception:
+                recent_scene_product_ids = []
+
+        all_products = await get_products_for_bot()
+        scene_req = await analyze_scene_image_request(
+            user_message,
+            all_products,
+            recent_product_ids=recent_scene_product_ids,
+        )
+
+        if scene_state and scene_state.pending_confirmation:
+            resolved_ref = await resolve_recent_product_reference(
+                user_message,
+                all_products,
+                recent_scene_product_ids,
+            )
+            referenced_id = resolved_ref.get("target_product_id")
+            wants_scene = (
+                scene_req.get("is_scene_request")
+                or referenced_id is not None
+                or await check_is_scene_image_confirmation(user_message)
+            )
+            if wants_scene:
+                primary_id = (
+                    scene_req.get("target_product_id")
+                    or referenced_id
+                    or scene_state.primary_product_id
+                    or (recent_scene_product_ids[0] if recent_scene_product_ids else None)
+                )
+                primary_product = None
+                if primary_id:
+                    async with AsyncSessionLocal() as db:
+                        primary_product = await db.get(ProductEntry, primary_id)
+                if primary_product:
+                    requested_scene = (scene_req.get("scene_name") or "").strip()
+                    requested_style = (scene_req.get("style_hint") or "").strip()
+                    default_scene = requested_scene or (
+                        scene_state.suggested_scene
+                        if not referenced_id or referenced_id == scene_state.primary_product_id
+                        else primary_product.space
+                    )
+                    default_style = requested_style or (
+                        scene_state.suggested_style
+                        if not referenced_id or referenced_id == scene_state.primary_product_id
+                        else primary_product.style
+                    )
+                    generating = SCENE_GENERATING_MESSAGES.get(language, SCENE_GENERATING_MESSAGES["en"])
+                    stop_typing.set()
+                    await typing_task
+                    await outbound.reply_text(generating)
+                    await save_message(conversation_id, MessageRole.ASSISTANT, generating, language)
+                    try:
+                        record = await generate_scene_images(
+                            primary_product=primary_product,
+                            all_products=all_products,
+                            user_request=user_message if (referenced_id or scene_req.get("is_scene_request")) else (scene_state.last_customer_request or user_message),
+                            scene_name=default_scene or primary_product.space,
+                            style_hint=default_style or primary_product.style,
+                            conversation_id=conversation_id,
+                            timeout_seconds=CUSTOMER_SCENE_TIMEOUT_SECONDS,
+                        )
+                    except asyncio.TimeoutError:
+                        timeout_text = SCENE_TIMEOUT_MESSAGES.get(language, SCENE_TIMEOUT_MESSAGES["en"])
+                        await outbound.reply_text(timeout_text)
+                        await save_message(conversation_id, MessageRole.ASSISTANT, timeout_text, language)
+                        await clear_scene_state(conversation_id)
+                        return
+                    await send_scene_generation_result(language, record, outbound)
+                    await clear_scene_state(conversation_id)
+                    return
+
+        if scene_req.get("is_scene_request"):
+            resolved_ref = await resolve_recent_product_reference(
+                user_message,
+                all_products,
+                recent_scene_product_ids,
+            )
+            referenced_id = resolved_ref.get("target_product_id")
+            target_id = scene_req.get("target_product_id") or referenced_id or (scene_state.primary_product_id if scene_state else None)
+            if target_id:
+                async with AsyncSessionLocal() as db:
+                    primary_product = await db.get(ProductEntry, int(target_id))
+                if primary_product:
+                    generating = SCENE_GENERATING_MESSAGES.get(language, SCENE_GENERATING_MESSAGES["en"])
+                    stop_typing.set()
+                    await typing_task
+                    await outbound.reply_text(generating)
+                    await save_message(conversation_id, MessageRole.ASSISTANT, generating, language)
+                    try:
+                        record = await generate_scene_images(
+                            primary_product=primary_product,
+                            all_products=all_products,
+                            user_request=user_message,
+                            scene_name=scene_req.get("scene_name") or primary_product.space,
+                            style_hint=scene_req.get("style_hint") or primary_product.style,
+                            conversation_id=conversation_id,
+                            timeout_seconds=CUSTOMER_SCENE_TIMEOUT_SECONDS,
+                        )
+                    except asyncio.TimeoutError:
+                        timeout_text = SCENE_TIMEOUT_MESSAGES.get(language, SCENE_TIMEOUT_MESSAGES["en"])
+                        await outbound.reply_text(timeout_text)
+                        await save_message(conversation_id, MessageRole.ASSISTANT, timeout_text, language)
+                        return
+                    await send_scene_generation_result(language, record, outbound)
+                    await save_scene_state(
+                        conversation_id=conversation_id,
+                        primary_product_id=primary_product.id,
+                        recommended_product_ids=[primary_product.id],
+                        suggested_scene=scene_req.get("scene_name") or primary_product.space,
+                        suggested_style=scene_req.get("style_hint") or primary_product.style,
+                        pending_confirmation=False,
+                        reply_language=language,
+                        last_customer_request=user_message,
+                    )
+                    return
+
+        is_product_rec = await check_is_product_recommendation(user_message)
+        logger.info(f"[Bot {bot_id}] Product recommendation: {is_product_rec}")
+        if is_product_rec:
+            selected_ids = await ai_select_products(user_message, all_products) if all_products else []
+            products_by_id = {p["id"]: p for p in all_products}
+            selected_products = [products_by_id[pid] for pid in selected_ids if pid in products_by_id]
+            intro = PRODUCT_REC_INTRO.get(language, PRODUCT_REC_INTRO["en"])
+            none_msg = PRODUCT_REC_NONE.get(language, PRODUCT_REC_NONE["en"])
+            stop_typing.set()
+            await typing_task
+            if selected_products:
+                await outbound.reply_text(intro)
+                await save_message(conversation_id, MessageRole.ASSISTANT, intro, language)
+                await send_product_recommendations(selected_products, language, outbound)
+                primary_product = selected_products[0]
+                suggested_scene = select_default_scene(selected_products, language)
+                followup = build_scene_followup_message(language, selected_products)
+                await outbound.reply_text(followup)
+                await save_message(conversation_id, MessageRole.ASSISTANT, followup, language)
+                await save_scene_state(
+                    conversation_id=conversation_id,
+                    primary_product_id=primary_product["id"],
+                    recommended_product_ids=selected_ids,
+                    suggested_scene=suggested_scene,
+                    suggested_style=primary_product.get("style", ""),
+                    pending_confirmation=True,
+                    reply_language=language,
+                    last_customer_request=user_message,
+                )
+                logger.info(f"[Bot {bot_id}] Sent {len(selected_products)} product recommendations")
+            else:
+                await outbound.reply_text(none_msg)
+                await save_message(conversation_id, MessageRole.ASSISTANT, none_msg, language)
+                await clear_scene_state(conversation_id)
+            return
+
+        kb_context = await search_knowledge_for_bot(user_message)
+
+        all_files = await get_all_file_entries()
+        matched_file_ids = await check_file_request(user_message, all_files) if all_files else []
+
+        file_info = ""
+        if matched_file_ids:
+            matched_entries = [f for f in all_files if f["id"] in matched_file_ids]
+            file_info = "\n".join(f"- {f['name']}: {f['description']}" for f in matched_entries)
+
+        chat_history = await get_chat_history(conversation_id)
+
+        logger.info(f"[Bot {bot_id}] Generating AI response...")
+        response_text = await generate_response(
+            user_message=user_message,
+            context=kb_context,
+            language=language,
+            chat_history=chat_history,
+            file_info=file_info,
+        )
+        logger.info(f"[Bot {bot_id}] AI response generated ({len(response_text)} chars)")
+
+        await save_message(conversation_id, MessageRole.ASSISTANT, response_text, language)
+        stop_typing.set()
+        await typing_task
+
+        await outbound.reply_text(response_text)
+
+        if matched_file_ids:
+            await send_files_to_user(matched_file_ids, outbound)
+    except Exception as e:
+        stop_typing.set()
+        await typing_task
+        logger.error(f"[Bot {bot_id}] Error processing message: {e}", exc_info=True)
+        fallback = {
+            "zh": "抱歉，系统暂时出现问题，请稍后再试或联系人工客服。",
+            "en": "Sorry, the system is temporarily unavailable. Please try again later.",
+        }
+        try:
+            await outbound.reply_text(fallback.get(language, fallback["en"]))
+        except Exception:
+            logger.error(f"[Bot {bot_id}] Failed to send fallback message", exc_info=True)
+
+
 def make_start_handler(bot_id: int):
     async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = update.effective_user
@@ -601,8 +1005,6 @@ def make_start_handler(bot_id: int):
 
 def make_message_handler(bot_id: int):
     async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        import json
-
         user = update.effective_user
         chat_id = str(update.effective_chat.id)
         user_message = update.message.text
@@ -656,236 +1058,19 @@ def make_message_handler(bot_id: int):
         typing_task = asyncio.create_task(
             keep_typing(int(chat_id), context.bot, stop_typing)
         )
-
-        try:
-            is_quote = await check_is_quote_related(user_message)
-            logger.info(f"[Bot {bot_id}] Quote related: {is_quote}")
-            if is_quote:
-                async with AsyncSessionLocal() as db:
-                    conv = await db.get(Conversation, conversation.id)
-                    if conv:
-                        conv.status = ConversationStatus.PENDING_HUMAN
-                        conv.quote_language = language
-                        await db.commit()
-
-                handoff_msg = HANDOFF_MESSAGES.get(language, HANDOFF_MESSAGES["en"])
-                await save_message(conversation.id, MessageRole.ASSISTANT, handoff_msg, language)
-                stop_typing.set()
-                await typing_task
-                await update.message.reply_text(handoff_msg)
-                await notify_admin(
-                    bot_id,
-                    conversation,
-                    user_message,
-                    context.bot,
-                    is_followup=(current_status == ConversationStatus.PENDING_HUMAN),
-                )
-                return
-
-            if current_status == ConversationStatus.PENDING_HUMAN:
-                await notify_admin(bot_id, conversation, user_message, context.bot, is_followup=True)
-
-            recent_scene_product_ids = []
-            if scene_state:
-                try:
-                    recent_scene_product_ids = [
-                        int(x) for x in json.loads(scene_state.recommended_product_ids_json or "[]")
-                    ]
-                except Exception:
-                    recent_scene_product_ids = []
-
-            all_products = await get_products_for_bot()
-            scene_req = await analyze_scene_image_request(
-                user_message,
-                all_products,
-                recent_product_ids=recent_scene_product_ids,
-            )
-
-            if scene_state and scene_state.pending_confirmation:
-                resolved_ref = await resolve_recent_product_reference(
-                    user_message,
-                    all_products,
-                    recent_scene_product_ids,
-                )
-                referenced_id = resolved_ref.get("target_product_id")
-                wants_scene = (
-                    scene_req.get("is_scene_request")
-                    or referenced_id is not None
-                    or await check_is_scene_image_confirmation(user_message)
-                )
-                if wants_scene:
-                    primary_id = (
-                        scene_req.get("target_product_id")
-                        or referenced_id
-                        or scene_state.primary_product_id
-                        or (recent_scene_product_ids[0] if recent_scene_product_ids else None)
-                    )
-                    primary_product = None
-                    if primary_id:
-                        async with AsyncSessionLocal() as db:
-                            primary_product = await db.get(ProductEntry, primary_id)
-                    if primary_product:
-                        requested_scene = (scene_req.get("scene_name") or "").strip()
-                        requested_style = (scene_req.get("style_hint") or "").strip()
-                        default_scene = requested_scene or (
-                            scene_state.suggested_scene
-                            if not referenced_id or referenced_id == scene_state.primary_product_id
-                            else primary_product.space
-                        )
-                        default_style = requested_style or (
-                            scene_state.suggested_style
-                            if not referenced_id or referenced_id == scene_state.primary_product_id
-                            else primary_product.style
-                        )
-                        generating = SCENE_GENERATING_MESSAGES.get(language, SCENE_GENERATING_MESSAGES["en"])
-                        stop_typing.set()
-                        await typing_task
-                        await update.message.reply_text(generating)
-                        await save_message(conversation.id, MessageRole.ASSISTANT, generating, language)
-                        try:
-                            record = await generate_scene_images(
-                                primary_product=primary_product,
-                                all_products=all_products,
-                                user_request=user_message if (referenced_id or scene_req.get("is_scene_request")) else (scene_state.last_customer_request or user_message),
-                                scene_name=default_scene or primary_product.space,
-                                style_hint=default_style or primary_product.style,
-                                conversation_id=conversation.id,
-                                timeout_seconds=CUSTOMER_SCENE_TIMEOUT_SECONDS,
-                            )
-                        except asyncio.TimeoutError:
-                            timeout_text = SCENE_TIMEOUT_MESSAGES.get(language, SCENE_TIMEOUT_MESSAGES["en"])
-                            await update.message.reply_text(timeout_text)
-                            await save_message(conversation.id, MessageRole.ASSISTANT, timeout_text, language)
-                            await clear_scene_state(conversation.id)
-                            return
-                        await send_scene_generation_result(chat_id, language, record, context.bot)
-                        await clear_scene_state(conversation.id)
-                        return
-
-            if scene_req.get("is_scene_request"):
-                resolved_ref = await resolve_recent_product_reference(
-                    user_message,
-                    all_products,
-                    recent_scene_product_ids,
-                )
-                referenced_id = resolved_ref.get("target_product_id")
-                target_id = scene_req.get("target_product_id") or referenced_id or (scene_state.primary_product_id if scene_state else None)
-                if target_id:
-                    async with AsyncSessionLocal() as db:
-                        primary_product = await db.get(ProductEntry, int(target_id))
-                    if primary_product:
-                        generating = SCENE_GENERATING_MESSAGES.get(language, SCENE_GENERATING_MESSAGES["en"])
-                        stop_typing.set()
-                        await typing_task
-                        await update.message.reply_text(generating)
-                        await save_message(conversation.id, MessageRole.ASSISTANT, generating, language)
-                        try:
-                            record = await generate_scene_images(
-                                primary_product=primary_product,
-                                all_products=all_products,
-                                user_request=user_message,
-                                scene_name=scene_req.get("scene_name") or primary_product.space,
-                                style_hint=scene_req.get("style_hint") or primary_product.style,
-                                conversation_id=conversation.id,
-                                timeout_seconds=CUSTOMER_SCENE_TIMEOUT_SECONDS,
-                            )
-                        except asyncio.TimeoutError:
-                            timeout_text = SCENE_TIMEOUT_MESSAGES.get(language, SCENE_TIMEOUT_MESSAGES["en"])
-                            await update.message.reply_text(timeout_text)
-                            await save_message(conversation.id, MessageRole.ASSISTANT, timeout_text, language)
-                            return
-                        await send_scene_generation_result(chat_id, language, record, context.bot)
-                        await save_scene_state(
-                            conversation_id=conversation.id,
-                            primary_product_id=primary_product.id,
-                            recommended_product_ids=[primary_product.id],
-                            suggested_scene=scene_req.get("scene_name") or primary_product.space,
-                            suggested_style=scene_req.get("style_hint") or primary_product.style,
-                            pending_confirmation=False,
-                            reply_language=language,
-                            last_customer_request=user_message,
-                        )
-                        return
-
-            is_product_rec = await check_is_product_recommendation(user_message)
-            logger.info(f"[Bot {bot_id}] Product recommendation: {is_product_rec}")
-            if is_product_rec:
-                selected_ids = await ai_select_products(user_message, all_products) if all_products else []
-                products_by_id = {p["id"]: p for p in all_products}
-                selected_products = [products_by_id[pid] for pid in selected_ids if pid in products_by_id]
-                intro = PRODUCT_REC_INTRO.get(language, PRODUCT_REC_INTRO["en"])
-                none_msg = PRODUCT_REC_NONE.get(language, PRODUCT_REC_NONE["en"])
-                stop_typing.set()
-                await typing_task
-                if selected_products:
-                    await update.message.reply_text(intro)
-                    await save_message(conversation.id, MessageRole.ASSISTANT, intro, language)
-                    await send_product_recommendations(chat_id, selected_products, language, context.bot)
-                    primary_product = selected_products[0]
-                    suggested_scene = select_default_scene(selected_products, language)
-                    followup = build_scene_followup_message(language, selected_products)
-                    await update.message.reply_text(followup)
-                    await save_message(conversation.id, MessageRole.ASSISTANT, followup, language)
-                    await save_scene_state(
-                        conversation_id=conversation.id,
-                        primary_product_id=primary_product["id"],
-                        recommended_product_ids=selected_ids,
-                        suggested_scene=suggested_scene,
-                        suggested_style=primary_product.get("style", ""),
-                        pending_confirmation=True,
-                        reply_language=language,
-                        last_customer_request=user_message,
-                    )
-                    logger.info(f"[Bot {bot_id}] Sent {len(selected_products)} product recommendations")
-                else:
-                    await update.message.reply_text(none_msg)
-                    await save_message(conversation.id, MessageRole.ASSISTANT, none_msg, language)
-                    await clear_scene_state(conversation.id)
-                return
-
-            kb_context = await search_knowledge_for_bot(user_message)
-
-            all_files = await get_all_file_entries()
-            matched_file_ids = await check_file_request(user_message, all_files) if all_files else []
-
-            file_info = ""
-            if matched_file_ids:
-                matched_entries = [f for f in all_files if f["id"] in matched_file_ids]
-                file_info = "\n".join(f"- {f['name']}: {f['description']}" for f in matched_entries)
-
-            chat_history = await get_chat_history(conversation.id)
-
-            logger.info(f"[Bot {bot_id}] Generating AI response...")
-            response_text = await generate_response(
-                user_message=user_message,
-                context=kb_context,
-                language=language,
-                chat_history=chat_history,
-                file_info=file_info,
-            )
-            logger.info(f"[Bot {bot_id}] AI response generated ({len(response_text)} chars)")
-
-            await save_message(conversation.id, MessageRole.ASSISTANT, response_text, language)
-            stop_typing.set()
-            await typing_task
-
-            await update.message.reply_text(response_text)
-            logger.info(f"[Bot {bot_id}] Reply sent to chat {chat_id}")
-
-            if matched_file_ids:
-                await send_files_to_user(chat_id, matched_file_ids, context.bot)
-        except Exception as e:
-            stop_typing.set()
-            await typing_task
-            logger.error(f"[Bot {bot_id}] Error processing message: {e}", exc_info=True)
-            fallback = {
-                "zh": "抱歉，系统暂时出现问题，请稍后再试或联系人工客服。",
-                "en": "Sorry, the system is temporarily unavailable. Please try again later.",
-            }
-            try:
-                await update.message.reply_text(fallback.get(language, fallback["en"]))
-            except Exception:
-                logger.error(f"[Bot {bot_id}] Failed to send fallback message", exc_info=True)
+        outbound = TelegramOutbound(int(chat_id), context.bot)
+        await process_customer_text_message(
+            bot_id=bot_id,
+            conversation_id=conversation.id,
+            user_message=user_message,
+            language=language,
+            current_status=current_status,
+            outbound=outbound,
+            run_notify_admin=True,
+            notify_bot=context.bot,
+            stop_typing=stop_typing,
+            typing_task=typing_task,
+        )
 
     return handle_message
 
