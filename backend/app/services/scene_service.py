@@ -29,6 +29,7 @@ SCENE_OUTPUT_COUNT = 1
 CUSTOMER_SCENE_TIMEOUT_SECONDS = 300
 BACKEND_SCENE_TIMEOUT_SECONDS = 600
 MAX_DASHSCOPE_PROMPT_CHARS = 2400
+SCENE_BUNDLE_SELECTION_TIMEOUT_SECONDS = 12
 ACTIVE_SCENE_TASKS: dict[int, asyncio.Task[Any]] = {}
 
 
@@ -56,6 +57,24 @@ def _scene_defaults(primary_product: ProductEntry) -> tuple[str, str]:
     scene = primary_product.space.strip() or "客厅"
     style = primary_product.style.strip() or ""
     return scene, style
+
+
+PRODUCT_CATEGORY_KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
+    ("sofa", ("sofa", "couch", "sectional", "loveseat", "recliner", "沙发")),
+    ("coffee_table", ("coffee table", "end table", "side table", "茶几", "边几", "角几")),
+    ("tv_cabinet", ("tv cabinet", "tv stand", "media console", "电视柜", "视听柜")),
+    ("dining_table", ("dining table", "bar table", "餐桌", "饭桌", "吧台")),
+    ("dining_chair", ("dining chair", "餐椅", "吧椅")),
+    ("sideboard", ("sideboard", "buffet", "餐边柜")),
+    ("bed", ("bed", "婚床", "双人床", "大床", "床")),
+    ("nightstand", ("nightstand", "bedside table", "床头柜")),
+    ("wardrobe", ("wardrobe", "closet", "衣柜")),
+    ("dresser", ("dresser", "chest", "斗柜", "梳妆台")),
+    ("desk", ("desk", "writing table", "书桌", "办公桌")),
+    ("bookcase", ("bookcase", "bookshelf", "书柜", "书架")),
+    ("chair", ("armchair", "accent chair", "lounge chair", "椅", "单椅")),
+    ("cabinet", ("cabinet", "storage", "收纳柜", "储物柜", "柜")),
+]
 
 
 def _compatible_root(base_url: str) -> str:
@@ -86,6 +105,54 @@ def _resolution_from_size(size: str) -> str:
     except Exception:
         return "1k"
     return "2k" if max_side > 1200 else "1k"
+
+
+def _infer_product_category(product: ProductEntry | dict[str, Any]) -> str:
+    if isinstance(product, dict):
+        fields = [
+            str(product.get("name") or ""),
+            str(product.get("series") or ""),
+            str(product.get("description") or ""),
+            str(product.get("space") or ""),
+        ]
+    else:
+        fields = [
+            product.product_name or "",
+            getattr(product, "series_name", "") or "",
+            product.description_text or "",
+            product.space or "",
+        ]
+    haystack = " ".join(fields).lower()
+    for category, keywords in PRODUCT_CATEGORY_KEYWORDS:
+        if any(keyword in haystack for keyword in keywords):
+            return category
+    return "other"
+
+
+def _filter_distinct_category_related_ids(
+    primary_product: ProductEntry,
+    candidate_ids: list[int],
+    all_products_map: dict[int, dict[str, Any]],
+) -> list[int]:
+    primary_category = _infer_product_category(primary_product)
+    out: list[int] = []
+    seen_categories: set[str] = set()
+    for product_id in candidate_ids:
+        if int(product_id) == primary_product.id:
+            continue
+        product = all_products_map.get(int(product_id))
+        if not product:
+            continue
+        category = _infer_product_category(product)
+        if category == primary_category:
+            continue
+        if category in seen_categories and category != "other":
+            continue
+        out.append(int(product_id))
+        seen_categories.add(category)
+        if len(out) >= 3:
+            break
+    return out
 
 
 def _mime_type_from_filename(name: str) -> str:
@@ -222,15 +289,20 @@ def _build_scene_prompt(
             "- Every attached reference image is a real catalog product.\n"
             "- Reproduce every referenced product faithfully: exact shape, proportions, silhouette, visible details.\n"
             "- Keep exact dominant color and material/finish for all referenced products.\n"
+            "- The main product is mandatory and must remain clearly visible in the final image.\n"
+            "- Never omit, replace, crop out, cover, or visually overpower the main product.\n"
             "- Never recolor a referenced white product into red, brown, black, wood-tone, or any accent color.\n"
             "- Never replace a referenced product with generic furniture.\n"
+            "- Complementary products must be different product categories from the main product.\n"
             "- If a side product cannot stay faithful, reduce its prominence instead of changing its color/material.\n"
             "- No people, no text, no watermark, no logo."
         ),
         (
             "Output requirements:\n"
             "- Main product is the visual focus and must look identical to its reference.\n"
+            "- Main product must be fully retained and remain the dominant item in the composition.\n"
             "- Referenced side products must also match their references.\n"
+            "- Do not use another sofa/bed/table of the same category as a substitute supporting item.\n"
             "- Realistic lighting, believable composition, commercially usable result."
         ),
         "Reference mapping:\n" + reference_text,
@@ -549,6 +621,7 @@ async def _find_reusable_record(
             .where(
                 SceneGenerationRecord.primary_product_id == primary_product_id,
                 SceneGenerationRecord.status == "completed",
+                SceneGenerationRecord.in_library == True,
             )
             .order_by(SceneGenerationRecord.updated_at.desc())
             .limit(20)
@@ -788,6 +861,7 @@ async def _run_scene_generation_for_record(
     reference_image_items: list[dict[str, Any]] | None = None,
     timeout_seconds: int = BACKEND_SCENE_TIMEOUT_SECONDS,
 ) -> SceneGenerationRecord:
+    total_start = time.perf_counter()
     cfg = await get_llm_settings()
     default_scene, default_style = _scene_defaults(primary_product)
     scene_name = scene_name.strip() or default_scene
@@ -797,29 +871,64 @@ async def _run_scene_generation_for_record(
         p for p in all_products
         if int(p["id"]) != primary_product.id
     ]
+    all_products_map = {int(p["id"]): p for p in all_products}
     preferred_candidates = [
         p for p in candidate_products
         if (p.get("space") == primary_product.space or not primary_product.space or p.get("style") == primary_product.style)
     ]
-    shortlist = preferred_candidates[:30] or candidate_products[:30]
+    primary_category = _infer_product_category(primary_product)
+    distinct_category_candidates = [
+        p for p in (preferred_candidates or candidate_products)
+        if _infer_product_category(p) != primary_category
+    ]
+    shortlist = distinct_category_candidates[:30]
+    if not shortlist:
+        shortlist = [
+            p for p in candidate_products
+            if _infer_product_category(p) != primary_category
+        ][:30]
 
-    selected_related_ids = related_product_ids or await select_scene_bundle_products(
-        user_message=user_request or primary_product.product_name,
-        primary_product={
-            "id": primary_product.id,
-            "brand": primary_product.brand,
-            "name": primary_product.product_name,
-            "space": primary_product.space,
-            "style": primary_product.style,
-            "material": primary_product.material,
-        },
-        candidate_products=shortlist,
-        scene_name=scene_name,
-        style_hint=style_hint,
+    selected_related_ids: list[int] | None = related_product_ids
+    if selected_related_ids is None:
+        bundle_start = time.perf_counter()
+        try:
+            selected_related_ids = await asyncio.wait_for(
+                select_scene_bundle_products(
+                    user_message=user_request or primary_product.product_name,
+                    primary_product={
+                        "id": primary_product.id,
+                        "brand": primary_product.brand,
+                        "name": primary_product.product_name,
+                        "space": primary_product.space,
+                        "style": primary_product.style,
+                        "material": primary_product.material,
+                        "category": primary_category,
+                    },
+                    candidate_products=shortlist,
+                    scene_name=scene_name,
+                    style_hint=style_hint,
+                ),
+                timeout=SCENE_BUNDLE_SELECTION_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            selected_related_ids = []
+            logger.warning(
+                "Scene bundle selection timed out after %ss for record %s primary=%s; falling back to heuristic shortlist",
+                SCENE_BUNDLE_SELECTION_TIMEOUT_SECONDS,
+                record_id,
+                primary_product.id,
+            )
+        finally:
+            logger.info(
+                "Scene bundle selection stage finished for record %s in %d ms",
+                record_id,
+                int((time.perf_counter() - bundle_start) * 1000),
+            )
+    selected_related_ids = _filter_distinct_category_related_ids(
+        primary_product=primary_product,
+        candidate_ids=selected_related_ids or [int(p["id"]) for p in shortlist[:3]],
+        all_products_map=all_products_map,
     )
-    if not selected_related_ids:
-        selected_related_ids = [int(p["id"]) for p in shortlist[:3]]
-    selected_related_ids = [int(pid) for pid in selected_related_ids if int(pid) != primary_product.id][:3]
 
     related_products = await _load_products(selected_related_ids)
     reference_items = reference_image_items or await _build_default_reference_items(primary_product, related_products)
@@ -845,7 +954,7 @@ async def _run_scene_generation_for_record(
         current.error_message = ""
         await db.commit()
 
-    start = time.perf_counter()
+    image_start = time.perf_counter()
     try:
         output_paths, binaries = await asyncio.wait_for(
             _generate_scene_outputs(
@@ -858,21 +967,29 @@ async def _run_scene_generation_for_record(
             ),
             timeout=timeout_seconds,
         )
-        duration_ms = int((time.perf_counter() - start) * 1000)
+        image_duration_ms = int((time.perf_counter() - image_start) * 1000)
+        total_duration_ms = int((time.perf_counter() - total_start) * 1000)
+        logger.info(
+            "Scene generation completed for record %s: total=%d ms image_stage=%d ms related=%s",
+            record_id,
+            total_duration_ms,
+            image_duration_ms,
+            selected_related_ids,
+        )
         async with AsyncSessionLocal() as db:
             current = await db.get(SceneGenerationRecord, record_id)
             if not current:
                 raise RuntimeError(f"Scene generation record {record_id} disappeared")
             await _save_record_images(db, current.id, binaries, ["image/png"] * len(binaries))
             current.output_paths_json = json.dumps(output_paths, ensure_ascii=False)
-            current.duration_ms = duration_ms
+            current.duration_ms = total_duration_ms
             current.status = "completed"
             current.error_message = ""
             await db.commit()
             await db.refresh(current)
             return current
     except asyncio.TimeoutError:
-        duration_ms = int((time.perf_counter() - start) * 1000)
+        duration_ms = int((time.perf_counter() - total_start) * 1000)
         shutil.rmtree(_scene_upload_root() / str(record_id), ignore_errors=True)
         timeout_message = f"Scene generation timed out after {timeout_seconds} seconds"
         logger.warning(
@@ -890,7 +1007,7 @@ async def _run_scene_generation_for_record(
         logger.info("Scene generation task %s was cancelled", record_id)
         raise
     except Exception as e:
-        duration_ms = int((time.perf_counter() - start) * 1000)
+        duration_ms = int((time.perf_counter() - total_start) * 1000)
         logger.error("Scene image generation failed for product %s: %s", primary_product.id, e, exc_info=True)
         current = await _mark_scene_generation_failed(record_id, duration_ms, str(e))
         if current:

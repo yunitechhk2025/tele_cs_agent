@@ -442,7 +442,7 @@ async def select_scene_bundle_products(
     if not candidate_products:
         return []
     catalog = "\n".join(
-        f"ID:{p['id']} | 品牌:{p.get('brand', '')} | {p['name']} | 空间:{p.get('space', '')} | 风格:{p.get('style', '')} | 材质:{p.get('material', '')}"
+        f"ID:{p['id']} | 品牌:{p.get('brand', '')} | {p['name']} | 类别:{p.get('category', '')} | 空间:{p.get('space', '')} | 风格:{p.get('style', '')} | 材质:{p.get('material', '')}"
         for p in candidate_products[:50]
     )
     try:
@@ -454,9 +454,11 @@ async def select_scene_bundle_products(
                         "You are selecting complementary furniture products for a styled scene image.\n"
                         "Choose up to 3 products that match the primary product and scene.\n"
                         "Prioritize products that fit the same room and style and can logically appear together.\n"
+                        "Every complementary product MUST be a different product category from the main product.\n"
+                        "Never choose another sofa for a sofa, another bed for a bed, another dining table for a dining table, etc.\n"
                         "Return ONLY a JSON array of numeric IDs, e.g. [12, 18].\n\n"
                         f"Primary product: 品牌:{primary_product.get('brand', '')} | {primary_product['name']} | 空间:{primary_product.get('space', '')} "
-                        f"| 风格:{primary_product.get('style', '')} | 材质:{primary_product.get('material', '')}\n"
+                        f"| 风格:{primary_product.get('style', '')} | 材质:{primary_product.get('material', '')} | 类别:{primary_product.get('category', '')}\n"
                         f"Requested scene: {scene_name}\n"
                         f"Style hint: {style_hint}\n"
                         f"Candidate catalog:\n{catalog}"

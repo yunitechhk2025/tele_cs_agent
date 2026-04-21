@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import re
 from io import BytesIO
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, constants
 from telegram.ext import ContextTypes
@@ -88,6 +89,46 @@ SCENE_KEYWORDS = {
     "餐厅": ["dining table", "dining chair", "sideboard", "buffet", "bar table", "bar stool", "餐桌", "餐椅", "餐边柜", "吧台", "吧椅"],
     "卧室": ["bed", "nightstand", "wardrobe", "dresser", "mattress", "床", "床头柜", "衣柜", "斗柜", "床垫"],
     "书房": ["desk", "bookcase", "bookshelf", "study", "office chair", "书桌", "书柜", "书架", "办公椅", "茶台"],
+}
+
+# UI copy in the recommendation + scene-image path is intentionally complete only
+# for these languages. Any other language falls back to English to avoid mixed output.
+SCENE_UI_SUPPORTED_LANGUAGES = {"zh", "en", "ja", "ko", "es", "fr"}
+
+SCENE_NAME_TRANSLATIONS = {
+    "客厅": {"zh": "客厅", "en": "living room", "ja": "リビング", "ko": "거실", "es": "sala de estar", "fr": "salon"},
+    "餐厅": {"zh": "餐厅", "en": "dining room", "ja": "ダイニング", "ko": "식당", "es": "comedor", "fr": "salle a manger"},
+    "卧室": {"zh": "卧室", "en": "bedroom", "ja": "寝室", "ko": "침실", "es": "dormitorio", "fr": "chambre"},
+    "书房": {"zh": "书房", "en": "study", "ja": "書斎", "ko": "서재", "es": "estudio", "fr": "bureau"},
+    "儿童房": {"zh": "儿童房", "en": "children's room", "ja": "子供部屋", "ko": "어린이 방", "es": "habitación infantil", "fr": "chambre d'enfant"},
+    "玄关": {"zh": "玄关", "en": "entryway", "ja": "玄関", "ko": "현관", "es": "recibidor", "fr": "entrée"},
+}
+
+PRODUCT_CARD_LABELS = {
+    "zh": {"series": "系列", "space": "空间", "style": "风格", "color": "颜色", "material": "材质", "view": "查看详情"},
+    "en": {"series": "Series", "space": "Space", "style": "Style", "color": "Color", "material": "Material", "view": "View details"},
+    "ja": {"series": "シリーズ", "space": "空間", "style": "スタイル", "color": "色", "material": "素材", "view": "詳細を見る"},
+    "ko": {"series": "시리즈", "space": "공간", "style": "스타일", "color": "색상", "material": "소재", "view": "자세히 보기"},
+    "es": {"series": "Serie", "space": "Espacio", "style": "Estilo", "color": "Color", "material": "Material", "view": "Ver detalles"},
+    "fr": {"series": "Série", "space": "Espace", "style": "Style", "color": "Couleur", "material": "Matériau", "view": "Voir les détails"},
+}
+
+SCENE_RESULT_MESSAGES = {
+    "zh": "这是为您生成的这款产品在{scene}中的搭配效果图：",
+    "en": "Here is the styled scene image for this product in the {scene}:",
+    "ja": "こちらがこの商品を{scene}に配置したイメージです：",
+    "ko": "다음은 이 제품을 {scene}에 배치한 연출 이미지입니다:",
+    "es": "Aqui tiene la imagen ambientada de este producto en el/la {scene}:",
+    "fr": "Voici l'image mise en scène de ce produit dans le/la {scene} :",
+}
+
+SCENE_RESULT_LINK_LABELS = {
+    "zh": {"main": "主商品", "related": "搭配商品"},
+    "en": {"main": "Main product", "related": "Matching product"},
+    "ja": {"main": "主商品", "related": "組み合わせ商品"},
+    "ko": {"main": "주요 상품", "related": "매칭 상품"},
+    "es": {"main": "Producto principal", "related": "Producto combinado"},
+    "fr": {"main": "Produit principal", "related": "Produit assorti"},
 }
 
 
@@ -293,6 +334,48 @@ async def clear_scene_state(conversation_id: int):
             await db.commit()
 
 
+def ui_scene_language(language: str | None) -> str:
+    lang = (language or "").strip().lower()
+    return lang if lang in SCENE_UI_SUPPORTED_LANGUAGES else "en"
+
+
+def localize_scene_name(scene: str, language: str) -> str:
+    language = ui_scene_language(language)
+    raw = (scene or "").strip()
+    if not raw:
+        return ""
+    normalized = raw.lower()
+    for canonical, translations in SCENE_NAME_TRANSLATIONS.items():
+        values = {canonical.lower(), *(value.lower() for value in translations.values())}
+        if raw == canonical or normalized in values:
+            return translations.get(language, translations.get("en", canonical))
+    return raw
+
+
+def _is_context_language_reply(text: str) -> bool:
+    stripped = (text or "").strip()
+    if not stripped:
+        return False
+    if re.fullmatch(r"[#\d\s]+", stripped):
+        return True
+    if len(stripped) <= 24 and re.fullmatch(r"[A-Za-z]?\d[\w#-]*", stripped):
+        return True
+    if len(stripped) <= 24 and re.fullmatch(r"[#A-Za-z0-9_-]+", stripped) and not re.search(r"[A-Za-z]{3,}", stripped):
+        return True
+    return False
+
+
+def resolve_turn_language(
+    user_message: str,
+    detected_language: str,
+    conversation_language: str | None,
+    scene_reply_language: str | None,
+) -> str:
+    if _is_context_language_reply(user_message):
+        return scene_reply_language or conversation_language or detected_language or "en"
+    return detected_language or scene_reply_language or conversation_language or "en"
+
+
 def infer_product_scene(product: dict) -> str:
     explicit = (product.get("space") or "").strip()
     if explicit:
@@ -320,24 +403,32 @@ def select_default_scene(products: list[dict], language: str) -> str:
 
 
 def build_scene_followup_message(language: str, products: list[dict]) -> str:
-    scene = select_default_scene(products, language)
-    template = SCENE_FOLLOWUP_MESSAGES.get(language, SCENE_FOLLOWUP_MESSAGES["en"])
+    ui_lang = ui_scene_language(language)
+    scene = localize_scene_name(select_default_scene(products, ui_lang), ui_lang)
+    template = SCENE_FOLLOWUP_MESSAGES.get(ui_lang, SCENE_FOLLOWUP_MESSAGES["en"])
     return template.format(scene=scene)
 
 
 async def send_scene_generation_result(chat_id: str, language: str, record, bot):
     import json
+    ui_lang = ui_scene_language(language)
 
     if record.status != "completed":
-        text = SCENE_FAILED_MESSAGES.get(language, SCENE_FAILED_MESSAGES["en"])
+        text = SCENE_FAILED_MESSAGES.get(ui_lang, SCENE_FAILED_MESSAGES["en"])
         await bot.send_message(chat_id=int(chat_id), text=text)
         return
 
     output_paths = json.loads(record.output_paths_json or "[]")
-    intro = {
-        "zh": f"这是为您生成的 {record.scene_name or '场景'} 搭配效果图：",
-        "en": f"Here is the styled scene image for this product in {record.scene_name or 'the requested setting'}:",
-    }.get(language, "Here is the styled scene image for this product:")
+    localized_scene = localize_scene_name(record.scene_name or "", ui_lang) or {
+        "zh": "该场景",
+        "en": "requested setting",
+        "ja": "ご希望の空間",
+        "ko": "요청하신 공간",
+        "es": "ambiente solicitado",
+        "fr": "cadre demande",
+    }.get(ui_lang, "requested setting")
+    intro_template = SCENE_RESULT_MESSAGES.get(ui_lang, SCENE_RESULT_MESSAGES["en"])
+    intro = intro_template.format(scene=localized_scene)
     await bot.send_message(chat_id=int(chat_id), text=intro)
 
     for rel in output_paths:
@@ -361,15 +452,16 @@ async def send_scene_generation_result(chat_id: str, language: str, record, bot)
             result = await db.execute(select(ProductEntry).where(ProductEntry.id.in_(related_ids)).order_by(ProductEntry.id))
             related = result.scalars().all()
 
+    labels = SCENE_RESULT_LINK_LABELS.get(ui_lang, SCENE_RESULT_LINK_LABELS["en"])
     lines = []
     if primary:
         link = primary.buy_url or primary.detail_url
         if link:
-            lines.append(f"主商品: [{primary.product_name}]({link})")
+            lines.append(f"{labels['main']}: [{primary.product_name}]({link})")
     for p in related:
         link = p.buy_url or p.detail_url
         if link:
-            lines.append(f"搭配商品: [{p.product_name}]({link})")
+            lines.append(f"{labels['related']}: [{p.product_name}]({link})")
     if lines:
         await bot.send_message(
             chat_id=int(chat_id),
@@ -381,20 +473,22 @@ async def send_scene_generation_result(chat_id: str, language: str, record, bot)
 
 async def send_product_recommendations(chat_id: str, products: list[dict], language: str, bot):
     """Send 1-3 recommended products as Telegram photo cards."""
+    ui_lang = ui_scene_language(language)
+    labels = PRODUCT_CARD_LABELS.get(ui_lang, PRODUCT_CARD_LABELS["en"])
     for idx, p in enumerate(products, start=1):
         lines = [f"[#{idx}] *{p['name']}*"]
         if p.get("series"):
-            lines.append(f"系列: {p['series']}")
+            lines.append(f"{labels['series']}: {p['series']}")
         if p.get("space"):
-            lines.append(f"空间: {p['space']}")
+            lines.append(f"{labels['space']}: {localize_scene_name(p['space'], ui_lang)}")
         if p.get("style"):
-            lines.append(f"风格: {p['style']}")
+            lines.append(f"{labels['style']}: {p['style']}")
         if p.get("color"):
-            lines.append(f"颜色: {p['color']}")
+            lines.append(f"{labels['color']}: {p['color']}")
         if p.get("material"):
-            lines.append(f"材质: {p['material']}")
+            lines.append(f"{labels['material']}: {p['material']}")
         if p.get("buy_url"):
-            lines.append(f"[查看详情]({p['buy_url']})")
+            lines.append(f"[{labels['view']}]({p['buy_url']})")
         caption = "\n".join(lines)[:1024]
 
         sent = False
@@ -528,11 +622,20 @@ def make_message_handler(bot_id: int):
             return
 
         try:
-            language = await detect_language(user_message)
-            logger.info(f"[Bot {bot_id}] Detected language: {language}")
+            detected_language = await detect_language(user_message)
+            logger.info(f"[Bot {bot_id}] Detected language: {detected_language}")
         except Exception as e:
             logger.error(f"[Bot {bot_id}] Language detection failed: {e}", exc_info=True)
-            language = "en"
+            detected_language = conversation.language or "en"
+
+        scene_state = await get_scene_state(conversation.id)
+        language = resolve_turn_language(
+            user_message=user_message,
+            detected_language=detected_language,
+            conversation_language=conversation.language,
+            scene_reply_language=scene_state.reply_language if scene_state else None,
+        )
+        logger.info(f"[Bot {bot_id}] Effective reply language: {language}")
 
         try:
             async with AsyncSessionLocal() as db:
@@ -582,7 +685,6 @@ def make_message_handler(bot_id: int):
             if current_status == ConversationStatus.PENDING_HUMAN:
                 await notify_admin(bot_id, conversation, user_message, context.bot, is_followup=True)
 
-            scene_state = await get_scene_state(conversation.id)
             recent_scene_product_ids = []
             if scene_state:
                 try:
