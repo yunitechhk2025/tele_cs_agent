@@ -345,18 +345,27 @@ export default function TelegramSimulator() {
     try {
       const { data } = await simulatorApi.sendMessage(conversationId, text);
       await Promise.all([loadMessages(conversationId), loadEvents(conversationId)]);
-      const nonTextEvents = (data.outgoing || [])
-        .filter(isMediaEvent)
+      const outgoingEvents = (data.outgoing || [])
+        .filter((event) => event.type === 'text' || isMediaEvent(event))
         .map<TimelineItem>((event, index) => ({
           id: event.id || `evt-${Date.now()}-${index}`,
-          kind: event.type,
-          role: 'assistant',
-          url: event.url || '',
-          caption: event.caption,
-          filename: event.filename,
-          created_at: event.created_at,
+          ...(event.type === 'text'
+            ? {
+                kind: 'text' as const,
+                role: event.role === 'human_agent' ? 'human_agent' : (event.role as 'user' | 'assistant'),
+                content: event.text || '',
+                created_at: event.created_at,
+              }
+            : {
+                kind: event.type,
+                role: 'assistant' as const,
+                url: event.url || '',
+                caption: event.caption,
+                filename: event.filename,
+                created_at: event.created_at,
+              }),
         }));
-      setEphemeralEvents((prev) => [...prev, ...nonTextEvents]);
+      setEphemeralEvents((prev) => [...prev, ...outgoingEvents]);
     } catch {
       message.error('发送失败');
     } finally {
@@ -410,6 +419,20 @@ export default function TelegramSimulator() {
           <Space>
             <RobotOutlined style={{ color: TG_ACCENT, fontSize: 18 }} />
             <Text style={{ color: TG_TEXT, fontWeight: 600, fontSize: 15 }}>Telegram 模拟对话</Text>
+            {conversationId ? (
+              <Text
+                style={{
+                  color: '#9fd4ff',
+                  fontSize: 12,
+                  padding: '2px 8px',
+                  borderRadius: 999,
+                  background: 'rgba(92,165,219,0.14)',
+                  border: '1px solid rgba(92,165,219,0.32)',
+                }}
+              >
+                ID #{conversationId}
+              </Text>
+            ) : null}
           </Space>
           <Space>
             {conversationId && (

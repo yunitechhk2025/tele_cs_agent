@@ -1,12 +1,23 @@
 import asyncio
+import json
 import logging
+import os
 from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select
 
 from app.database import AsyncSessionLocal
-from app.models import Conversation, ConversationStatus, Message, MessageRole, PendingAIReply, SystemSetting
+from app.models import (
+    Conversation,
+    ConversationOutboundEvent,
+    ConversationStatus,
+    Message,
+    MessageRole,
+    PendingAIReply,
+    SceneGenerationRecord,
+    SystemSetting,
+)
 from app.services import bot_manager
 
 logger = logging.getLogger(__name__)
@@ -24,6 +35,238 @@ DEFAULT_CUSTOMER_SERVICE_MODE = "ai_auto"
 DEFAULT_AUTO_SEND_SECONDS = 10
 
 ACTIVE_PENDING_AI_REPLY_TASKS: dict[int, asyncio.Task[Any]] = {}
+
+
+def _load_payload(raw: str | None) -> dict[str, Any]:
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+async def _append_outbound_event(
+    db,
+    conversation_id: int,
+    role: str,
+    event_type: str,
+    *,
+    text: str = "",
+    caption: str = "",
+    url: str = "",
+    filename: str = "",
+    parse_mode: str | None = None,
+) -> None:
+    db.add(ConversationOutboundEvent(
+        conversation_id=conversation_id,
+        role=role,
+        event_type=event_type,
+        text=text,
+        caption=caption,
+        url=url,
+        filename=filename,
+        parse_mode=parse_mode,
+    ))
+
+
+async def _send_product_recommendation_payload(
+    db,
+    conversation: Conversation,
+    draft: PendingAIReply,
+    payload: dict[str, Any],
+    message_role: MessageRole,
+) -> str | None:
+    intro_text = (payload.get("intro_text") or "").strip()
+    followup_text = (payload.get("followup_text") or "").strip()
+    cards = payload.get("cards") or []
+    role_value = message_role.value
+    is_simulator = (conversation.telegram_chat_id or "").startswith("sim-")
+
+    bot_instance = None
+    if not is_simulator:
+        if conversation.bot_id:
+            bot_instance = bot_manager.get_bot_instance(conversation.bot_id)
+        if not bot_instance:
+            bot_instance = bot_manager.get_any_bot_instance()
+        if not bot_instance or not conversation.telegram_chat_id:
+            draft.error_message = "Telegram bot not available"
+            await db.commit()
+            return None
+
+    if intro_text:
+        if is_simulator:
+            db.add(Message(conversation_id=conversation.id, role=message_role, content=intro_text, language=draft.language))
+        else:
+            await bot_instance.send_message(chat_id=int(conversation.telegram_chat_id), text=intro_text)
+            db.add(Message(conversation_id=conversation.id, role=message_role, content=intro_text, language=draft.language))
+
+    for card in cards:
+        caption = (card.get("caption") or "").strip()
+        image_path = (card.get("image_path") or "").strip()
+        image_url = (card.get("image_url") or "").strip()
+        parse_mode = card.get("parse_mode") or "Markdown"
+        if is_simulator:
+            if image_url:
+                await _append_outbound_event(
+                    db,
+                    conversation.id,
+                    role_value,
+                    "photo",
+                    caption=caption,
+                    url=image_url,
+                    parse_mode=parse_mode,
+                )
+            elif caption:
+                db.add(Message(conversation_id=conversation.id, role=message_role, content=caption, language=draft.language))
+        else:
+            if image_path:
+                full = os.path.join("/app", image_path)
+                if os.path.exists(full):
+                    with open(full, "rb") as fh:
+                        await bot_instance.send_photo(
+                            chat_id=int(conversation.telegram_chat_id),
+                            photo=fh,
+                            caption=caption or None,
+                            parse_mode=parse_mode,
+                        )
+                    await _append_outbound_event(
+                        db,
+                        conversation.id,
+                        role_value,
+                        "photo",
+                        caption=caption,
+                        url=image_url,
+                        parse_mode=parse_mode,
+                    )
+                    continue
+            if caption:
+                await bot_instance.send_message(
+                    chat_id=int(conversation.telegram_chat_id),
+                    text=caption,
+                    parse_mode=parse_mode,
+                )
+
+    if followup_text:
+        if is_simulator:
+            db.add(Message(conversation_id=conversation.id, role=message_role, content=followup_text, language=draft.language))
+        else:
+            await bot_instance.send_message(chat_id=int(conversation.telegram_chat_id), text=followup_text)
+            db.add(Message(conversation_id=conversation.id, role=message_role, content=followup_text, language=draft.language))
+
+    scene_state = payload.get("scene_state") or {}
+    if scene_state:
+        from app.telegram_bot import save_scene_state
+
+        await save_scene_state(
+            conversation_id=conversation.id,
+            primary_product_id=scene_state.get("primary_product_id"),
+            recommended_product_ids=[int(x) for x in (scene_state.get("recommended_product_ids") or [])],
+            suggested_scene=scene_state.get("suggested_scene") or "",
+            suggested_style=scene_state.get("suggested_style") or "",
+            pending_confirmation=bool(scene_state.get("pending_confirmation")),
+            reply_language=scene_state.get("reply_language") or draft.language,
+            last_customer_request=scene_state.get("last_customer_request") or "",
+        )
+    return draft.draft_text
+
+
+async def _send_scene_result_payload(
+    db,
+    conversation: Conversation,
+    draft: PendingAIReply,
+    payload: dict[str, Any],
+    message_role: MessageRole,
+) -> str | None:
+    intro_text = (payload.get("intro_text") or "").strip()
+    links_text = (payload.get("links_text") or "").strip()
+    image_urls = payload.get("image_urls") or []
+    output_paths = payload.get("output_paths") or []
+    parse_mode = payload.get("links_parse_mode") or "Markdown"
+    role_value = message_role.value
+    is_simulator = (conversation.telegram_chat_id or "").startswith("sim-")
+
+    bot_instance = None
+    if not is_simulator:
+        if conversation.bot_id:
+            bot_instance = bot_manager.get_bot_instance(conversation.bot_id)
+        if not bot_instance:
+            bot_instance = bot_manager.get_any_bot_instance()
+        if not bot_instance or not conversation.telegram_chat_id:
+            draft.error_message = "Telegram bot not available"
+            await db.commit()
+            return None
+
+    if intro_text:
+        if is_simulator:
+            db.add(Message(conversation_id=conversation.id, role=message_role, content=intro_text, language=draft.language))
+        else:
+            await bot_instance.send_message(chat_id=int(conversation.telegram_chat_id), text=intro_text)
+            db.add(Message(conversation_id=conversation.id, role=message_role, content=intro_text, language=draft.language))
+
+    for index, image_url in enumerate(image_urls):
+        if is_simulator:
+            await _append_outbound_event(
+                db,
+                conversation.id,
+                role_value,
+                "photo",
+                url=image_url,
+            )
+            continue
+        rel_path = output_paths[index] if index < len(output_paths) else ""
+        if not rel_path:
+            continue
+        full = os.path.join("/app", rel_path)
+        if not os.path.exists(full):
+            continue
+        with open(full, "rb") as fh:
+            await bot_instance.send_photo(chat_id=int(conversation.telegram_chat_id), photo=fh)
+        await _append_outbound_event(
+            db,
+            conversation.id,
+            role_value,
+            "photo",
+            url=image_url,
+        )
+
+    if links_text:
+        if is_simulator:
+            db.add(Message(conversation_id=conversation.id, role=message_role, content=links_text, language=draft.language))
+        else:
+            await bot_instance.send_message(
+                chat_id=int(conversation.telegram_chat_id),
+                text=links_text,
+                parse_mode=parse_mode,
+                disable_web_page_preview=True,
+            )
+            db.add(Message(conversation_id=conversation.id, role=message_role, content=links_text, language=draft.language))
+
+    record_id = payload.get("record_id")
+    if record_id:
+        record = await db.get(SceneGenerationRecord, int(record_id))
+        if record:
+            record.deferred_delivery = False
+
+    state_action = (payload.get("scene_state_action") or "").strip()
+    state_payload = payload.get("scene_state_payload") or {}
+    if state_action == "clear":
+        from app.telegram_bot import clear_scene_state
+        await clear_scene_state(conversation.id)
+    elif state_action == "save":
+        from app.telegram_bot import save_scene_state
+        await save_scene_state(
+            conversation_id=conversation.id,
+            primary_product_id=state_payload.get("primary_product_id"),
+            recommended_product_ids=[int(x) for x in (state_payload.get("recommended_product_ids") or [])],
+            suggested_scene=state_payload.get("suggested_scene") or "",
+            suggested_style=state_payload.get("suggested_style") or "",
+            pending_confirmation=bool(state_payload.get("pending_confirmation")),
+            reply_language=state_payload.get("reply_language") or draft.language,
+            last_customer_request=state_payload.get("last_customer_request") or "",
+        )
+    return draft.draft_text
 
 
 async def get_customer_service_settings() -> dict[str, Any]:
@@ -141,43 +384,47 @@ async def _send_pending_ai_reply_record(
             return draft
 
         text = (content_override if content_override is not None else draft.draft_text).strip()
-        if not text:
+        payload = _load_payload(draft.payload_json)
+        if draft.content_kind == "text" and not text:
             draft.error_message = "Draft text is empty"
             await db.commit()
             return draft
         message_role = MessageRole.HUMAN_AGENT if send_as_human_agent else MessageRole.ASSISTANT
-
-        if (conversation.telegram_chat_id or "").startswith("sim-"):
-            db.add(Message(
-                conversation_id=conversation.id,
-                role=message_role,
-                content=text,
-                language=draft.language,
-            ))
-        else:
-            bot_instance = None
-            if conversation.bot_id:
-                bot_instance = bot_manager.get_bot_instance(conversation.bot_id)
-            if not bot_instance:
-                bot_instance = bot_manager.get_any_bot_instance()
-            if not bot_instance or not conversation.telegram_chat_id:
-                draft.error_message = "Telegram bot not available"
-                await db.commit()
-                return draft
-            try:
-                await bot_instance.send_message(chat_id=int(conversation.telegram_chat_id), text=text)
-            except Exception as exc:
-                draft.error_message = str(exc)[:1000]
-                await db.commit()
-                logger.error("Failed to send pending AI reply %s: %s", record_id, exc, exc_info=True)
-                return draft
-
-            db.add(Message(
-                conversation_id=conversation.id,
-                role=message_role,
-                content=text,
-                language=draft.language,
-            ))
+        try:
+            if draft.content_kind == "product_recommendation":
+                text = await _send_product_recommendation_payload(db, conversation, draft, payload, message_role) or text
+            elif draft.content_kind == "scene_result":
+                text = await _send_scene_result_payload(db, conversation, draft, payload, message_role) or text
+            else:
+                if (conversation.telegram_chat_id or "").startswith("sim-"):
+                    db.add(Message(
+                        conversation_id=conversation.id,
+                        role=message_role,
+                        content=text,
+                        language=draft.language,
+                    ))
+                else:
+                    bot_instance = None
+                    if conversation.bot_id:
+                        bot_instance = bot_manager.get_bot_instance(conversation.bot_id)
+                    if not bot_instance:
+                        bot_instance = bot_manager.get_any_bot_instance()
+                    if not bot_instance or not conversation.telegram_chat_id:
+                        draft.error_message = "Telegram bot not available"
+                        await db.commit()
+                        return draft
+                    await bot_instance.send_message(chat_id=int(conversation.telegram_chat_id), text=text)
+                    db.add(Message(
+                        conversation_id=conversation.id,
+                        role=message_role,
+                        content=text,
+                        language=draft.language,
+                    ))
+        except Exception as exc:
+            draft.error_message = str(exc)[:1000]
+            await db.commit()
+            logger.error("Failed to send pending AI reply %s: %s", record_id, exc, exc_info=True)
+            return draft
 
         draft.final_text = text
         draft.sent_at = datetime.utcnow()
@@ -232,7 +479,23 @@ async def create_pending_ai_reply(
     draft_text: str,
     language: str,
 ) -> PendingAIReply:
-    await cancel_pending_ai_reply(conversation_id)
+    return await create_pending_ai_delivery(
+        conversation_id=conversation_id,
+        draft_text=draft_text,
+        language=language,
+        content_kind="text",
+        payload=None,
+    )
+
+
+async def create_pending_ai_delivery(
+    conversation_id: int,
+    draft_text: str,
+    language: str,
+    *,
+    content_kind: str = "text",
+    payload: dict[str, Any] | None = None,
+) -> PendingAIReply:
     cfg = await get_customer_service_settings()
     auto_send_at = datetime.utcnow() + timedelta(seconds=cfg["auto_send_seconds"])
 
@@ -240,17 +503,23 @@ async def create_pending_ai_reply(
         conversation = await db.get(Conversation, conversation_id)
         if not conversation:
             raise RuntimeError(f"Conversation {conversation_id} not found")
-
-        draft = PendingAIReply(
-            conversation_id=conversation_id,
-            draft_text=draft_text,
-            language=language or "en",
-            status="pending",
-            auto_send_at=auto_send_at,
-            auto_send_paused=False,
-            error_message="",
+        result = await db.execute(
+            select(PendingAIReply).where(PendingAIReply.conversation_id == conversation_id)
         )
-        db.add(draft)
+        draft = result.scalar_one_or_none()
+        if not draft:
+            draft = PendingAIReply(conversation_id=conversation_id)
+            db.add(draft)
+        draft.draft_text = draft_text
+        draft.final_text = ""
+        draft.language = language or "en"
+        draft.content_kind = content_kind or "text"
+        draft.payload_json = json.dumps(payload or {}, ensure_ascii=False)
+        draft.status = "pending"
+        draft.auto_send_at = auto_send_at
+        draft.auto_send_paused = False
+        draft.sent_at = None
+        draft.error_message = ""
         conversation.status = ConversationStatus.HUMAN_HANDLING
         await db.commit()
         await db.refresh(draft)

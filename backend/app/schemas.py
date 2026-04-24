@@ -45,6 +45,7 @@ class ConversationSchema(BaseModel):
 
 class ConversationDetailSchema(ConversationSchema):
     messages: list[MessageSchema] = []
+    outbound_events: list["TelegramSimulatorEventSchema"] = []
     ai_draft: Optional["PendingAIReplySchema"] = None
 
 
@@ -58,6 +59,8 @@ class PendingAIReplySchema(BaseModel):
     draft_text: str
     final_text: str = ""
     language: str
+    content_kind: str = "text"
+    payload_json: dict[str, Any] = Field(default_factory=dict)
     status: str
     auto_send_at: datetime
     auto_send_paused: bool = False

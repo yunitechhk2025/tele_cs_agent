@@ -24,6 +24,7 @@ export interface Conversation {
 
 export interface ConversationDetail extends Conversation {
   messages: Message[];
+  outbound_events: SimulatorOutgoingEvent[];
   ai_draft?: PendingAIReply | null;
 }
 
@@ -33,6 +34,8 @@ export interface PendingAIReply {
   draft_text: string;
   final_text: string;
   language: string;
+  content_kind: 'text' | 'product_recommendation' | 'scene_result' | string;
+  payload_json: Record<string, unknown>;
   status: string;
   auto_send_at: string;
   auto_send_paused: boolean;

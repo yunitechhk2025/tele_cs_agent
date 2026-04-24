@@ -48,6 +48,18 @@ def _run_migrations(conn):
             "pending_ai_replies", "auto_send_paused",
             "ALTER TABLE pending_ai_replies ADD COLUMN auto_send_paused BOOLEAN DEFAULT FALSE"
         ),
+        (
+            "pending_ai_replies", "content_kind",
+            "ALTER TABLE pending_ai_replies ADD COLUMN content_kind VARCHAR(50) DEFAULT 'text'"
+        ),
+        (
+            "pending_ai_replies", "payload_json",
+            "ALTER TABLE pending_ai_replies ADD COLUMN payload_json TEXT DEFAULT '{}'"
+        ),
+        (
+            "scene_generation_records", "deferred_delivery",
+            "ALTER TABLE scene_generation_records ADD COLUMN deferred_delivery BOOLEAN DEFAULT FALSE"
+        ),
     ]
     for table, column, ddl in migrations:
         result = conn.execute(text(

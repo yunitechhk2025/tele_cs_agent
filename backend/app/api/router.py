@@ -21,7 +21,7 @@ from app.database import get_db, AsyncSessionLocal
 from app.models import (
     Conversation, Message, KnowledgeEntry, Contract, ContractTemplate, FileEntry, TelegramBot,
     ConversationStatus, MessageRole, ProductEntry, ProductImage, SceneGenerationImage, SceneGenerationRecord,
-    ConversationSceneState, PendingAIReply,
+    ConversationSceneState, ConversationOutboundEvent, PendingAIReply,
 )
 from app.schemas import (
     LoginRequest, TokenResponse, ConversationSchema, ConversationDetailSchema,
@@ -91,6 +91,33 @@ settings = get_settings()
 security = HTTPBearer()
 
 router = APIRouter(prefix="/api")
+
+
+def _pending_draft_schema(draft: PendingAIReply | None) -> PendingAIReplySchema | None:
+    if not draft:
+        return None
+    try:
+        payload = json.loads(draft.payload_json or "{}")
+        if not isinstance(payload, dict):
+            payload = {}
+    except Exception:
+        payload = {}
+    return PendingAIReplySchema(
+        id=draft.id,
+        conversation_id=draft.conversation_id,
+        draft_text=draft.draft_text or "",
+        final_text=draft.final_text or "",
+        language=draft.language or "en",
+        content_kind=draft.content_kind or "text",
+        payload_json=payload,
+        status=draft.status,
+        auto_send_at=draft.auto_send_at,
+        auto_send_paused=bool(draft.auto_send_paused),
+        sent_at=draft.sent_at,
+        error_message=draft.error_message or "",
+        created_at=draft.created_at,
+        updated_at=draft.updated_at,
+    )
 
 
 # ─── Auth ────────────────────────────────────────────────────────────────────
@@ -207,8 +234,27 @@ async def get_conversation(
     if not conversation:
         raise HTTPException(status_code=404, detail="Conversation not found")
     detail = ConversationDetailSchema.model_validate(conversation)
+    outbound_result = await db.execute(
+        select(ConversationOutboundEvent)
+        .where(ConversationOutboundEvent.conversation_id == conversation_id)
+        .order_by(ConversationOutboundEvent.created_at)
+    )
+    detail.outbound_events = [
+        TelegramSimulatorEventSchema(
+            id=f"outbound-{event.id}",
+            role=event.role,
+            type=event.event_type,
+            text=event.text or None,
+            caption=event.caption or None,
+            url=event.url or None,
+            filename=event.filename or None,
+            parse_mode=event.parse_mode,
+            created_at=event.created_at,
+        )
+        for event in outbound_result.scalars().all()
+    ]
     pending_draft = await get_pending_ai_reply(conversation_id)
-    detail.ai_draft = PendingAIReplySchema.model_validate(pending_draft) if pending_draft else None
+    detail.ai_draft = _pending_draft_schema(pending_draft)
     return detail
 
 
@@ -415,6 +461,7 @@ async def delete_conversation(
         await db.execute(delete(SceneGenerationImage).where(SceneGenerationImage.record_id.in_(scene_record_ids)))
         await db.execute(delete(SceneGenerationRecord).where(SceneGenerationRecord.id.in_(scene_record_ids)))
 
+    await db.execute(delete(ConversationOutboundEvent).where(ConversationOutboundEvent.conversation_id == conversation_id))
     await db.execute(delete(PendingAIReply).where(PendingAIReply.conversation_id == conversation_id))
     await db.execute(delete(ConversationSceneState).where(ConversationSceneState.conversation_id == conversation_id))
     await db.execute(delete(Contract).where(Contract.conversation_id == conversation_id))
@@ -669,17 +716,38 @@ async def simulator_get_events(
         raise HTTPException(status_code=400, detail="Not a simulator conversation")
 
     await cleanup_stale_pending_scene_generations()
+    outbound_result = await db.execute(
+        select(ConversationOutboundEvent)
+        .where(ConversationOutboundEvent.conversation_id == conversation_id)
+        .order_by(ConversationOutboundEvent.created_at)
+    )
+    outbound_events = [
+        TelegramSimulatorEventSchema(
+            id=f"outbound-{event.id}",
+            role=event.role,
+            type=event.event_type,
+            text=event.text or None,
+            caption=event.caption or None,
+            url=event.url or None,
+            filename=event.filename or None,
+            parse_mode=event.parse_mode,
+            created_at=event.created_at,
+        )
+        for event in outbound_result.scalars().all()
+    ]
+
     result = await db.execute(
         select(SceneGenerationRecord)
         .where(
             SceneGenerationRecord.conversation_id == conversation_id,
             SceneGenerationRecord.status.in_(["completed", "failed"]),
+            SceneGenerationRecord.deferred_delivery == False,
         )
         .order_by(SceneGenerationRecord.created_at)
     )
     records = result.scalars().all()
 
-    events: list[TelegramSimulatorEventSchema] = []
+    events: list[TelegramSimulatorEventSchema] = list(outbound_events)
     for record in records:
         events.extend(await _build_simulator_scene_events(record, conversation.language or "en", db))
     return events

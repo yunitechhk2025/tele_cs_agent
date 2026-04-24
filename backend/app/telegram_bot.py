@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import json
 import logging
 import mimetypes
 import os
@@ -24,8 +25,9 @@ from app.services.llm_service import (
     analyze_scene_image_request, resolve_recent_product_reference,
 )
 from app.services.rag_service import search_knowledge_for_bot
-from app.services.scene_service import CUSTOMER_SCENE_TIMEOUT_SECONDS, generate_scene_images
+from app.services.scene_service import CUSTOMER_SCENE_TIMEOUT_SECONDS, build_scene_record_response, generate_scene_images
 from app.services.customer_service_service import (
+    create_pending_ai_delivery,
     get_customer_service_settings,
     create_pending_ai_reply,
 )
@@ -575,11 +577,134 @@ def select_default_scene(products: list[dict], language: str) -> str:
     return "客厅" if language == "zh" else "living room"
 
 
+def resolve_recommended_product_reference_locally(
+    user_message: str,
+    recommended_product_ids: list[int],
+) -> int | None:
+    """Resolve common product-number replies without depending on the LLM."""
+    if not recommended_product_ids:
+        return None
+
+    normalized = (user_message or "").strip().lower().translate(str.maketrans({
+        "１": "1",
+        "２": "2",
+        "３": "3",
+        "＃": "#",
+        "﹟": "#",
+    }))
+    compact = re.sub(r"\s+", "", normalized)
+
+    def pick(index: int | None) -> int | None:
+        if index is None or index < 1 or index > len(recommended_product_ids):
+            return None
+        return recommended_product_ids[index - 1]
+
+    if re.fullmatch(r"#?[1-3]", compact):
+        return pick(int(compact.replace("#", "")))
+
+    explicit_match = re.search(
+        r"(?:#|编号|商品|产品|第|no\.?|number|num|nº)\s*([1-3])",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if explicit_match:
+        return pick(int(explicit_match.group(1)))
+
+    ordinal_words = {
+        "一": 1, "壹": 1, "第一": 1, "第一个": 1, "第一款": 1,
+        "二": 2, "两": 2, "贰": 2, "第二": 2, "第二个": 2, "第二款": 2,
+        "三": 3, "叁": 3, "第三": 3, "第三个": 3, "第三款": 3,
+        "first": 1, "1st": 1,
+        "second": 2, "2nd": 2,
+        "third": 3, "3rd": 3,
+        "primero": 1, "primera": 1,
+        "segundo": 2, "segunda": 2,
+        "tercero": 3, "tercera": 3,
+    }
+    for word, index in ordinal_words.items():
+        if word in compact:
+            return pick(index)
+    return None
+
+
 def build_scene_followup_message(language: str, products: list[dict]) -> str:
     ui_lang = ui_scene_language(language)
     scene = localize_scene_name(select_default_scene(products, ui_lang), ui_lang)
     template = SCENE_FOLLOWUP_MESSAGES.get(ui_lang, SCENE_FOLLOWUP_MESSAGES["en"])
     return template.format(scene=scene)
+
+
+def build_product_recommendation_delivery(products: list[dict], language: str) -> dict[str, Any]:
+    ui_lang = ui_scene_language(language)
+    labels = PRODUCT_CARD_LABELS.get(ui_lang, PRODUCT_CARD_LABELS["en"])
+    cards: list[dict[str, Any]] = []
+    preview_lines: list[str] = []
+
+    for idx, p in enumerate(products, start=1):
+        lines = [f"[#{idx}] *{p['name']}*"]
+        preview_lines.append(f"#{idx} {p['name']}")
+        if p.get("series"):
+            lines.append(f"{labels['series']}: {p['series']}")
+        if p.get("space"):
+            lines.append(f"{labels['space']}: {localize_scene_name(p['space'], ui_lang)}")
+        if p.get("style"):
+            lines.append(f"{labels['style']}: {p['style']}")
+        if p.get("color"):
+            lines.append(f"{labels['color']}: {p['color']}")
+        if p.get("material"):
+            lines.append(f"{labels['material']}: {p['material']}")
+        if p.get("buy_url"):
+            lines.append(f"[{labels['view']}]({p['buy_url']})")
+        image_paths = p.get("image_paths", [])
+        image_path = image_paths[0] if image_paths else ""
+        cards.append({
+            "product_id": p["id"],
+            "caption": "\n".join(lines)[:1024],
+            "image_path": image_path,
+            "image_url": f"/api/products/{p['id']}/images/0" if image_path else "",
+            "parse_mode": "Markdown",
+        })
+
+    return {
+        "cards": cards,
+        "preview_lines": preview_lines,
+    }
+
+
+async def build_scene_result_delivery(record, language: str) -> dict[str, Any]:
+    ui_lang = ui_scene_language(language)
+    localized_scene = localize_scene_name(record.scene_name or "", ui_lang) or {
+        "zh": "该场景",
+        "en": "requested setting",
+        "ja": "ご希望の空間",
+        "ko": "요청하신 공간",
+        "es": "ambiente solicitado",
+        "fr": "cadre demande",
+    }.get(ui_lang, "requested setting")
+    intro_template = SCENE_RESULT_MESSAGES.get(ui_lang, SCENE_RESULT_MESSAGES["en"])
+    intro_text = intro_template.format(scene=localized_scene)
+    resp = await build_scene_record_response(record)
+    labels = SCENE_RESULT_LINK_LABELS.get(ui_lang, SCENE_RESULT_LINK_LABELS["en"])
+    lines: list[str] = []
+    if resp.get("primary_product_name") and resp.get("primary_product_id"):
+        async with AsyncSessionLocal() as db:
+            primary = await db.get(ProductEntry, record.primary_product_id)
+        if primary:
+            primary_link = primary.buy_url or primary.detail_url
+            if primary_link:
+                lines.append(f"{labels['main']}: [{primary.product_name}]({primary_link})")
+    for rel in resp.get("related_products", []):
+        link = rel.get("buy_url") or rel.get("detail_url")
+        if link:
+            lines.append(f"{labels['related']}: [{rel.get('product_name', '')}]({link})")
+    return {
+        "intro_text": intro_text,
+        "links_text": "\n".join(lines),
+        "links_parse_mode": "Markdown",
+        "image_urls": resp.get("image_urls", []),
+        "output_paths": json.loads(record.output_paths_json or "[]"),
+        "preview_line": f"{localized_scene} 场景图 {len(resp.get('image_urls', []))} 张" if ui_lang == "zh" else f"{localized_scene} scene image x{len(resp.get('image_urls', []))}",
+    }
 
 
 async def send_scene_generation_result(language: str, record, outbound: CustomerOutbound):
@@ -840,12 +965,16 @@ async def process_customer_text_message(
         )
 
         if scene_state and scene_state.pending_confirmation:
+            local_referenced_id = resolve_recommended_product_reference_locally(
+                user_message,
+                recent_scene_product_ids,
+            )
             resolved_ref = await resolve_recent_product_reference(
                 user_message,
                 all_products,
                 recent_scene_product_ids,
             )
-            referenced_id = resolved_ref.get("target_product_id")
+            referenced_id = local_referenced_id or resolved_ref.get("target_product_id")
             wants_scene = (
                 scene_req.get("is_scene_request")
                 or referenced_id is not None
@@ -875,11 +1004,12 @@ async def process_customer_text_message(
                         if not referenced_id or referenced_id == scene_state.primary_product_id
                         else primary_product.style
                     )
-                    generating = SCENE_GENERATING_MESSAGES.get(language, SCENE_GENERATING_MESSAGES["en"])
                     stop_typing.set()
                     await typing_task
-                    await outbound.reply_text(generating)
-                    await save_message(conversation_id, MessageRole.ASSISTANT, generating, language)
+                    if service_mode != "ai_assist":
+                        generating = SCENE_GENERATING_MESSAGES.get(language, SCENE_GENERATING_MESSAGES["en"])
+                        await outbound.reply_text(generating)
+                        await save_message(conversation_id, MessageRole.ASSISTANT, generating, language)
                     try:
                         record = await generate_scene_images(
                             primary_product=primary_product,
@@ -892,9 +1022,52 @@ async def process_customer_text_message(
                         )
                     except asyncio.TimeoutError:
                         timeout_text = SCENE_TIMEOUT_MESSAGES.get(language, SCENE_TIMEOUT_MESSAGES["en"])
-                        await outbound.reply_text(timeout_text)
-                        await save_message(conversation_id, MessageRole.ASSISTANT, timeout_text, language)
+                        if service_mode == "ai_assist":
+                            await create_pending_ai_reply(conversation_id, timeout_text, language)
+                        else:
+                            await outbound.reply_text(timeout_text)
+                            await save_message(conversation_id, MessageRole.ASSISTANT, timeout_text, language)
                         await clear_scene_state(conversation_id)
+                        return
+                    if service_mode == "ai_assist":
+                        if record.status != "completed":
+                            failed_text = SCENE_FAILED_MESSAGES.get(language, SCENE_FAILED_MESSAGES["en"])
+                            await create_pending_ai_reply(conversation_id, failed_text, language)
+                            await clear_scene_state(conversation_id)
+                            if run_notify_admin and notify_bot and conversation:
+                                await notify_admin(
+                                    bot_id,
+                                    conversation,
+                                    user_message,
+                                    notify_bot,
+                                    is_followup=(current_status in {ConversationStatus.PENDING_HUMAN, ConversationStatus.HUMAN_HANDLING}),
+                                )
+                            return
+                        async with AsyncSessionLocal() as db:
+                            current_record = await db.get(type(record), record.id)
+                            if current_record:
+                                current_record.deferred_delivery = True
+                                await db.commit()
+                        scene_delivery = await build_scene_result_delivery(record, language)
+                        scene_delivery["record_id"] = record.id
+                        scene_delivery["scene_state_action"] = "clear"
+                        preview_text = f"{scene_delivery.get('intro_text', '')}\n\n{scene_delivery.get('preview_line', '')}".strip()
+                        await create_pending_ai_delivery(
+                            conversation_id=conversation_id,
+                            draft_text=preview_text,
+                            language=language,
+                            content_kind="scene_result",
+                            payload=scene_delivery,
+                        )
+                        await clear_scene_state(conversation_id)
+                        if run_notify_admin and notify_bot and conversation:
+                            await notify_admin(
+                                bot_id,
+                                conversation,
+                                user_message,
+                                notify_bot,
+                                is_followup=(current_status in {ConversationStatus.PENDING_HUMAN, ConversationStatus.HUMAN_HANDLING}),
+                            )
                         return
                     await send_scene_generation_result(language, record, outbound)
                     await clear_scene_state(conversation_id)
@@ -912,11 +1085,12 @@ async def process_customer_text_message(
                 async with AsyncSessionLocal() as db:
                     primary_product = await db.get(ProductEntry, int(target_id))
                 if primary_product:
-                    generating = SCENE_GENERATING_MESSAGES.get(language, SCENE_GENERATING_MESSAGES["en"])
                     stop_typing.set()
                     await typing_task
-                    await outbound.reply_text(generating)
-                    await save_message(conversation_id, MessageRole.ASSISTANT, generating, language)
+                    if service_mode != "ai_assist":
+                        generating = SCENE_GENERATING_MESSAGES.get(language, SCENE_GENERATING_MESSAGES["en"])
+                        await outbound.reply_text(generating)
+                        await save_message(conversation_id, MessageRole.ASSISTANT, generating, language)
                     try:
                         record = await generate_scene_images(
                             primary_product=primary_product,
@@ -929,8 +1103,58 @@ async def process_customer_text_message(
                         )
                     except asyncio.TimeoutError:
                         timeout_text = SCENE_TIMEOUT_MESSAGES.get(language, SCENE_TIMEOUT_MESSAGES["en"])
-                        await outbound.reply_text(timeout_text)
-                        await save_message(conversation_id, MessageRole.ASSISTANT, timeout_text, language)
+                        if service_mode == "ai_assist":
+                            await create_pending_ai_reply(conversation_id, timeout_text, language)
+                        else:
+                            await outbound.reply_text(timeout_text)
+                            await save_message(conversation_id, MessageRole.ASSISTANT, timeout_text, language)
+                        return
+                    if service_mode == "ai_assist":
+                        if record.status != "completed":
+                            failed_text = SCENE_FAILED_MESSAGES.get(language, SCENE_FAILED_MESSAGES["en"])
+                            await create_pending_ai_reply(conversation_id, failed_text, language)
+                            if run_notify_admin and notify_bot and conversation:
+                                await notify_admin(
+                                    bot_id,
+                                    conversation,
+                                    user_message,
+                                    notify_bot,
+                                    is_followup=(current_status in {ConversationStatus.PENDING_HUMAN, ConversationStatus.HUMAN_HANDLING}),
+                                )
+                            return
+                        async with AsyncSessionLocal() as db:
+                            current_record = await db.get(type(record), record.id)
+                            if current_record:
+                                current_record.deferred_delivery = True
+                                await db.commit()
+                        scene_delivery = await build_scene_result_delivery(record, language)
+                        scene_delivery["record_id"] = record.id
+                        scene_delivery["scene_state_action"] = "save"
+                        scene_delivery["scene_state_payload"] = {
+                            "primary_product_id": primary_product.id,
+                            "recommended_product_ids": [primary_product.id],
+                            "suggested_scene": scene_req.get("scene_name") or primary_product.space,
+                            "suggested_style": scene_req.get("style_hint") or primary_product.style,
+                            "pending_confirmation": False,
+                            "reply_language": language,
+                            "last_customer_request": user_message,
+                        }
+                        preview_text = f"{scene_delivery.get('intro_text', '')}\n\n{scene_delivery.get('preview_line', '')}".strip()
+                        await create_pending_ai_delivery(
+                            conversation_id=conversation_id,
+                            draft_text=preview_text,
+                            language=language,
+                            content_kind="scene_result",
+                            payload=scene_delivery,
+                        )
+                        if run_notify_admin and notify_bot and conversation:
+                            await notify_admin(
+                                bot_id,
+                                conversation,
+                                user_message,
+                                notify_bot,
+                                is_followup=(current_status in {ConversationStatus.PENDING_HUMAN, ConversationStatus.HUMAN_HANDLING}),
+                            )
                         return
                     await send_scene_generation_result(language, record, outbound)
                     await save_scene_state(
@@ -956,6 +1180,40 @@ async def process_customer_text_message(
             stop_typing.set()
             await typing_task
             if selected_products:
+                if service_mode == "ai_assist":
+                    primary_product = selected_products[0]
+                    suggested_scene = select_default_scene(selected_products, language)
+                    followup = build_scene_followup_message(language, selected_products)
+                    delivery = build_product_recommendation_delivery(selected_products, language)
+                    delivery["intro_text"] = intro
+                    delivery["followup_text"] = followup
+                    delivery["scene_state"] = {
+                        "primary_product_id": primary_product["id"],
+                        "recommended_product_ids": selected_ids,
+                        "suggested_scene": suggested_scene,
+                        "suggested_style": primary_product.get("style", ""),
+                        "pending_confirmation": True,
+                        "reply_language": language,
+                        "last_customer_request": user_message,
+                    }
+                    preview_text = "\n".join([intro, *delivery.get("preview_lines", []), "", followup]).strip()
+                    await create_pending_ai_delivery(
+                        conversation_id=conversation_id,
+                        draft_text=preview_text,
+                        language=language,
+                        content_kind="product_recommendation",
+                        payload=delivery,
+                    )
+                    if run_notify_admin and notify_bot and conversation:
+                        await notify_admin(
+                            bot_id,
+                            conversation,
+                            user_message,
+                            notify_bot,
+                            is_followup=(current_status in {ConversationStatus.PENDING_HUMAN, ConversationStatus.HUMAN_HANDLING}),
+                        )
+                    logger.info(f"[Bot {bot_id}] Queued {len(selected_products)} product recommendations for human confirmation")
+                    return
                 await outbound.reply_text(intro)
                 await save_message(conversation_id, MessageRole.ASSISTANT, intro, language)
                 await send_product_recommendations(selected_products, language, outbound)
@@ -976,8 +1234,19 @@ async def process_customer_text_message(
                 )
                 logger.info(f"[Bot {bot_id}] Sent {len(selected_products)} product recommendations")
             else:
-                await outbound.reply_text(none_msg)
-                await save_message(conversation_id, MessageRole.ASSISTANT, none_msg, language)
+                if service_mode == "ai_assist":
+                    await create_pending_ai_reply(conversation_id, none_msg, language)
+                    if run_notify_admin and notify_bot and conversation:
+                        await notify_admin(
+                            bot_id,
+                            conversation,
+                            user_message,
+                            notify_bot,
+                            is_followup=(current_status in {ConversationStatus.PENDING_HUMAN, ConversationStatus.HUMAN_HANDLING}),
+                        )
+                else:
+                    await outbound.reply_text(none_msg)
+                    await save_message(conversation_id, MessageRole.ASSISTANT, none_msg, language)
                 await clear_scene_state(conversation_id)
             return
 

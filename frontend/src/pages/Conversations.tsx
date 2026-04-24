@@ -44,6 +44,7 @@ import type {
   ConversationDetail,
   CustomerServiceSettings,
   Message,
+  SimulatorOutgoingEvent,
 } from '../types';
 
 dayjs.extend(relativeTime);
@@ -136,6 +137,306 @@ function draftAutoSendLabel(detail: ConversationDetail | null, draftCountdownSec
   if (!detail?.ai_draft) return '—';
   if (detail.ai_draft.auto_send_paused) return '已暂停自动发送';
   return `${draftCountdownSeconds ?? '—'} 秒后自动发送`;
+}
+
+function draftTitle(detail: ConversationDetail | null) {
+  const kind = detail?.ai_draft?.content_kind || 'text';
+  if (kind === 'product_recommendation') return '商品推荐待确认';
+  if (kind === 'scene_result') return '场景图待确认';
+  return 'AI 待确认回复';
+}
+
+function canEditDraft(detail: ConversationDetail | null) {
+  return detail?.ai_draft?.content_kind === 'text';
+}
+
+type ProductDraftCard = {
+  product_id?: number;
+  caption?: string;
+  image_url?: string;
+};
+
+type ProductRecommendationDraftPayload = {
+  intro_text?: string;
+  followup_text?: string;
+  cards?: ProductDraftCard[];
+};
+
+type SceneResultDraftPayload = {
+  intro_text?: string;
+  links_text?: string;
+  image_urls?: string[];
+};
+
+function parseMarkdownLink(value: string) {
+  const match = value.match(/\[([^\]]+)\]\(([^)]+)\)/);
+  if (!match) return null;
+  return { label: match[1], url: match[2] };
+}
+
+function ProductRecommendationDraftPreview({ payload }: { payload: Record<string, unknown> }) {
+  const data = payload as ProductRecommendationDraftPayload;
+  const cards = Array.isArray(data.cards) ? data.cards : [];
+
+  return (
+    <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+      {data.intro_text ? (
+        <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', lineHeight: 1.6 }}>
+          {data.intro_text}
+        </div>
+      ) : null}
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))',
+          gap: 12,
+        }}
+      >
+        {cards.map((card, index) => {
+          const lines = String(card.caption || '')
+            .split('\n')
+            .map((line) => line.trim())
+            .filter(Boolean);
+          const heading = lines[0]?.replace(/^\[(#[^\]]+)\]\s*\*/, '$1 ').replace(/\*$/g, '') || `#${index + 1}`;
+          const detailLines = lines.slice(1).filter((line) => !line.startsWith('[查看详情]') && !line.startsWith('[View details]'));
+          const linkLine = lines.find((line) => line.includes(']('));
+          const link = linkLine ? parseMarkdownLink(linkLine) : null;
+          return (
+            <Card
+              key={`${card.product_id || 'card'}-${index}`}
+              size="small"
+              style={{ borderRadius: 12, overflow: 'hidden' }}
+              styles={{ body: { padding: 12 } }}
+            >
+              {card.image_url ? (
+                <img
+                  alt={heading}
+                  src={card.image_url}
+                  loading="lazy"
+                  style={{
+                    width: '100%',
+                    maxWidth: 280,
+                    maxHeight: 180,
+                    aspectRatio: '4 / 3',
+                    objectFit: 'cover',
+                    borderRadius: 10,
+                    display: 'block',
+                    marginBottom: 10,
+                    background: '#fafafa',
+                  }}
+                />
+              ) : null}
+              <Space direction="vertical" size={6} style={{ width: '100%' }}>
+                <Text strong style={{ fontSize: 14, lineHeight: 1.5 }}>
+                  {heading}
+                </Text>
+                {detailLines.map((line, lineIndex) => (
+                  <Text key={lineIndex} type="secondary" style={{ fontSize: 13, lineHeight: 1.5 }}>
+                    {line}
+                  </Text>
+                ))}
+                {link ? (
+                  <a href={link.url} target="_blank" rel="noreferrer" style={{ fontSize: 13 }}>
+                    {link.label}
+                  </a>
+                ) : null}
+              </Space>
+            </Card>
+          );
+        })}
+      </div>
+      {data.followup_text ? (
+        <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', lineHeight: 1.6 }}>
+          {data.followup_text}
+        </div>
+      ) : null}
+    </Space>
+  );
+}
+
+function SceneResultDraftPreview({ payload }: { payload: Record<string, unknown> }) {
+  const data = payload as SceneResultDraftPayload;
+  const imageUrls = Array.isArray(data.image_urls) ? data.image_urls : [];
+  const linkLines = String(data.links_text || '')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const prefixMatch = line.match(/^([^:]+):\s*(.+)$/);
+      const prefix = prefixMatch?.[1] || '';
+      const raw = prefixMatch?.[2] || line;
+      const link = parseMarkdownLink(raw);
+      return {
+        prefix,
+        label: link?.label || raw,
+        url: link?.url || '',
+      };
+    });
+
+  return (
+    <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+      {data.intro_text ? (
+        <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', lineHeight: 1.6 }}>
+          {data.intro_text}
+        </div>
+      ) : null}
+      {imageUrls.length ? (
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
+            gap: 12,
+          }}
+        >
+          {imageUrls.map((url, index) => (
+            <Card
+              key={`${url}-${index}`}
+              size="small"
+              style={{ borderRadius: 12, overflow: 'hidden' }}
+              styles={{ body: { padding: 12 } }}
+            >
+              <img
+                alt={`scene-${index + 1}`}
+                src={url}
+                loading="lazy"
+                style={{
+                  width: '100%',
+                  maxWidth: 360,
+                  maxHeight: 260,
+                  objectFit: 'contain',
+                  borderRadius: 10,
+                  display: 'block',
+                  background: '#fafafa',
+                  margin: '0 auto',
+                }}
+              />
+            </Card>
+          ))}
+        </div>
+      ) : null}
+      {linkLines.length ? (
+        <Card size="small" style={{ borderRadius: 12 }} styles={{ body: { padding: 12 } }}>
+          <Space direction="vertical" size={8} style={{ width: '100%' }}>
+            {linkLines.map((item, index) => (
+              <div key={`${item.label}-${index}`} style={{ lineHeight: 1.6, wordBreak: 'break-word' }}>
+                {item.prefix ? (
+                  <Text strong style={{ marginRight: 6 }}>
+                    {item.prefix}:
+                  </Text>
+                ) : null}
+                {item.url ? (
+                  <a href={item.url} target="_blank" rel="noreferrer">
+                    {item.label}
+                  </a>
+                ) : (
+                  <Text>{item.label}</Text>
+                )}
+              </div>
+            ))}
+          </Space>
+        </Card>
+      ) : null}
+    </Space>
+  );
+}
+
+function DraftPreview({ detail }: { detail: ConversationDetail }) {
+  const kind = detail.ai_draft?.content_kind || 'text';
+  const payload = detail.ai_draft?.payload_json || {};
+
+  if (kind === 'product_recommendation') {
+    return <ProductRecommendationDraftPreview payload={payload} />;
+  }
+  if (kind === 'scene_result') {
+    return <SceneResultDraftPreview payload={payload} />;
+  }
+  return (
+    <div
+      style={{
+        whiteSpace: 'pre-wrap',
+        wordBreak: 'break-word',
+        lineHeight: 1.6,
+        fontSize: 14,
+      }}
+    >
+      {detail.ai_draft?.draft_text}
+    </div>
+  );
+}
+
+type ConversationTimelineItem =
+  | {
+      id: string;
+      created_at: string;
+      kind: 'message';
+      message: Message;
+    }
+  | {
+      id: string;
+      created_at: string;
+      kind: 'event';
+      event: SimulatorOutgoingEvent;
+    };
+
+function OutboundEventBubble({ event }: { event: SimulatorOutgoingEvent }) {
+  const isHuman = event.role === 'human_agent';
+  const bg = isHuman ? '#f6ffed' : '#fff';
+  const name = isHuman ? '人工客服' : 'AI 助手';
+  const icon = isHuman ? <CustomerServiceOutlined /> : <RobotOutlined />;
+
+  return (
+    <div
+      style={{
+        display: 'flex',
+        justifyContent: 'flex-end',
+        marginBottom: 12,
+      }}
+    >
+      <div
+        style={{
+          maxWidth: '78%',
+          padding: '10px 14px',
+          borderRadius: 12,
+          background: bg,
+          border: '1px solid #d9d9d9',
+          boxShadow: '0 1px 4px rgba(0,0,0,0.06)',
+        }}
+      >
+        <Space size={6} align="center" style={{ marginBottom: 6 }}>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            {icon} {name}
+          </Text>
+          <Text type="secondary" style={{ fontSize: 11 }}>
+            {dayjs(event.created_at).format('YYYY-MM-DD · HH:mm')}
+          </Text>
+        </Space>
+        {event.type === 'photo' && event.url ? (
+          <div>
+            <img
+              alt={event.caption || 'outbound-photo'}
+              src={event.url}
+              style={{ maxWidth: '100%', maxHeight: 320, borderRadius: 10, display: 'block', background: '#fafafa' }}
+            />
+            {event.caption ? (
+              <div style={{ marginTop: 10, whiteSpace: 'pre-wrap', wordBreak: 'break-word', lineHeight: 1.55, fontSize: 14 }}>
+                {event.caption}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+        {event.type === 'document' && event.url ? (
+          <a href={event.url} target="_blank" rel="noreferrer">
+            {event.filename || 'Document'}
+          </a>
+        ) : null}
+        {event.type === 'text' && event.text ? (
+          <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', lineHeight: 1.55, fontSize: 14 }}>
+            {event.text}
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
 }
 
 function MessageBubble({ msg }: { msg: Message }) {
@@ -444,6 +745,7 @@ export default function Conversations() {
 
   const handleToggleEditAiDraft = async () => {
     if (!detail?.ai_draft) return;
+    if (!canEditDraft(detail)) return;
     if (editingAiDraft) {
       setEditingAiDraft(false);
       setAiDraftText(detail.ai_draft.draft_text || '');
@@ -566,6 +868,29 @@ export default function Conversations() {
 
   const activeTabKey = filter;
   const currentMode = modeConfig(customerServiceSettings?.mode);
+  const timeline = useMemo<ConversationTimelineItem[]>(() => {
+    if (!detail) return [];
+    const messageItems = (detail.messages || []).map((msg) => ({
+      id: `msg-${msg.id}`,
+      created_at: msg.created_at,
+      kind: 'message' as const,
+      message: msg,
+    }));
+    const eventItems = (detail.outbound_events || [])
+      .filter((event) => event.type === 'photo' || event.type === 'document')
+      .map((event) => ({
+        id: event.id,
+        created_at: event.created_at,
+        kind: 'event' as const,
+        event,
+      }));
+    return [...messageItems, ...eventItems].sort((a, b) => {
+      const diff = dayjs(a.created_at).valueOf() - dayjs(b.created_at).valueOf();
+      if (diff !== 0) return diff;
+      if (a.kind === b.kind) return 0;
+      return a.kind === 'message' ? -1 : 1;
+    });
+  }, [detail]);
 
   return (
     <div
@@ -830,7 +1155,7 @@ export default function Conversations() {
               >
                 <Card
                   size="small"
-                  title="AI 待确认回复"
+                  title={draftTitle(detail)}
                   extra={
                     <Space size={8}>
                       <Tag color="gold">
@@ -841,7 +1166,17 @@ export default function Conversations() {
                   }
                   styles={{ body: { paddingTop: 12 } }}
                 >
-                  <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+                  <Space
+                    direction="vertical"
+                    size="middle"
+                    style={{
+                      width: '100%',
+                      maxHeight: 420,
+                      overflowY: 'auto',
+                      overflowX: 'hidden',
+                      paddingRight: 4,
+                    }}
+                  >
                     {editingAiDraft ? (
                       <Input.TextArea
                         value={aiDraftText}
@@ -849,27 +1184,20 @@ export default function Conversations() {
                         autoSize={{ minRows: 4, maxRows: 10 }}
                       />
                     ) : (
-                      <div
-                        style={{
-                          whiteSpace: 'pre-wrap',
-                          wordBreak: 'break-word',
-                          lineHeight: 1.6,
-                          fontSize: 14,
-                        }}
-                      >
-                        {detail.ai_draft.draft_text}
-                      </div>
+                      <DraftPreview detail={detail} />
                     )}
                     <Space wrap>
                       <Button danger loading={aiDraftCancelling} onClick={() => void handleCancelAiDraft()}>
                         取消
                       </Button>
-                      <Button
-                        icon={<EditOutlined />}
-                        onClick={() => void handleToggleEditAiDraft()}
-                      >
-                        {editingAiDraft ? '取消编辑' : '编辑AI回复'}
-                      </Button>
+                      {canEditDraft(detail) ? (
+                        <Button
+                          icon={<EditOutlined />}
+                          onClick={() => void handleToggleEditAiDraft()}
+                        >
+                          {editingAiDraft ? '取消编辑' : '编辑AI回复'}
+                        </Button>
+                      ) : null}
                       <Button
                         type="primary"
                         icon={<SendOutlined />}
@@ -899,12 +1227,16 @@ export default function Conversations() {
               }}
             >
               <Spin spinning={detailLoading}>
-                {detail && !detailLoading && (!detail.messages || detail.messages.length === 0) ? (
+                {detail && !detailLoading && timeline.length === 0 ? (
                   <Empty description="暂无消息" />
-                ) : detail?.messages?.length ? (
-                  [...detail.messages]
-                    .sort((a, b) => dayjs(a.created_at).valueOf() - dayjs(b.created_at).valueOf())
-                    .map((m) => <MessageBubble key={m.id} msg={m} />)
+                ) : timeline.length ? (
+                  timeline.map((item) =>
+                    item.kind === 'message' ? (
+                      <MessageBubble key={item.id} msg={item.message} />
+                    ) : (
+                      <OutboundEventBubble key={item.id} event={item.event} />
+                    ),
+                  )
                 ) : null}
               </Spin>
             </div>
