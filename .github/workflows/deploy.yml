@@ -1,0 +1,40 @@
+name: Deploy to Aliyun ECS
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: SSH deploy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.ECS_HOST }}
+          username: ${{ secrets.ECS_USER }}
+          key: ${{ secrets.ECS_SSH_KEY }}
+          port: 22
+          command_timeout: 30m
+          script: |
+            set -euo pipefail
+            cd /opt/cs-agent
+
+            echo ">>> Pulling latest code..."
+            git fetch --all --prune
+            git reset --hard origin/main
+
+            echo ">>> Rebuilding & restarting containers..."
+            docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+
+            echo ">>> Cleaning up dangling images..."
+            docker image prune -f
+
+            echo ">>> Current status:"
+            docker compose -f docker-compose.yml -f docker-compose.prod.yml ps
