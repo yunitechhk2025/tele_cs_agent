@@ -45,10 +45,48 @@ class ConversationSchema(BaseModel):
 
 class ConversationDetailSchema(ConversationSchema):
     messages: list[MessageSchema] = []
+    outbound_events: list["TelegramSimulatorEventSchema"] = []
+    ai_draft: Optional["PendingAIReplySchema"] = None
 
 
 class ReplyRequest(BaseModel):
     content: str
+
+
+class PendingAIReplySchema(BaseModel):
+    id: int
+    conversation_id: int
+    draft_text: str
+    final_text: str = ""
+    language: str
+    content_kind: str = "text"
+    payload_json: dict[str, Any] = Field(default_factory=dict)
+    status: str
+    auto_send_at: datetime
+    auto_send_paused: bool = False
+    sent_at: Optional[datetime] = None
+    error_message: str = ""
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class SendPendingAIReplyRequest(BaseModel):
+    content: Optional[str] = None
+    send_as_human_agent: bool = False
+
+
+class CustomerServiceSettingsSchema(BaseModel):
+    feature_name: str = "客服应答模式"
+    mode: str = "ai_auto"
+    auto_send_seconds: int = 10
+
+
+class CustomerServiceSettingsUpdateRequest(BaseModel):
+    mode: str
+    auto_send_seconds: Optional[int] = None
 
 
 class KnowledgeEntrySchema(BaseModel):
@@ -145,6 +183,18 @@ class TelegramSimulatorSendResponse(BaseModel):
     outgoing: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class TelegramSimulatorEventSchema(BaseModel):
+    id: str
+    role: str
+    type: str
+    text: Optional[str] = None
+    caption: Optional[str] = None
+    url: Optional[str] = None
+    filename: Optional[str] = None
+    parse_mode: Optional[str] = None
+    created_at: datetime
+
+
 # ─── LLM Settings ────────────────────────────────────────────────────────────
 
 class LLMSettingsSchema(BaseModel):
@@ -158,7 +208,7 @@ class LLMSettingsSchema(BaseModel):
     image_model: str = "gpt-image-1"
     image_base_url: str = "https://api.openai.com/v1"
     image_api_key: str = ""
-    image_size: str = "1536x1024"
+    image_size: str = "1024x1024"
     image_quality: str = "high"
     image_style: str = "natural"
     temperature: float = 0.7
@@ -349,6 +399,20 @@ class SceneGeneratorRequest(BaseModel):
     scene_name: Optional[str] = None
     style_hint: Optional[str] = None
     user_request: Optional[str] = None
+
+
+class SceneBatchActionRequest(BaseModel):
+    record_ids: list[int]
+    action: str
+
+
+class SceneBatchActionResponse(BaseModel):
+    action: str
+    requested_count: int
+    success_count: int
+    failed_count: int
+    affected_ids: list[int] = []
+    failed_ids: list[int] = []
 
 
 class SceneLibraryItemSchema(BaseModel):

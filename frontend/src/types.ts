@@ -24,6 +24,25 @@ export interface Conversation {
 
 export interface ConversationDetail extends Conversation {
   messages: Message[];
+  outbound_events: SimulatorOutgoingEvent[];
+  ai_draft?: PendingAIReply | null;
+}
+
+export interface PendingAIReply {
+  id: number;
+  conversation_id: number;
+  draft_text: string;
+  final_text: string;
+  language: string;
+  content_kind: 'text' | 'product_recommendation' | 'scene_result' | string;
+  payload_json: Record<string, unknown>;
+  status: string;
+  auto_send_at: string;
+  auto_send_paused: boolean;
+  sent_at: string | null;
+  error_message: string;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface KnowledgeEntry {
@@ -119,6 +138,12 @@ export interface LLMSettings {
   max_tokens: number;
 }
 
+export interface CustomerServiceSettings {
+  feature_name: string;
+  mode: 'ai_auto' | 'ai_assist' | 'human_only';
+  auto_send_seconds: number;
+}
+
 export interface FileEntry {
   id: number;
   filename: string;
@@ -212,4 +237,30 @@ export interface SceneLibraryFilters {
   spaces: string[];
   styles: string[];
   scene_names: string[];
+}
+
+export interface SceneBatchActionResponse {
+  action: string;
+  requested_count: number;
+  success_count: number;
+  failed_count: number;
+  affected_ids: number[];
+  failed_ids: number[];
+}
+
+export interface TelegramSimulatorSessionResponse {
+  conversation_id: number;
+  telegram_chat_id: string;
+}
+
+export interface SimulatorOutgoingEvent {
+  id: string;
+  type: 'text' | 'photo' | 'document';
+  role: 'user' | 'assistant' | 'human_agent';
+  text?: string;
+  caption?: string;
+  url?: string;
+  filename?: string;
+  parse_mode?: string | null;
+  created_at: string;
 }

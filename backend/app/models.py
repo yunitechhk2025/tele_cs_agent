@@ -191,6 +191,27 @@ class ConversationSceneState(Base):
     primary_product = relationship("ProductEntry")
 
 
+class PendingAIReply(Base):
+    __tablename__ = "pending_ai_replies"
+
+    id = Column(Integer, primary_key=True, index=True)
+    conversation_id = Column(Integer, ForeignKey("conversations.id"), unique=True, index=True, nullable=False)
+    draft_text = Column(Text, default="")
+    final_text = Column(Text, default="")
+    language = Column(String(10), default="en")
+    content_kind = Column(String(50), default="text")
+    payload_json = Column(Text, default="{}")
+    status = Column(String(50), default="pending")
+    auto_send_at = Column(DateTime, nullable=False)
+    auto_send_paused = Column(Boolean, default=False)
+    sent_at = Column(DateTime, nullable=True)
+    error_message = Column(Text, default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    conversation = relationship("Conversation")
+
+
 class SceneGenerationRecord(Base):
     __tablename__ = "scene_generation_records"
 
@@ -205,6 +226,7 @@ class SceneGenerationRecord(Base):
     output_paths_json = Column(Text, default="[]")
     duration_ms = Column(Integer, default=0)
     status = Column(String(50), default="pending")
+    deferred_delivery = Column(Boolean, default=False)
     in_library = Column(Boolean, default=False)
     error_message = Column(Text, default="")
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -227,3 +249,20 @@ class SceneGenerationImage(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     record = relationship("SceneGenerationRecord", back_populates="images")
+
+
+class ConversationOutboundEvent(Base):
+    __tablename__ = "conversation_outbound_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    conversation_id = Column(Integer, ForeignKey("conversations.id"), index=True, nullable=False)
+    role = Column(String(50), default="assistant")
+    event_type = Column(String(50), default="text")
+    text = Column(Text, default="")
+    caption = Column(Text, default="")
+    url = Column(String(2000), default="")
+    filename = Column(String(500), default="")
+    parse_mode = Column(String(50), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    conversation = relationship("Conversation")

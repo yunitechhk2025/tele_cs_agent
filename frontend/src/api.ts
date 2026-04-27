@@ -1,9 +1,9 @@
 import axios from 'axios';
 import type {
   Conversation, ConversationDetail, KnowledgeEntry, Message,
-  Contract, ContractTemplate, DashboardStats, LLMSettings, FileEntry, TelegramBot,
+  Contract, ContractTemplate, DashboardStats, LLMSettings, CustomerServiceSettings, FileEntry, TelegramBot,
   ProductEntry, SceneGenerationRecord, SceneLibraryItem, SceneLibraryFilters,
-  SceneGeneratorRequest,
+  SceneGeneratorRequest, SceneBatchActionResponse, TelegramSimulatorSessionResponse, SimulatorOutgoingEvent,
 } from './types';
 
 const api = axios.create({ baseURL: '/api' });
@@ -43,8 +43,19 @@ export const conversationApi = {
     api.get<ConversationDetail>(`/conversations/${id}`),
   reply: (id: number, content: string) =>
     api.post(`/conversations/${id}/reply`, { content }),
+  sendAiDraft: (id: number, content?: string, sendAsHumanAgent?: boolean) =>
+    api.post(`/conversations/${id}/ai-draft/send`, {
+      content,
+      send_as_human_agent: Boolean(sendAsHumanAgent),
+    }),
+  pauseAiDraft: (id: number) =>
+    api.post(`/conversations/${id}/ai-draft/pause`),
+  cancelAiDraft: (id: number) =>
+    api.post(`/conversations/${id}/ai-draft/cancel`),
   close: (id: number) =>
     api.post(`/conversations/${id}/close`),
+  delete: (id: number) =>
+    api.delete(`/conversations/${id}`),
   sendContract: (conversationId: number, contractId: number) =>
     api.post(`/conversations/${conversationId}/send-contract`, { contract_id: contractId }),
 };
@@ -101,6 +112,9 @@ export const contractTemplateApi = {
 export const settingsApi = {
   getLLM: () => api.get<LLMSettings>('/settings/llm'),
   updateLLM: (data: Partial<LLMSettings>) => api.put<LLMSettings>('/settings/llm', data),
+  getCustomerService: () => api.get<CustomerServiceSettings>('/settings/customer-service'),
+  updateCustomerService: (data: Partial<CustomerServiceSettings>) =>
+    api.put<CustomerServiceSettings>('/settings/customer-service', data),
   testLLM: (data: Partial<LLMSettings>) =>
     api.post<{ ok: boolean; message: string }>('/settings/llm/test', data),
   testEmbedding: (data: Partial<LLMSettings>) =>
@@ -173,32 +187,38 @@ export const sceneGeneratorApi = {
     api.post<SceneGenerationRecord>('/scene-generator/generate', data),
   get: (recordId: number) =>
     api.get<SceneGenerationRecord>(`/scene-generations/${recordId}`),
+  retry: (recordId: number) =>
+    api.post<SceneGenerationRecord>(`/scene-generations/${recordId}/retry`),
   delete: (recordId: number) =>
     api.delete<{ status: string; id: number }>(`/scene-generations/${recordId}`),
   toggleLibrary: (recordId: number) =>
     api.post<{ id: number; in_library: boolean }>(`/scene-generations/${recordId}/toggle-library`),
+  batchAction: (data: { record_ids: number[]; action: 'delete' | 'add_to_library' | 'remove_from_library' | 'retry' }) =>
+    api.post<SceneBatchActionResponse>('/scene-generations/batch', data),
 };
 
 export const sceneLibraryApi = {
-  filters: (params?: { view?: 'library' | 'review' | 'generating' }) =>
+  filters: (params?: { view?: 'library' | 'review' | 'generating' | 'failed' }) =>
     api.get<SceneLibraryFilters>('/scene-library/filters', { params }),
-  list: (params?: { view?: 'library' | 'review' | 'generating'; brand?: string; space?: string; style?: string; scene_name?: string; skip?: number; limit?: number }) =>
+  list: (params?: { view?: 'library' | 'review' | 'generating' | 'failed'; brand?: string; space?: string; style?: string; scene_name?: string; skip?: number; limit?: number }) =>
     api.get<SceneLibraryItem[]>('/scene-library', { params }),
 };
 
 export const simulatorApi = {
   createSession: (botId: number, language?: string) =>
-    api.post<{ conversation_id: number; telegram_chat_id: string }>('/simulator/sessions', {
+    api.post<TelegramSimulatorSessionResponse>('/simulator/sessions', {
       bot_id: botId,
       language: language || 'zh',
     }),
   sendMessage: (conversationId: number, text: string) =>
-    api.post<{ conversation_id: number; outgoing: Array<Record<string, unknown>> }>(
+    api.post<{ conversation_id: number; outgoing: SimulatorOutgoingEvent[] }>(
       `/simulator/sessions/${conversationId}/send`,
       { text },
     ),
   getMessages: (conversationId: number) =>
     api.get<Message[]>(`/simulator/sessions/${conversationId}/messages`),
+  getEvents: (conversationId: number) =>
+    api.get<SimulatorOutgoingEvent[]>(`/simulator/sessions/${conversationId}/events`),
 };
 
 export default api;

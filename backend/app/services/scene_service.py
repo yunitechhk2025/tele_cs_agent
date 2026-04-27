@@ -3,6 +3,7 @@ import base64
 import json
 import logging
 import os
+import shutil
 import time
 import uuid
 from datetime import datetime, timedelta
@@ -11,7 +12,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 import httpx
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, select
 
 from app.config import get_settings
 from app.database import AsyncSessionLocal
@@ -24,8 +25,12 @@ from app.services.llm_service import (
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
-
-_running_tasks: dict[int, asyncio.Task] = {}
+SCENE_OUTPUT_COUNT = 1
+CUSTOMER_SCENE_TIMEOUT_SECONDS = 300
+BACKEND_SCENE_TIMEOUT_SECONDS = 600
+MAX_DASHSCOPE_PROMPT_CHARS = 2400
+SCENE_BUNDLE_SELECTION_TIMEOUT_SECONDS = 12
+ACTIVE_SCENE_TASKS: dict[int, asyncio.Task[Any]] = {}
 
 
 def _scene_upload_root() -> Path:
@@ -52,6 +57,24 @@ def _scene_defaults(primary_product: ProductEntry) -> tuple[str, str]:
     scene = primary_product.space.strip() or "客厅"
     style = primary_product.style.strip() or ""
     return scene, style
+
+
+PRODUCT_CATEGORY_KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
+    ("sofa", ("sofa", "couch", "sectional", "loveseat", "recliner", "沙发")),
+    ("coffee_table", ("coffee table", "end table", "side table", "茶几", "边几", "角几")),
+    ("tv_cabinet", ("tv cabinet", "tv stand", "media console", "电视柜", "视听柜")),
+    ("dining_table", ("dining table", "bar table", "餐桌", "饭桌", "吧台")),
+    ("dining_chair", ("dining chair", "餐椅", "吧椅")),
+    ("sideboard", ("sideboard", "buffet", "餐边柜")),
+    ("bed", ("bed", "婚床", "双人床", "大床", "床")),
+    ("nightstand", ("nightstand", "bedside table", "床头柜")),
+    ("wardrobe", ("wardrobe", "closet", "衣柜")),
+    ("dresser", ("dresser", "chest", "斗柜", "梳妆台")),
+    ("desk", ("desk", "writing table", "书桌", "办公桌")),
+    ("bookcase", ("bookcase", "bookshelf", "书柜", "书架")),
+    ("chair", ("armchair", "accent chair", "lounge chair", "椅", "单椅")),
+    ("cabinet", ("cabinet", "storage", "收纳柜", "储物柜", "柜")),
+]
 
 
 def _compatible_root(base_url: str) -> str:
@@ -84,6 +107,54 @@ def _resolution_from_size(size: str) -> str:
     return "2k" if max_side > 1200 else "1k"
 
 
+def _infer_product_category(product: ProductEntry | dict[str, Any]) -> str:
+    if isinstance(product, dict):
+        fields = [
+            str(product.get("name") or ""),
+            str(product.get("series") or ""),
+            str(product.get("description") or ""),
+            str(product.get("space") or ""),
+        ]
+    else:
+        fields = [
+            product.product_name or "",
+            getattr(product, "series_name", "") or "",
+            product.description_text or "",
+            product.space or "",
+        ]
+    haystack = " ".join(fields).lower()
+    for category, keywords in PRODUCT_CATEGORY_KEYWORDS:
+        if any(keyword in haystack for keyword in keywords):
+            return category
+    return "other"
+
+
+def _filter_distinct_category_related_ids(
+    primary_product: ProductEntry,
+    candidate_ids: list[int],
+    all_products_map: dict[int, dict[str, Any]],
+) -> list[int]:
+    primary_category = _infer_product_category(primary_product)
+    out: list[int] = []
+    seen_categories: set[str] = set()
+    for product_id in candidate_ids:
+        if int(product_id) == primary_product.id:
+            continue
+        product = all_products_map.get(int(product_id))
+        if not product:
+            continue
+        category = _infer_product_category(product)
+        if category == primary_category:
+            continue
+        if category in seen_categories and category != "other":
+            continue
+        out.append(int(product_id))
+        seen_categories.add(category)
+        if len(out) >= 3:
+            break
+    return out
+
+
 def _mime_type_from_filename(name: str) -> str:
     ext = Path(name).suffix.lower()
     return {
@@ -94,21 +165,51 @@ def _mime_type_from_filename(name: str) -> str:
     }.get(ext, "image/png")
 
 
-def _reference_items_to_data_urls(items: list[dict[str, Any]], limit: int = 5) -> list[str]:
-    """Build data: URLs from admin-selected local reference images for DashScope Kling."""
-    urls: list[str] = []
-    for item in items[:limit]:
-        path = (item.get("full_path") or "").strip()
-        if not path or not os.path.isfile(path):
+def _product_image_reference_value(image: ProductImage | None) -> str:
+    if not image:
+        return ""
+    if image.source_url:
+        return image.source_url
+
+    path = image.local_path or ""
+    if not path:
+        return ""
+    full_path = path if os.path.isabs(path) else os.path.join("/app", path)
+    if not os.path.exists(full_path):
+        return ""
+
+    mime_type = _mime_type_from_filename(full_path)
+    with open(full_path, "rb") as fh:
+        encoded = base64.b64encode(fh.read()).decode("ascii")
+    return f"data:{mime_type};base64,{encoded}"
+
+
+def _compact_text(value: str | None, limit: int) -> str:
+    text = " ".join((value or "").split())
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 1)].rstrip() + "…"
+
+
+def _compose_limited_prompt(sections: list[str], limit: int = MAX_DASHSCOPE_PROMPT_CHARS) -> str:
+    parts: list[str] = []
+    current = 0
+    separator = "\n\n"
+    for section in sections:
+        section = section.strip()
+        if not section:
             continue
-        try:
-            data = Path(path).read_bytes()
-        except OSError:
+        extra = len(section) if not parts else len(separator) + len(section)
+        if current + extra <= limit:
+            parts.append(section)
+            current += extra
             continue
-        mime = _mime_type_from_filename(path)
-        b64 = base64.b64encode(data).decode("ascii")
-        urls.append(f"data:{mime};base64,{b64}")
-    return urls
+
+        remaining = limit - current - (0 if not parts else len(separator))
+        if remaining > 32:
+            parts.append(_compact_text(section, remaining))
+        break
+    return separator.join(parts)
 
 
 async def _download_remote_binary(
@@ -138,67 +239,84 @@ def _build_scene_prompt(
     scene_name: str,
     style_hint: str,
     user_request: str,
+    reference_items: list[dict[str, Any]] | None = None,
 ) -> str:
     primary_lines = [
-        f"Main product brand: {primary_product.brand}",
-        f"Main product name: {primary_product.product_name}",
-        f"Main product space: {primary_product.space}",
-        f"Main product style: {primary_product.style}",
-        f"Main product color: {primary_product.color}",
-        f"Main product material: {primary_product.material}",
-        f"Main product size: {primary_product.size}",
-        f"Main product serial/model: {primary_product.serial_number}",
-        f"Main product description: {primary_product.description_text}",
+        f"brand={_compact_text(primary_product.brand, 40)}",
+        f"name={_compact_text(primary_product.product_name, 120)}",
+        f"space={_compact_text(primary_product.space, 20)}",
+        f"style={_compact_text(primary_product.style, 30)}",
+        f"color={_compact_text(primary_product.color, 40)}",
+        f"material={_compact_text(primary_product.material, 60)}",
+        f"size={_compact_text(primary_product.size, 50)}",
+        f"model={_compact_text(primary_product.serial_number, 40)}",
+        f"desc={_compact_text(primary_product.description_text, 180)}",
     ]
     related_lines = [
         (
-            f"- {p.product_name} | 空间:{p.space} | 风格:{p.style} | 颜色:{p.color} "
-            f"| 材质:{p.material} | 尺寸:{p.size}"
+            f"- { _compact_text(p.product_name, 80) } | 品牌:{ _compact_text(p.brand, 20) } "
+            f"| 颜色:{ _compact_text(p.color, 30) } | 材质:{ _compact_text(p.material, 40) } "
+            f"| 风格:{ _compact_text(p.style, 20) }"
         )
         for p in related_products
     ]
     related_text = "\n".join(related_lines) or "- No extra products"
-    ref_note = (
-        "IMPORTANT: The attached reference images show the EXACT products to use.\n"
-        "The FIRST reference image(s) are the MAIN product — place it as the visual focus.\n"
-    )
-    if related_products:
-        ref_note += (
-            "The LATER reference image(s) are the COMPLEMENTARY products listed below.\n"
-            "You MUST reproduce ALL referenced products faithfully in the scene — "
-            "keep their exact shape, material, color, texture, proportions, and design details.\n"
-            "Do NOT omit any complementary product that has a reference image.\n"
+    related_color_material_lines = [
+        (
+            f"- {_compact_text(p.product_name, 60)}: keep exact color={_compact_text(p.color, 24) or 'reference'}; "
+            f"material={_compact_text(p.material, 30) or 'reference'}"
         )
-    else:
-        ref_note += (
-            "You MUST reproduce this product faithfully — keep its exact shape, material, color, texture, "
-            "proportions, and design details.\n"
+        for p in related_products
+    ]
+    related_color_material_text = "\n".join(related_color_material_lines) or "- No extra products"
+    reference_lines = []
+    for idx, item in enumerate(reference_items or [], start=1):
+        role = "MAIN PRODUCT" if item.get("role") == "main" else "COMPLEMENTARY PRODUCT"
+        reference_lines.append(
+            f"- Ref#{idx}: {role} | Brand:{_compact_text(item.get('brand', ''), 20)} | "
+            f"Name:{_compact_text(item.get('product_name', ''), 70)} | ID:{item.get('product_id', '')}"
         )
-
-    return (
-        "Create a photorealistic furniture showroom / home-interior scene image.\n"
-        f"Requested scene: {scene_name}\n"
-        f"Style hint: {style_hint or primary_product.style or '真实家居'}\n"
-        f"Customer request: {user_request or primary_product.product_name}\n\n"
-        + ref_note
-        + "Do NOT redesign or alter any product. "
-        "No people, no text overlay, no watermark, no logo, no fantasy styling.\n\n"
-        "Main product facts:\n"
-        + "\n".join(primary_lines)
-        + "\n\nComplementary products (MUST appear in scene):\n"
-        + related_text
-        + "\n\nOutput requirements:\n"
-        "- realistic interior lighting\n"
-        "- commercially usable composition\n"
-        "- ALL products (main + complementary) must look identical to their reference images\n"
-        "- make the room look complete and believable\n"
-    )
+    reference_text = "\n".join(reference_lines) or "- No reference images attached"
+    sections = [
+        (
+            "Create one photorealistic furniture interior image.\n"
+            f"Scene: {_compact_text(scene_name, 40)}\n"
+            f"Style: {_compact_text(style_hint or primary_product.style or '真实家居', 30)}\n"
+            f"Customer request: {_compact_text(user_request or primary_product.product_name, 120)}"
+        ),
+        (
+            "Hard rules:\n"
+            "- Every attached reference image is a real catalog product.\n"
+            "- Reproduce every referenced product faithfully: exact shape, proportions, silhouette, visible details.\n"
+            "- Keep exact dominant color and material/finish for all referenced products.\n"
+            "- The main product is mandatory and must remain clearly visible in the final image.\n"
+            "- Never omit, replace, crop out, cover, or visually overpower the main product.\n"
+            "- Never recolor a referenced white product into red, brown, black, wood-tone, or any accent color.\n"
+            "- Never replace a referenced product with generic furniture.\n"
+            "- Complementary products must be different product categories from the main product.\n"
+            "- If a side product cannot stay faithful, reduce its prominence instead of changing its color/material.\n"
+            "- No people, no text, no watermark, no logo."
+        ),
+        (
+            "Output requirements:\n"
+            "- Main product is the visual focus and must look identical to its reference.\n"
+            "- Main product must be fully retained and remain the dominant item in the composition.\n"
+            "- Referenced side products must also match their references.\n"
+            "- Do not use another sofa/bed/table of the same category as a substitute supporting item.\n"
+            "- Realistic lighting, believable composition, commercially usable result."
+        ),
+        "Reference mapping:\n" + reference_text,
+        "Main product facts:\n" + "\n".join(primary_lines),
+        "Complementary products:\n" + related_text,
+        "Complementary product hard constraints:\n" + related_color_material_text,
+    ]
+    return _compose_limited_prompt(sections)
 
 
 async def _generate_image_binary(prompt: str, cfg: dict[str, str]) -> bytes:
     client = build_image_client(cfg)
     model = cfg.get("image_model") or cfg.get("llm_model", "gpt-image-1")
-    size = cfg.get("image_size") or "1536x1024"
+    size = cfg.get("image_size") or "1024x1024"
     quality = cfg.get("image_quality") or "high"
     style = cfg.get("image_style") or "natural"
 
@@ -278,41 +396,56 @@ async def _generate_dashscope_kling_images(
         },
         "parameters": {
             "n": count,
-            "aspect_ratio": _aspect_ratio_from_size(cfg.get("image_size", "1536x1024")),
-            "resolution": _resolution_from_size(cfg.get("image_size", "1536x1024")),
+            "aspect_ratio": _aspect_ratio_from_size(cfg.get("image_size", "1024x1024")),
+            "resolution": _resolution_from_size(cfg.get("image_size", "1024x1024")),
             "watermark": False,
         },
     }
     async with httpx.AsyncClient(timeout=180) as client:
-        create_resp = await client.post(create_url, headers=headers, json=payload)
-        create_resp.raise_for_status()
-        created = create_resp.json()
-        task_id = (((created or {}).get("output") or {}).get("task_id"))
-        if not task_id:
-            raise RuntimeError(created.get("message") or created.get("code") or "DashScope image task creation failed")
+        last_error_message = "DashScope image generation timed out"
+        for task_attempt in range(1, 3):
+            create_resp = await client.post(create_url, headers=headers, json=payload)
+            create_resp.raise_for_status()
+            created = create_resp.json()
+            task_id = (((created or {}).get("output") or {}).get("task_id"))
+            if not task_id:
+                raise RuntimeError(created.get("message") or created.get("code") or "DashScope image task creation failed")
 
-        query_url = f"{base_url}/api/v1/tasks/{task_id}"
-        last_payload: dict[str, Any] = created
-        for _ in range(36):
-            poll_resp = await client.get(query_url, headers={"Authorization": f"Bearer {api_key}"})
-            poll_resp.raise_for_status()
-            last_payload = poll_resp.json()
-            output = (last_payload or {}).get("output") or {}
-            status = output.get("task_status")
-            if status == "SUCCEEDED":
-                contents = (((output.get("choices") or [{}])[0].get("message") or {}).get("content") or [])
-                urls = [item.get("image") for item in contents if item.get("image")]
-                binaries: list[bytes] = []
-                for url in urls:
-                    binaries.append(await _download_remote_binary(client, url))
-                if not binaries:
-                    raise RuntimeError("DashScope task succeeded but returned no image URLs")
-                return binaries
-            if status == "FAILED":
-                raise RuntimeError(last_payload.get("message") or last_payload.get("code") or "DashScope image task failed")
-            await asyncio.sleep(5)
+            query_url = f"{base_url}/api/v1/tasks/{task_id}"
+            last_payload: dict[str, Any] = created
+            for _ in range(36):
+                poll_resp = await client.get(query_url, headers={"Authorization": f"Bearer {api_key}"})
+                poll_resp.raise_for_status()
+                last_payload = poll_resp.json()
+                output = (last_payload or {}).get("output") or {}
+                status = output.get("task_status")
+                if status == "SUCCEEDED":
+                    contents = (((output.get("choices") or [{}])[0].get("message") or {}).get("content") or [])
+                    urls = [item.get("image") for item in contents if item.get("image")]
+                    binaries: list[bytes] = []
+                    for url in urls:
+                        binaries.append(await _download_remote_binary(client, url))
+                    if not binaries:
+                        raise RuntimeError("DashScope task succeeded but returned no image URLs")
+                    return binaries
+                if status == "FAILED":
+                    last_error_message = json.dumps(last_payload, ensure_ascii=False)[:4000]
+                    logger.warning(
+                        "DashScope image task failed on attempt %s/%s: %s",
+                        task_attempt,
+                        2,
+                        last_error_message,
+                    )
+                    break
+                await asyncio.sleep(5)
+            else:
+                last_error_message = f"DashScope image generation timed out after polling task {task_id}"
 
-    raise RuntimeError("DashScope image generation timed out")
+            if task_attempt < 2:
+                await asyncio.sleep(2)
+                continue
+
+        raise RuntimeError(last_error_message)
 
 
 async def _get_product_image_urls(product_id: int, limit: int = 3) -> list[str]:
@@ -328,14 +461,99 @@ async def _get_product_image_urls(product_id: int, limit: int = 3) -> list[str]:
     return [img.source_url for img in images if img.source_url]
 
 
+async def _get_selected_reference_items(
+    refs: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if not refs:
+        return []
+    product_ids = [int(ref["product_id"]) for ref in refs]
+    image_orders = [int(ref["image_order"]) for ref in refs]
+
+    async with AsyncSessionLocal() as db:
+        product_result = await db.execute(
+            select(ProductEntry).where(ProductEntry.id.in_(product_ids))
+        )
+        products_map = {p.id: p for p in product_result.scalars().all()}
+        image_result = await db.execute(
+            select(ProductImage).where(
+                ProductImage.product_entry_id.in_(product_ids),
+                ProductImage.display_order.in_(image_orders),
+            )
+        )
+        images_map = {
+            (img.product_entry_id, img.display_order): img
+            for img in image_result.scalars().all()
+        }
+
+    items: list[dict[str, Any]] = []
+    for idx, ref in enumerate(refs):
+        product_id = int(ref["product_id"])
+        image_order = int(ref["image_order"])
+        product = products_map.get(product_id)
+        image = images_map.get((product_id, image_order))
+        ref_value = _product_image_reference_value(image)
+        if not product or not image or not ref_value:
+            continue
+        items.append(
+            {
+                "product_id": product.id,
+                "product_name": product.product_name,
+                "brand": product.brand or "",
+                "role": "main" if idx == 0 else "related",
+                "image_order": image_order,
+                "url": ref_value,
+            }
+        )
+    return items
+
+
+async def _build_default_reference_items(
+    primary_product: ProductEntry,
+    related_products: list[ProductEntry],
+) -> list[dict[str, Any]]:
+    product_order = [primary_product] + related_products[:3]
+    items: list[dict[str, Any]] = []
+    product_ids = [product.id for product in product_order]
+    async with AsyncSessionLocal() as db:
+        image_result = await db.execute(
+            select(ProductImage)
+            .where(ProductImage.product_entry_id.in_(product_ids))
+            .order_by(ProductImage.product_entry_id, ProductImage.display_order)
+        )
+        images = image_result.scalars().all()
+
+    first_images: dict[int, ProductImage] = {}
+    for image in images:
+        first_images.setdefault(image.product_entry_id, image)
+
+    for idx, product in enumerate(product_order):
+        image = first_images.get(product.id)
+        ref_value = _product_image_reference_value(image)
+        if not ref_value:
+            continue
+        items.append(
+            {
+                "product_id": product.id,
+                "product_name": product.product_name,
+                "brand": product.brand or "",
+                "role": "main" if idx == 0 else "related",
+                "image_order": image.display_order if image else 0,
+                "url": ref_value,
+            }
+        )
+    return items
+
+
 async def _load_products(ids: list[int]) -> list[ProductEntry]:
     if not ids:
         return []
     async with AsyncSessionLocal() as db:
         result = await db.execute(
-            select(ProductEntry).where(ProductEntry.id.in_(ids)).order_by(ProductEntry.id)
+            select(ProductEntry).where(ProductEntry.id.in_(ids))
         )
-        return result.scalars().all()
+        products = result.scalars().all()
+    product_map = {p.id: p for p in products}
+    return [product_map[i] for i in ids if i in product_map]
 
 
 async def _save_record_images(
@@ -403,6 +621,7 @@ async def _find_reusable_record(
             .where(
                 SceneGenerationRecord.primary_product_id == primary_product_id,
                 SceneGenerationRecord.status == "completed",
+                SceneGenerationRecord.in_library == True,
             )
             .order_by(SceneGenerationRecord.updated_at.desc())
             .limit(20)
@@ -529,6 +748,108 @@ async def _create_scene_generation_record(
         return record
 
 
+async def cleanup_stale_pending_scene_generations(max_age_seconds: int = BACKEND_SCENE_TIMEOUT_SECONDS) -> int:
+    cutoff = datetime.utcnow() - timedelta(seconds=max_age_seconds)
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(SceneGenerationRecord).where(
+                SceneGenerationRecord.status == "pending",
+                SceneGenerationRecord.updated_at < cutoff,
+            )
+        )
+        stale_records = result.scalars().all()
+        if not stale_records:
+            return 0
+
+        timeout_message = f"Scene generation timed out after {max_age_seconds} seconds"
+        for record in stale_records:
+            record.status = "failed"
+            if not record.duration_ms:
+                elapsed = max_age_seconds
+                if record.created_at:
+                    elapsed = max(
+                        max_age_seconds,
+                        int((datetime.utcnow() - record.created_at).total_seconds()),
+                    )
+                record.duration_ms = elapsed * 1000
+            record.error_message = timeout_message
+        await db.commit()
+        return len(stale_records)
+
+
+async def cancel_scene_generation_task(record_id: int) -> bool:
+    task = ACTIVE_SCENE_TASKS.get(record_id)
+    if not task:
+        return False
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    except Exception:
+        logger.exception("Scene generation task %s failed during cancellation", record_id)
+    return True
+
+
+async def _generate_scene_outputs(
+    record_id: int,
+    cfg: dict[str, str],
+    prompt: str,
+    primary_product: ProductEntry,
+    selected_related_ids: list[int],
+    reference_items: list[dict[str, Any]],
+) -> tuple[list[str], list[bytes]]:
+    output_paths: list[str] = []
+    upload_dir = _scene_upload_root() / str(record_id)
+    upload_dir.mkdir(parents=True, exist_ok=True)
+
+    if (cfg.get("image_model") or "").startswith("kling/"):
+        ref_urls = [item["url"] for item in reference_items if item.get("url")]
+        if ref_urls:
+            logger.info(
+                "Using %d reference image(s) for scene generation record %s (primary=%s related=%s)",
+                len(ref_urls),
+                record_id,
+                primary_product.id,
+                selected_related_ids,
+            )
+        binaries = await _generate_dashscope_kling_images(
+            prompt,
+            cfg,
+            SCENE_OUTPUT_COUNT,
+            reference_image_urls=ref_urls,
+        )
+    else:
+        binaries = []
+        for _ in range(SCENE_OUTPUT_COUNT):
+            binaries.append(await _generate_image_binary(prompt, cfg))
+
+    for idx, binary in enumerate(binaries):
+        filename = f"{uuid.uuid4().hex}_{idx + 1}.png"
+        full = upload_dir / filename
+        full.write_bytes(binary)
+        rel = os.path.join("uploads", "generated_scenes", str(record_id), filename).replace("\\", "/")
+        output_paths.append(rel)
+    return output_paths, binaries
+
+
+async def _mark_scene_generation_failed(
+    record_id: int,
+    duration_ms: int,
+    error_message: str,
+) -> SceneGenerationRecord | None:
+    async with AsyncSessionLocal() as db:
+        current = await db.get(SceneGenerationRecord, record_id)
+        if not current:
+            return None
+        current.duration_ms = duration_ms
+        current.status = "failed"
+        current.error_message = error_message[:2000]
+        await db.commit()
+        await db.refresh(current)
+        return current
+
+
 async def _run_scene_generation_for_record(
     record_id: int,
     primary_product: ProductEntry,
@@ -538,7 +859,9 @@ async def _run_scene_generation_for_record(
     style_hint: str = "",
     related_product_ids: list[int] | None = None,
     reference_image_items: list[dict[str, Any]] | None = None,
+    timeout_seconds: int = BACKEND_SCENE_TIMEOUT_SECONDS,
 ) -> SceneGenerationRecord:
+    total_start = time.perf_counter()
     cfg = await get_llm_settings()
     default_scene, default_style = _scene_defaults(primary_product)
     scene_name = scene_name.strip() or default_scene
@@ -548,31 +871,75 @@ async def _run_scene_generation_for_record(
         p for p in all_products
         if int(p["id"]) != primary_product.id
     ]
+    all_products_map = {int(p["id"]): p for p in all_products}
     preferred_candidates = [
         p for p in candidate_products
         if (p.get("space") == primary_product.space or not primary_product.space or p.get("style") == primary_product.style)
     ]
-    shortlist = preferred_candidates[:30] or candidate_products[:30]
+    primary_category = _infer_product_category(primary_product)
+    distinct_category_candidates = [
+        p for p in (preferred_candidates or candidate_products)
+        if _infer_product_category(p) != primary_category
+    ]
+    shortlist = distinct_category_candidates[:30]
+    if not shortlist:
+        shortlist = [
+            p for p in candidate_products
+            if _infer_product_category(p) != primary_category
+        ][:30]
 
-    selected_related_ids = related_product_ids or await select_scene_bundle_products(
-        user_message=user_request or primary_product.product_name,
-        primary_product={
-            "id": primary_product.id,
-            "brand": primary_product.brand,
-            "name": primary_product.product_name,
-            "space": primary_product.space,
-            "style": primary_product.style,
-            "material": primary_product.material,
-        },
-        candidate_products=shortlist,
-        scene_name=scene_name,
-        style_hint=style_hint,
+    selected_related_ids: list[int] | None = related_product_ids
+    if selected_related_ids is None:
+        bundle_start = time.perf_counter()
+        try:
+            selected_related_ids = await asyncio.wait_for(
+                select_scene_bundle_products(
+                    user_message=user_request or primary_product.product_name,
+                    primary_product={
+                        "id": primary_product.id,
+                        "brand": primary_product.brand,
+                        "name": primary_product.product_name,
+                        "space": primary_product.space,
+                        "style": primary_product.style,
+                        "material": primary_product.material,
+                        "category": primary_category,
+                    },
+                    candidate_products=shortlist,
+                    scene_name=scene_name,
+                    style_hint=style_hint,
+                ),
+                timeout=SCENE_BUNDLE_SELECTION_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            selected_related_ids = []
+            logger.warning(
+                "Scene bundle selection timed out after %ss for record %s primary=%s; falling back to heuristic shortlist",
+                SCENE_BUNDLE_SELECTION_TIMEOUT_SECONDS,
+                record_id,
+                primary_product.id,
+            )
+        finally:
+            logger.info(
+                "Scene bundle selection stage finished for record %s in %d ms",
+                record_id,
+                int((time.perf_counter() - bundle_start) * 1000),
+            )
+    selected_related_ids = _filter_distinct_category_related_ids(
+        primary_product=primary_product,
+        candidate_ids=selected_related_ids or [int(p["id"]) for p in shortlist[:3]],
+        all_products_map=all_products_map,
     )
-    if not selected_related_ids:
-        selected_related_ids = [int(p["id"]) for p in shortlist[:3]]
 
     related_products = await _load_products(selected_related_ids)
-    prompt = _build_scene_prompt(primary_product, related_products, scene_name, style_hint, user_request)
+    reference_items = reference_image_items or await _build_default_reference_items(primary_product, related_products)
+    prompt = _build_scene_prompt(
+        primary_product,
+        related_products,
+        scene_name,
+        style_hint,
+        user_request,
+        reference_items=reference_items,
+    )
 
     async with AsyncSessionLocal() as db:
         current = await db.get(SceneGenerationRecord, record_id)
@@ -587,62 +954,65 @@ async def _run_scene_generation_for_record(
         current.error_message = ""
         await db.commit()
 
-    start = time.perf_counter()
-    output_paths: list[str] = []
+    image_start = time.perf_counter()
     try:
-        upload_dir = _scene_upload_root() / str(record_id)
-        upload_dir.mkdir(parents=True, exist_ok=True)
-        if (cfg.get("image_model") or "").startswith("kling/"):
-            if reference_image_items:
-                ref_urls = _reference_items_to_data_urls(reference_image_items, limit=5)
-            else:
-                ref_urls = await _get_product_image_urls(primary_product.id, limit=2)
-                for rp in related_products[:3]:
-                    rp_urls = await _get_product_image_urls(rp.id, limit=1)
-                    ref_urls.extend(rp_urls)
-                ref_urls = ref_urls[:5]
-            if ref_urls:
-                logger.info(
-                    "Using %d reference image(s): primary=%s + %d related products",
-                    len(ref_urls), primary_product.id, len(related_products[:3]),
-                )
-            binaries = await _generate_dashscope_kling_images(prompt, cfg, 1, reference_image_urls=ref_urls)
-        else:
-            binaries = [await _generate_image_binary(prompt, cfg)]
-
-        for idx, binary in enumerate(binaries):
-            filename = f"{uuid.uuid4().hex}_{idx + 1}.png"
-            full = upload_dir / filename
-            full.write_bytes(binary)
-            rel = os.path.join("uploads", "generated_scenes", str(record_id), filename).replace("\\", "/")
-            output_paths.append(rel)
-
-        duration_ms = int((time.perf_counter() - start) * 1000)
+        output_paths, binaries = await asyncio.wait_for(
+            _generate_scene_outputs(
+                record_id=record_id,
+                cfg=cfg,
+                prompt=prompt,
+                primary_product=primary_product,
+                selected_related_ids=selected_related_ids,
+                reference_items=reference_items,
+            ),
+            timeout=timeout_seconds,
+        )
+        image_duration_ms = int((time.perf_counter() - image_start) * 1000)
+        total_duration_ms = int((time.perf_counter() - total_start) * 1000)
+        logger.info(
+            "Scene generation completed for record %s: total=%d ms image_stage=%d ms related=%s",
+            record_id,
+            total_duration_ms,
+            image_duration_ms,
+            selected_related_ids,
+        )
         async with AsyncSessionLocal() as db:
             current = await db.get(SceneGenerationRecord, record_id)
             if not current:
                 raise RuntimeError(f"Scene generation record {record_id} disappeared")
             await _save_record_images(db, current.id, binaries, ["image/png"] * len(binaries))
             current.output_paths_json = json.dumps(output_paths, ensure_ascii=False)
-            current.duration_ms = duration_ms
+            current.duration_ms = total_duration_ms
             current.status = "completed"
             current.error_message = ""
             await db.commit()
             await db.refresh(current)
             return current
-    except Exception as e:
-        duration_ms = int((time.perf_counter() - start) * 1000)
-        logger.error("Scene image generation failed for product %s: %s", primary_product.id, e, exc_info=True)
-        async with AsyncSessionLocal() as db:
-            current = await db.get(SceneGenerationRecord, record_id)
-            if not current:
-                raise
-            current.duration_ms = duration_ms
-            current.status = "failed"
-            current.error_message = str(e)[:2000]
-            await db.commit()
-            await db.refresh(current)
+    except asyncio.TimeoutError:
+        duration_ms = int((time.perf_counter() - total_start) * 1000)
+        shutil.rmtree(_scene_upload_root() / str(record_id), ignore_errors=True)
+        timeout_message = f"Scene generation timed out after {timeout_seconds} seconds"
+        logger.warning(
+            "Scene image generation timed out for product %s record %s after %s seconds",
+            primary_product.id,
+            record_id,
+            timeout_seconds,
+        )
+        current = await _mark_scene_generation_failed(record_id, duration_ms, timeout_message)
+        if current:
             return current
+        raise RuntimeError(timeout_message)
+    except asyncio.CancelledError:
+        shutil.rmtree(_scene_upload_root() / str(record_id), ignore_errors=True)
+        logger.info("Scene generation task %s was cancelled", record_id)
+        raise
+    except Exception as e:
+        duration_ms = int((time.perf_counter() - total_start) * 1000)
+        logger.error("Scene image generation failed for product %s: %s", primary_product.id, e, exc_info=True)
+        current = await _mark_scene_generation_failed(record_id, duration_ms, str(e))
+        if current:
+            return current
+        raise
 
 
 async def start_scene_generation(
@@ -679,16 +1049,17 @@ async def start_scene_generation(
                 style_hint=style_hint,
                 related_product_ids=related_product_ids,
                 reference_image_items=reference_image_items,
+                timeout_seconds=BACKEND_SCENE_TIMEOUT_SECONDS,
             )
+        except asyncio.CancelledError:
+            logger.info("Scene generation background job %s cancelled", record.id)
+        except Exception:
+            logger.exception("Scene generation background job %s failed", record.id)
         finally:
-            _running_tasks.pop(record.id, None)
+            ACTIVE_SCENE_TASKS.pop(record.id, None)
 
-    task = asyncio.create_task(_job())
-    _running_tasks[record.id] = task
+    ACTIVE_SCENE_TASKS[record.id] = asyncio.create_task(_job())
     return record
-
-
-CUSTOMER_SCENE_TIMEOUT_SECONDS = 300.0
 
 
 async def generate_scene_images(
@@ -699,8 +1070,9 @@ async def generate_scene_images(
     style_hint: str = "",
     related_product_ids: list[int] | None = None,
     conversation_id: int | None = None,
-    timeout_seconds: float | None = None,
     reference_image_items: list[dict[str, Any]] | None = None,
+    allow_reuse: bool = True,
+    timeout_seconds: int = BACKEND_SCENE_TIMEOUT_SECONDS,
 ) -> SceneGenerationRecord:
     record = await _create_scene_generation_record(
         primary_product=primary_product,
@@ -709,7 +1081,7 @@ async def generate_scene_images(
         style_hint=style_hint,
         related_product_ids=related_product_ids,
         conversation_id=conversation_id,
-        allow_reuse=True,
+        allow_reuse=allow_reuse,
     )
     if record.status == "completed":
         logger.info(
@@ -720,7 +1092,7 @@ async def generate_scene_images(
             record.id,
         )
         return record
-    coro = _run_scene_generation_for_record(
+    return await _run_scene_generation_for_record(
         record_id=record.id,
         primary_product=primary_product,
         all_products=all_products,
@@ -729,59 +1101,5 @@ async def generate_scene_images(
         style_hint=style_hint,
         related_product_ids=related_product_ids,
         reference_image_items=reference_image_items,
+        timeout_seconds=timeout_seconds,
     )
-    if timeout_seconds is not None and timeout_seconds > 0:
-        return await asyncio.wait_for(coro, timeout=timeout_seconds)
-    return await coro
-
-
-async def _get_selected_reference_items(refs: list[dict[str, int]]) -> list[dict[str, Any]]:
-    """Validate and return image paths for user-selected product image references."""
-    items: list[dict[str, Any]] = []
-    async with AsyncSessionLocal() as db:
-        for ref in refs:
-            pid = ref["product_id"]
-            order = ref.get("image_order", 0)
-            result = await db.execute(
-                select(ProductImage)
-                .where(ProductImage.product_entry_id == pid, ProductImage.display_order == order)
-            )
-            img = result.scalar_one_or_none()
-            if not img:
-                continue
-            full_path = os.path.join("/app", img.local_path)
-            if not os.path.exists(full_path):
-                continue
-            items.append({
-                "product_id": pid,
-                "image_order": order,
-                "local_path": img.local_path,
-                "full_path": full_path,
-            })
-    return items
-
-
-async def cancel_scene_generation_task(record_id: int):
-    """Cancel a running generation task if one exists."""
-    task = _running_tasks.pop(record_id, None)
-    if task and not task.done():
-        task.cancel()
-        try:
-            await task
-        except (asyncio.CancelledError, Exception):
-            pass
-
-
-async def cleanup_stale_pending_scene_generations():
-    """Mark pending records older than 30 minutes as failed."""
-    cutoff = datetime.utcnow() - timedelta(minutes=30)
-    async with AsyncSessionLocal() as db:
-        await db.execute(
-            update(SceneGenerationRecord)
-            .where(
-                SceneGenerationRecord.status == "pending",
-                SceneGenerationRecord.created_at < cutoff,
-            )
-            .values(status="failed", error_message="Generation timed out")
-        )
-        await db.commit()
