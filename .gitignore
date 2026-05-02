@@ -38,3 +38,7 @@ Thumbs.db
 # Chroma / uploads (runtime)
 backend/chroma_data/
 backend/uploads/
+
+# Build artifacts
+build.log
+*.log

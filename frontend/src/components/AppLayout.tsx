@@ -2,7 +2,6 @@ import { useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Layout, Menu, Button, Typography, Avatar, Dropdown, theme } from 'antd';
 import {
-  DashboardOutlined,
   MessageOutlined,
   BookOutlined,
   FileTextOutlined,
@@ -11,7 +10,6 @@ import {
   MenuFoldOutlined,
   MenuUnfoldOutlined,
   RobotOutlined,
-  ApiOutlined,
   ShopOutlined,
   PictureOutlined,
   ExperimentOutlined,
@@ -20,13 +18,11 @@ import {
 const { Header, Sider, Content } = Layout;
 
 const menuItems = [
-  { key: '/', icon: <DashboardOutlined />, label: '工作台' },
-  { key: '/conversations', icon: <MessageOutlined />, label: '对话管理' },
-  { key: '/bots', icon: <ApiOutlined />, label: 'Bot 管理' },
+  { key: '/simulator', icon: <ExperimentOutlined />, label: '模拟对话' },
+  { key: '/', icon: <MessageOutlined />, label: '对话管理' },
+  { key: '/knowledge', icon: <BookOutlined />, label: '知识库' },
   { key: '/products', icon: <ShopOutlined />, label: '产品库' },
   { key: '/scenes', icon: <PictureOutlined />, label: '场景库' },
-  { key: '/simulator', icon: <ExperimentOutlined />, label: '模拟对话' },
-  { key: '/knowledge', icon: <BookOutlined />, label: '知识库' },
   { key: '/contracts', icon: <FileTextOutlined />, label: '合同管理' },
   { key: '/settings', icon: <SettingOutlined />, label: '系统设置' },
 ];

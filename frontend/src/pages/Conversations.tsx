@@ -36,13 +36,14 @@ import {
   SwapOutlined,
   UserOutlined,
 } from '@ant-design/icons';
-import { conversationApi, contractApi, contractTemplateApi, settingsApi } from '../api';
+import { conversationApi, contractApi, contractTemplateApi, dashboardApi, settingsApi } from '../api';
 import type {
   Contract,
   ContractTemplate,
   Conversation,
   ConversationDetail,
   CustomerServiceSettings,
+  DashboardStats,
   Message,
   SimulatorOutgoingEvent,
 } from '../types';
@@ -53,7 +54,7 @@ dayjs.locale('zh-cn');
 
 const { Text, Title } = Typography;
 
-const PANEL_HEIGHT = 'calc(100vh - 180px)';
+const PANEL_HEIGHT = 'calc(100vh - 248px)';
 
 type FilterKey = 'all' | 'active' | 'pending_human' | 'human_handling';
 
@@ -522,6 +523,7 @@ export default function Conversations() {
 
   const [listLoading, setListLoading] = useState(true);
   const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [stats, setStats] = useState<DashboardStats | null>(null);
 
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
@@ -583,6 +585,15 @@ export default function Conversations() {
     }
   }, []);
 
+  const loadStats = useCallback(async () => {
+    try {
+      const { data } = await dashboardApi.getStats();
+      setStats(data);
+    } catch {
+      setStats(null);
+    }
+  }, []);
+
   useEffect(() => {
     loadList();
   }, [loadList]);
@@ -590,6 +601,12 @@ export default function Conversations() {
   useEffect(() => {
     void loadCustomerServiceSettings();
   }, [loadCustomerServiceSettings]);
+
+  useEffect(() => {
+    void loadStats();
+    const timer = window.setInterval(() => void loadStats(), 30000);
+    return () => window.clearInterval(timer);
+  }, [loadStats]);
 
   const loadDetail = useCallback(async (conversationId: number) => {
     setDetailLoading(true);
@@ -892,21 +909,91 @@ export default function Conversations() {
     });
   }, [detail]);
 
-  return (
+  const pendingCount = stats?.pending_human ?? 0;
+  const renderStatItem = (
+    label: string,
+    value: React.ReactNode,
+    options?: { color?: string; onClick?: () => void; emphasizeWhen?: boolean }
+  ) => (
     <div
+      onClick={options?.onClick}
       style={{
+        cursor: options?.onClick ? 'pointer' : 'default',
         display: 'flex',
-        gap: 0,
-        height: PANEL_HEIGHT,
-        minHeight: 420,
-        maxHeight: PANEL_HEIGHT,
-        background: '#fff',
-        borderRadius: 12,
-        overflow: 'hidden',
-        boxShadow: '0 2px 12px rgba(0,0,0,0.06)',
-        border: '1px solid #f0f0f0',
+        flexDirection: 'column',
+        gap: 2,
+        minWidth: 80,
+        padding: '2px 4px',
+        borderRadius: 6,
+        transition: 'background 0.2s ease',
+      }}
+      onMouseEnter={(e) => {
+        if (options?.onClick) (e.currentTarget as HTMLDivElement).style.background = '#f5f5f5';
+      }}
+      onMouseLeave={(e) => {
+        if (options?.onClick) (e.currentTarget as HTMLDivElement).style.background = 'transparent';
       }}
     >
+      <span style={{ fontSize: 12, color: '#8c8c8c', lineHeight: 1.2 }}>{label}</span>
+      <span
+        style={{
+          fontSize: 20,
+          fontWeight: 600,
+          lineHeight: 1.2,
+          color: options?.emphasizeWhen ? options.color : undefined,
+        }}
+      >
+        {value}
+      </span>
+    </div>
+  );
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          flexWrap: 'wrap',
+          gap: 28,
+          padding: '12px 20px',
+          background: '#fff',
+          borderRadius: 12,
+          boxShadow: '0 2px 12px rgba(0,0,0,0.04)',
+          border: '1px solid #f0f0f0',
+        }}
+      >
+        {renderStatItem('总对话', stats?.total_conversations ?? 0)}
+        {renderStatItem('待人工', pendingCount, {
+          color: pendingCount > 0 ? '#fa8c16' : undefined,
+          emphasizeWhen: pendingCount > 0,
+          onClick: () => setFilter('pending_human'),
+        })}
+        {renderStatItem('合同', stats?.total_contracts ?? 0)}
+        {renderStatItem(
+          'Bot 在线',
+          `${stats?.active_bots ?? 0}/${stats?.total_bots ?? 0}`
+        )}
+        <Divider type="vertical" style={{ height: 28 }} />
+        <Text type="secondary" style={{ fontSize: 12 }}>
+          知识 {stats?.total_knowledge_entries ?? 0} · 文件 {stats?.total_files ?? 0} · 消息{' '}
+          {stats?.total_messages ?? 0}
+        </Text>
+      </div>
+      <div
+        style={{
+          display: 'flex',
+          gap: 0,
+          height: PANEL_HEIGHT,
+          minHeight: 420,
+          maxHeight: PANEL_HEIGHT,
+          background: '#fff',
+          borderRadius: 12,
+          overflow: 'hidden',
+          boxShadow: '0 2px 12px rgba(0,0,0,0.06)',
+          border: '1px solid #f0f0f0',
+        }}
+      >
       {/* 左侧：对话列表（minHeight:0 让内部列表在任意会话下都能出现滚动条） */}
       <div
         style={{
@@ -1374,6 +1461,7 @@ export default function Conversations() {
           )}
         </Spin>
       </Modal>
+      </div>
     </div>
   );
 }
