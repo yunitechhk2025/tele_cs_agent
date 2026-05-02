@@ -38,6 +38,7 @@ import {
   ApartmentOutlined,
   TagsOutlined,
   ReadOutlined,
+  BulbOutlined,
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import { knowledgeApi } from '../api';
@@ -76,9 +77,9 @@ const CATEGORY_TREE: CategoryDef[] = [
   },
   {
     name: '案例库',
-    children: ['退款纠纷', '物流问题', '产品质量', '大客户', '跨境关税'],
-    icon: <TagsOutlined style={{ color: '#722ed1' }} />,
-    color: '#722ed1',
+    children: ['退款纠纷', '物流投诉', '产品质量', '大客户', '跨境关税'],
+    icon: <BulbOutlined style={{ color: '#eb2f96' }} />,
+    color: '#eb2f96',
   },
 ];
 
