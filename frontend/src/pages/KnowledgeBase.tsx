@@ -739,17 +739,14 @@ export default function KnowledgeBase() {
         </Card>
 
         <Card bordered={false} style={{ borderRadius: 8, flex: 1, minWidth: 0 }}>
-          {filtered.length === 0 && !loading ? (
-            <Empty description="该分类下暂无条目" />
-          ) : (
-            <Table<KnowledgeEntry>
-              rowKey="id"
-              loading={loading}
-              columns={columns}
-              dataSource={filtered}
-              pagination={{ pageSize: 10, showSizeChanger: true }}
-            />
-          )}
+          <Table<KnowledgeEntry>
+            rowKey="id"
+            loading={loading}
+            columns={columns}
+            dataSource={filtered}
+            pagination={{ pageSize: 10, showSizeChanger: true }}
+            locale={{ emptyText: <Empty description="该分类下暂无条目" /> }}
+          />
         </Card>
       </div>
 
