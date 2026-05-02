@@ -24,7 +24,6 @@ import type { ColumnsType } from 'antd/es/table';
 import type { UploadFile } from 'antd/es/upload/interface';
 import type { DataNode } from 'antd/es/tree';
 import {
-  PlusOutlined,
   UploadOutlined,
   DeleteOutlined,
   SearchOutlined,
@@ -45,7 +44,6 @@ import { knowledgeApi } from '../api';
 import type { KnowledgeEntry } from '../types';
 
 const { Title, Text } = Typography;
-const { TextArea } = Input;
 
 const ROOT_KEY = '__all__';
 const UNCATEGORIZED_KEY = '__uncategorized__';
@@ -105,18 +103,14 @@ export default function KnowledgeBase() {
   const [treeSearch, setTreeSearch] = useState('');
   const [selectedKey, setSelectedKey] = useState<string>(ROOT_KEY);
 
-  const [addOpen, setAddOpen] = useState(false);
-  const [uploadOpen, setUploadOpen] = useState(false);
-  const [addSubmitting, setAddSubmitting] = useState(false);
   const [uploadSubmitting, setUploadSubmitting] = useState(false);
-  const [uploadFile, setUploadFile] = useState<File | null>(null);
+  const [uploadFiles, setUploadFiles] = useState<File[]>([]);
   const [uploadFileList, setUploadFileList] = useState<UploadFile[]>([]);
-  const [addForm] = Form.useForm();
+  const [uploadProgress, setUploadProgress] = useState<{ done: number; total: number } | null>(null);
   const [uploadForm] = Form.useForm();
   const [viewOpen, setViewOpen] = useState(false);
   const [viewingEntry, setViewingEntry] = useState<KnowledgeEntry | null>(null);
 
-  const addTopCategory = Form.useWatch('top_category', addForm) as string | undefined;
   const uploadTopCategory = Form.useWatch('top_category', uploadForm) as string | undefined;
 
   const loadEntries = useCallback(async () => {
@@ -338,28 +332,6 @@ export default function KnowledgeBase() {
     );
   }, [filteredByCategory, search]);
 
-  const handleAddOk = async () => {
-    try {
-      const values = await addForm.validateFields();
-      setAddSubmitting(true);
-      await knowledgeApi.create({
-        title: values.title,
-        content: values.content,
-        source: values.source || undefined,
-        category: joinCategory(values.top_category, values.sub_category) || undefined,
-      });
-      message.success('嵌入完成：知识条目已写入并已生成向量索引');
-      setAddOpen(false);
-      addForm.resetFields();
-      await loadEntries();
-    } catch (e) {
-      if (e && typeof e === 'object' && 'errorFields' in e) return;
-      message.error('创建条目失败');
-    } finally {
-      setAddSubmitting(false);
-    }
-  };
-
   const handleDelete = async (id: number) => {
     try {
       await knowledgeApi.delete(id);
@@ -374,27 +346,54 @@ export default function KnowledgeBase() {
     const top = uploadForm.getFieldValue('top_category') as string | undefined;
     const sub = uploadForm.getFieldValue('sub_category') as string | undefined;
     const category = joinCategory(top, sub) || undefined;
-    if (!uploadFile) {
-      message.warning('请选择一个文件');
+    if (uploadFiles.length === 0) {
+      message.warning('请选择至少一个文件');
       return;
     }
     setUploadSubmitting(true);
-    try {
-      const res = await knowledgeApi.upload(uploadFile, category);
-      const body = res.data as { status?: string; chunks_created?: number };
-      const chunks = body.chunks_created ?? 0;
-      message.success(`嵌入完成：已生成 ${chunks} 个向量分块并写入知识库`);
-      setUploadOpen(false);
-      uploadForm.resetFields();
-      setUploadFile(null);
-      setUploadFileList([]);
-      await loadEntries();
-    } catch (e: unknown) {
-      const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      message.error(typeof detail === 'string' ? detail : '上传失败');
-    } finally {
-      setUploadSubmitting(false);
+    setUploadProgress({ done: 0, total: uploadFiles.length });
+    let totalChunks = 0;
+    let okCount = 0;
+    const failures: { name: string; reason: string }[] = [];
+    for (let i = 0; i < uploadFiles.length; i++) {
+      const file = uploadFiles[i];
+      try {
+        const res = await knowledgeApi.upload(file, category);
+        const body = res.data as { status?: string; chunks_created?: number };
+        totalChunks += body.chunks_created ?? 0;
+        okCount += 1;
+      } catch (e: unknown) {
+        const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+        failures.push({ name: file.name, reason: typeof detail === 'string' ? detail : '上传失败' });
+      } finally {
+        setUploadProgress({ done: i + 1, total: uploadFiles.length });
+      }
     }
+    setUploadSubmitting(false);
+    setUploadProgress(null);
+    if (failures.length === 0) {
+      message.success(`批量上传完成：${okCount} 个文件，共生成 ${totalChunks} 个向量分块`);
+      uploadForm.resetFields();
+      setUploadFiles([]);
+      setUploadFileList([]);
+    } else {
+      Modal.warning({
+        title: `上传完成：${okCount} 成功 / ${failures.length} 失败`,
+        content: (
+          <div>
+            <div style={{ marginBottom: 8 }}>共生成 {totalChunks} 个向量分块。</div>
+            <div style={{ maxHeight: 200, overflow: 'auto' }}>
+              {failures.map((f) => (
+                <div key={f.name} style={{ fontSize: 12 }}>
+                  <Text type="danger">{f.name}</Text>: {f.reason}
+                </div>
+              ))}
+            </div>
+          </div>
+        ),
+      });
+    }
+    await loadEntries();
   };
 
   const renderCategoryTags = (category?: string | null) => {
@@ -422,13 +421,6 @@ export default function KnowledgeBase() {
       key: 'category',
       width: 200,
       render: (c: string | null) => renderCategoryTags(c),
-    },
-    {
-      title: '来源',
-      dataIndex: 'source',
-      key: 'source',
-      ellipsis: true,
-      render: (s: string | null) => s || <Text type="secondary">—</Text>,
     },
     {
       title: '创建时间',
@@ -513,21 +505,171 @@ export default function KnowledgeBase() {
               onChange={(e) => setSearch(e.target.value)}
               style={{ width: 280 }}
             />
-            <Button type="primary" icon={<PlusOutlined />} onClick={() => setAddOpen(true)}>
-              添加条目
-            </Button>
-            <Button icon={<UploadOutlined />} onClick={() => setUploadOpen(true)}>
-              上传文件
-            </Button>
           </Space>
         </Space>
+      </Card>
+
+      <Card
+        bordered={false}
+        style={{
+          marginBottom: 16,
+          borderRadius: 10,
+          boxShadow: '0 1px 2px rgba(0,0,0,0.03)',
+        }}
+        styles={{ body: { padding: 16 } }}
+      >
+        <Space align="center" style={{ marginBottom: 14 }}>
+          <UploadOutlined style={{ color: '#1677ff', fontSize: 18 }} />
+          <Text strong style={{ fontSize: 16 }}>批量上传文档</Text>
+          <Text type="secondary" style={{ fontSize: 13 }}>
+            拖入或选择多个文件，将自动解析切块并生成向量索引
+          </Text>
+        </Space>
+        {uploadSubmitting ? (
+          <Alert
+            type="info"
+            showIcon
+            icon={<LoadingOutlined spin />}
+            message={
+              uploadProgress
+                ? `正在嵌入知识库（${uploadProgress.done}/${uploadProgress.total}）`
+                : '正在嵌入知识库'
+            }
+            description="逐个上传、解析、切块并写入向量索引；大文件可能需要数分钟。"
+            style={{ marginBottom: 12 }}
+          />
+        ) : null}
+        <div style={{ display: 'flex', gap: 16, alignItems: 'stretch' }}>
+          <div
+            style={{
+              width: 320,
+              flexShrink: 0,
+              padding: '14px 18px',
+              borderRadius: 10,
+              background:
+                'linear-gradient(135deg, rgba(22,119,255,0.05) 0%, rgba(82,196,26,0.04) 100%)',
+              border: '1px solid #f0f0f0',
+            }}
+          >
+            <Space size={8} align="center" style={{ marginBottom: 4 }}>
+              <FolderOutlined style={{ color: '#1677ff', fontSize: 16 }} />
+              <Text strong style={{ fontSize: 15 }}>归类到</Text>
+            </Space>
+            <div style={{ marginBottom: 14 }}>
+              <Text type="secondary" style={{ fontSize: 13 }}>
+                本批所有文件将归入同一分类
+              </Text>
+            </div>
+            <Form form={uploadForm} layout="vertical">
+              <Form.Item name="top_category" label="一级分类" style={{ marginBottom: 12 }}>
+                <Select
+                  allowClear
+                  placeholder="选择一级分类"
+                  options={TOP_CATEGORIES.map((c) => ({ value: c, label: c }))}
+                  onChange={() => uploadForm.setFieldsValue({ sub_category: undefined })}
+                />
+              </Form.Item>
+              <Form.Item name="sub_category" label="二级分类" style={{ marginBottom: 0 }}>
+                <AutoComplete
+                  allowClear
+                  placeholder={uploadTopCategory ? '选择或输入二级分类' : '先选择一级分类'}
+                  disabled={!uploadTopCategory}
+                  options={(SUB_OPTIONS[uploadTopCategory || ''] || []).map((s) => ({
+                    value: s,
+                    label: s,
+                  }))}
+                />
+              </Form.Item>
+            </Form>
+            <div style={{ marginTop: 12 }}>
+              <Button
+                type="primary"
+                block
+                icon={<UploadOutlined />}
+                disabled={uploadFiles.length === 0}
+                loading={uploadSubmitting}
+                onClick={() => void handleUploadOk()}
+              >
+                {uploadFiles.length > 1
+                  ? `上传 ${uploadFiles.length} 个文件并嵌入`
+                  : '上传并嵌入'}
+              </Button>
+              {uploadFiles.length > 0 && !uploadSubmitting ? (
+                <Button
+                  block
+                  size="small"
+                  type="text"
+                  style={{ marginTop: 4 }}
+                  onClick={() => {
+                    setUploadFiles([]);
+                    setUploadFileList([]);
+                  }}
+                >
+                  清空待上传列表
+                </Button>
+              ) : null}
+            </div>
+          </div>
+
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <Upload.Dragger
+              accept=".txt,.md,.csv,.docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+              multiple
+              disabled={uploadSubmitting}
+              fileList={uploadFileList}
+              style={{ padding: '6px 4px' }}
+              beforeUpload={(_file, fileList) => {
+                setUploadFiles((prev) => {
+                  const next = [...prev];
+                  for (const f of fileList) {
+                    if (!next.some((x) => x.name === f.name && x.size === f.size)) {
+                      next.push(f);
+                    }
+                  }
+                  return next;
+                });
+                setUploadFileList((prev) => {
+                  const next = [...prev];
+                  for (const f of fileList) {
+                    if (!next.some((x) => x.uid === f.uid)) {
+                      next.push({
+                        uid: f.uid,
+                        name: f.name,
+                        status: 'done',
+                        originFileObj: f,
+                      });
+                    }
+                  }
+                  return next;
+                });
+                return false;
+              }}
+              onRemove={(file) => {
+                setUploadFiles((prev) =>
+                  prev.filter((f) => !(f.name === file.name && f.size === (file.size || 0))),
+                );
+                setUploadFileList((prev) => prev.filter((f) => f.uid !== file.uid));
+              }}
+            >
+              <p className="ant-upload-drag-icon" style={{ marginBottom: 6 }}>
+                <InboxOutlined style={{ fontSize: 52, color: '#1677ff' }} />
+              </p>
+              <p className="ant-upload-text" style={{ fontSize: 17, fontWeight: 500 }}>
+                把文件拖到这里，或点击选择
+              </p>
+              <p className="ant-upload-hint" style={{ fontSize: 13 }}>
+                支持批量拖入多个文件 · .txt / .md / .csv / .docx
+              </p>
+            </Upload.Dragger>
+          </div>
+        </div>
       </Card>
 
       <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
         <Card
           bordered={false}
           style={{
-            width: 300,
+            width: 360,
             flexShrink: 0,
             borderRadius: 12,
             overflow: 'hidden',
@@ -539,28 +681,27 @@ export default function KnowledgeBase() {
         >
           <div
             style={{
-              padding: '14px 16px 12px',
+              padding: '16px 18px 14px',
               background:
                 'linear-gradient(135deg, rgba(22,119,255,0.08) 0%, rgba(82,196,26,0.06) 100%)',
               borderBottom: '1px solid #f0f0f0',
             }}
           >
             <Space size={10} align="center" style={{ marginBottom: 2 }}>
-              <ReadOutlined style={{ fontSize: 18, color: '#1677ff' }} />
-              <Text strong style={{ fontSize: 14 }}>
+              <ReadOutlined style={{ fontSize: 20, color: '#1677ff' }} />
+              <Text strong style={{ fontSize: 16 }}>
                 知识目录
               </Text>
             </Space>
-            <div style={{ marginTop: 2 }}>
-              <Text type="secondary" style={{ fontSize: 12 }}>
+            <div style={{ marginTop: 4 }}>
+              <Text type="secondary" style={{ fontSize: 13 }}>
                 共 {counts[ROOT_KEY] || 0} 条 · 结构清晰 = 检索更准
               </Text>
             </div>
           </div>
-          <div style={{ padding: '10px 12px 4px' }}>
+          <div style={{ padding: '12px 14px 4px' }}>
             <Input
               allowClear
-              size="small"
               placeholder="搜索分类…"
               prefix={<SearchOutlined style={{ color: '#bfbfbf' }} />}
               value={treeSearch}
@@ -570,7 +711,7 @@ export default function KnowledgeBase() {
           <div
             className="kb-tree-wrapper"
             style={{
-              padding: '4px 6px 12px',
+              padding: '6px 8px 14px',
               maxHeight: 'calc(100vh - 260px)',
               overflowY: 'auto',
             }}
@@ -585,7 +726,7 @@ export default function KnowledgeBase() {
                 if (typeof k === 'string') setSelectedKey(k);
               }}
               treeData={treeData}
-              style={{ background: 'transparent', fontSize: 13 }}
+              style={{ background: 'transparent', fontSize: 14 }}
             />
           </div>
         </Card>
@@ -604,75 +745,6 @@ export default function KnowledgeBase() {
           )}
         </Card>
       </div>
-
-      <Modal
-        title="添加知识条目"
-        open={addOpen}
-        onOk={() => void handleAddOk()}
-        onCancel={() => {
-          setAddOpen(false);
-          addForm.resetFields();
-        }}
-        okText="保存并嵌入"
-        cancelText="取消"
-        confirmLoading={addSubmitting}
-        maskClosable={!addSubmitting}
-        closable={!addSubmitting}
-        cancelButtonProps={{ disabled: addSubmitting }}
-        destroyOnClose
-        width={560}
-      >
-        {addSubmitting ? (
-          <Alert
-            type="info"
-            showIcon
-            icon={<LoadingOutlined spin />}
-            message="正在嵌入知识库"
-            description="正在保存条目并调用向量模型写入索引，请稍候，勿关闭窗口。"
-            style={{ marginBottom: 16 }}
-          />
-        ) : null}
-        <Form form={addForm} layout="vertical" style={{ marginTop: 8 }}>
-          <Form.Item name="title" label="标题" rules={[{ required: true, message: '请输入标题' }]}>
-            <Input placeholder="条目标题" />
-          </Form.Item>
-          <Form.Item
-            name="content"
-            label="内容"
-            rules={[{ required: true, message: '请输入内容' }]}
-          >
-            <TextArea rows={8} placeholder="完整文本内容" showCount />
-          </Form.Item>
-          <Space.Compact style={{ width: '100%' }}>
-            <Form.Item
-              name="top_category"
-              label="一级分类"
-              style={{ flex: 1, marginRight: 8 }}
-            >
-              <Select
-                allowClear
-                placeholder="选择一级分类"
-                options={TOP_CATEGORIES.map((c) => ({ value: c, label: c }))}
-                onChange={() => addForm.setFieldsValue({ sub_category: undefined })}
-              />
-            </Form.Item>
-            <Form.Item name="sub_category" label="二级分类" style={{ flex: 1 }}>
-              <AutoComplete
-                allowClear
-                placeholder={addTopCategory ? '选择或输入二级分类' : '先选择一级分类'}
-                disabled={!addTopCategory}
-                options={(SUB_OPTIONS[addTopCategory || ''] || []).map((s) => ({
-                  value: s,
-                  label: s,
-                }))}
-              />
-            </Form.Item>
-          </Space.Compact>
-          <Form.Item name="source" label="来源">
-            <Input placeholder="可选来源引用" />
-          </Form.Item>
-        </Form>
-      </Modal>
 
       <Modal
         title="查看知识条目"
@@ -697,10 +769,6 @@ export default function KnowledgeBase() {
               <div>
                 <Text type="secondary">分类</Text>
                 <div>{renderCategoryTags(viewingEntry.category)}</div>
-              </div>
-              <div>
-                <Text type="secondary">来源</Text>
-                <div>{viewingEntry.source || '—'}</div>
               </div>
               <div>
                 <Text type="secondary">更新时间</Text>
@@ -731,100 +799,6 @@ export default function KnowledgeBase() {
         ) : null}
       </Modal>
 
-      <Modal
-        title="上传文档"
-        open={uploadOpen}
-        onOk={() => void handleUploadOk()}
-        onCancel={() => {
-          setUploadOpen(false);
-          uploadForm.resetFields();
-          setUploadFile(null);
-          setUploadFileList([]);
-        }}
-        okText="上传并嵌入"
-        cancelText="取消"
-        confirmLoading={uploadSubmitting}
-        maskClosable={!uploadSubmitting}
-        closable={!uploadSubmitting}
-        cancelButtonProps={{ disabled: uploadSubmitting }}
-        destroyOnClose
-        width={520}
-      >
-        <Form form={uploadForm} layout="vertical" style={{ marginTop: 8 }}>
-          <Space.Compact style={{ width: '100%' }}>
-            <Form.Item
-              name="top_category"
-              label="一级分类"
-              style={{ flex: 1, marginRight: 8 }}
-            >
-              <Select
-                allowClear
-                placeholder="选择一级分类"
-                options={TOP_CATEGORIES.map((c) => ({ value: c, label: c }))}
-                onChange={() => uploadForm.setFieldsValue({ sub_category: undefined })}
-              />
-            </Form.Item>
-            <Form.Item name="sub_category" label="二级分类" style={{ flex: 1 }}>
-              <AutoComplete
-                allowClear
-                placeholder={uploadTopCategory ? '选择或输入二级分类' : '先选择一级分类'}
-                disabled={!uploadTopCategory}
-                options={(SUB_OPTIONS[uploadTopCategory || ''] || []).map((s) => ({
-                  value: s,
-                  label: s,
-                }))}
-              />
-            </Form.Item>
-          </Space.Compact>
-        </Form>
-        {uploadSubmitting ? (
-          <Alert
-            type="info"
-            showIcon
-            icon={<LoadingOutlined spin />}
-            message="正在嵌入知识库"
-            description={
-              <>
-                <div>正在上传、解析文档、切块并写入向量索引；完成后将弹出「嵌入完成」提示。</div>
-                <div style={{ marginTop: 8 }}>
-                  <Text type="secondary">大文件可能需数十秒，请勿关闭窗口。</Text>
-                </div>
-              </>
-            }
-            style={{ marginBottom: 16 }}
-          />
-        ) : null}
-        <Upload.Dragger
-          accept=".txt,.md,.csv,.docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-          maxCount={1}
-          disabled={uploadSubmitting}
-          fileList={uploadFileList}
-          beforeUpload={(file) => {
-            setUploadFile(file);
-            setUploadFileList([
-              {
-                uid: file.uid,
-                name: file.name,
-                status: 'done',
-                originFileObj: file,
-              },
-            ]);
-            return false;
-          }}
-          onRemove={() => {
-            setUploadFile(null);
-            setUploadFileList([]);
-          }}
-        >
-          <p className="ant-upload-drag-icon">
-            <InboxOutlined />
-          </p>
-          <p className="ant-upload-text">点击或拖拽文件到此区域上传</p>
-          <p className="ant-upload-hint">
-            支持：.txt、.md、.csv、Word 2007+（.docx）。旧版 .doc 请先在 Word 中另存为 .docx。
-          </p>
-        </Upload.Dragger>
-      </Modal>
     </div>
   );
 }
