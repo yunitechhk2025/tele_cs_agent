@@ -96,7 +96,44 @@ docker compose up -d --build
 
 ### 5. 维护知识库
 
-登录管理后台 → **知识库**：手动新增条目或上传文件，用于 RAG 检索。
+登录管理后台 → **知识库**：拖拽多个文档批量上传（.txt / .md / .csv / .docx），系统会自动解析切块并生成向量索引，用于 RAG 检索。
+
+### 5.1 用种子数据快速初始化（可选）
+
+仓库自带两份样例数据，方便新环境一键灌入：
+
+| 文件 | 内容 |
+|------|------|
+| `backend/seed_data/knowledge.json` | 13 条基线条目（FAQ / 政策 / 操作流程） |
+| `backend/seed_data/cases.json` | 8 个真实业务案例（退款、物流、质量、大客户、跨境关税…） |
+
+灌入步骤（任意环境，只要后端 API 可达）：
+
+```bash
+# 灌基线 13 条
+python backend/scripts/import_knowledge.py \
+  --base-url http://127.0.0.1:8000
+
+# 追加 8 个案例
+python backend/scripts/import_knowledge.py \
+  --input backend/seed_data/cases.json \
+  --base-url http://127.0.0.1:8000 \
+  --skip-existing
+```
+
+`--skip-existing` 会按 (title, category) 跳过已存在条目，重复执行幂等。
+
+参数也可以用环境变量代替：`KB_BASE_URL` / `KB_USERNAME` / `KB_PASSWORD`。
+
+如需把当前环境的知识库导出为 JSON（方便迁移到其他环境）：
+
+```bash
+python backend/scripts/export_knowledge.py \
+  --base-url http://127.0.0.1:8000 \
+  --output backend/seed_data/knowledge.json
+```
+
+两个脚本都只依赖 Python 标准库，可在任意 Python 3.10+ 环境运行，无需先 `pip install`。
 
 ### 6. 查看商品场景图与耗时
 
