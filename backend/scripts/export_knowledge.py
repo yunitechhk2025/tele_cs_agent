@@ -53,10 +53,17 @@ def login(base_url: str, username: str, password: str) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--base-url", default=os.environ.get("KB_BASE_URL", "http://localhost:8001"))
-    parser.add_argument("--username", default=os.environ.get("KB_USERNAME", "admin"))
+    parser.add_argument(
+        "--username",
+        default=os.environ.get("KB_USERNAME") or os.environ.get("ADMIN_USERNAME") or "admin",
+    )
     parser.add_argument(
         "--password",
-        default=os.environ.get("KB_PASSWORD", "change-me-in-production"),
+        default=(
+            os.environ.get("KB_PASSWORD")
+            or os.environ.get("ADMIN_PASSWORD")
+            or "change-me-in-production"
+        ),
     )
     parser.add_argument(
         "--output",

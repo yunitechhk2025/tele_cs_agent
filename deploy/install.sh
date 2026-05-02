@@ -57,6 +57,32 @@ fi
 docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
 docker compose ps
 
+# ---------- 3.1 知识库 seed（幂等，可重复执行） ----------
+echo ">>> Waiting for backend to be ready..."
+for i in $(seq 1 30); do
+  if docker compose -f docker-compose.yml -f docker-compose.prod.yml \
+       exec -T backend python -c "import urllib.request,sys; urllib.request.urlopen('http://localhost:8000/docs', timeout=2)" \
+       >/dev/null 2>&1; then
+    echo ">>> Backend is up"
+    break
+  fi
+  sleep 2
+done
+
+echo ">>> Seeding knowledge base baseline (idempotent)..."
+docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T backend \
+  python scripts/import_knowledge.py \
+  --base-url http://localhost:8000 \
+  --input seed_data/knowledge.json \
+  --skip-existing || echo "(seed baseline skipped/failed, continuing)"
+
+echo ">>> Seeding knowledge base cases (idempotent)..."
+docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T backend \
+  python scripts/import_knowledge.py \
+  --base-url http://localhost:8000 \
+  --input seed_data/cases.json \
+  --skip-existing || echo "(seed cases skipped/failed, continuing)"
+
 # ---------- 4. nginx 站点配置 ----------
 TPL="$PROJECT_DIR/deploy/nginx/site.conf.tpl"
 SITE="/etc/nginx/sites-available/$DOMAIN"
