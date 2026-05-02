@@ -74,6 +74,12 @@ const CATEGORY_TREE: CategoryDef[] = [
     icon: <ApartmentOutlined style={{ color: '#fa8c16' }} />,
     color: '#fa8c16',
   },
+  {
+    name: '案例库',
+    children: ['退款纠纷', '物流问题', '产品质量', '大客户', '跨境关税'],
+    icon: <TagsOutlined style={{ color: '#722ed1' }} />,
+    color: '#722ed1',
+  },
 ];
 
 const TOP_CATEGORIES = CATEGORY_TREE.map((c) => c.name);
