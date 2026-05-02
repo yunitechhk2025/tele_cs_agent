@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
   Alert,
   Button,
@@ -15,6 +16,7 @@ import {
   Slider,
   Space,
   Spin,
+  Tabs,
   Typography,
   message,
 } from 'antd';
@@ -26,6 +28,7 @@ import {
 } from '@ant-design/icons';
 import { settingsApi } from '../api';
 import type { CustomerServiceSettings, LLMSettings } from '../types';
+import BotManagement from './BotManagement';
 
 const { Title, Text } = Typography;
 
@@ -81,6 +84,9 @@ function buildLLMPayload(values: LLMSettings): Partial<LLMSettings> {
 }
 
 export default function Settings() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const activeTab = searchParams.get('tab') === 'bots' ? 'bots' : 'system';
+
   const [form] = Form.useForm<LLMSettings>();
   const [serviceForm] = Form.useForm<CustomerServiceSettings>();
   const [loading, setLoading] = useState(true);
@@ -207,8 +213,16 @@ export default function Settings() {
     }
   };
 
+  const handleTabChange = (key: string) => {
+    if (key === 'bots') {
+      setSearchParams({ tab: 'bots' });
+    } else {
+      setSearchParams({});
+    }
+  };
+
   return (
-    <div style={{ maxWidth: 960, margin: '0 auto' }}>
+    <div style={{ maxWidth: activeTab === 'bots' ? 1200 : 960, margin: '0 auto' }}>
       <Space direction="vertical" size="large" style={{ width: '100%' }}>
         <Space align="center" size="middle">
           <SettingOutlined style={{ fontSize: 28, color: '#1677ff' }} />
@@ -217,13 +231,22 @@ export default function Settings() {
           </Title>
         </Space>
 
-        <Alert
-          type="info"
-          showIcon
-          message="服务器返回的 API 密钥可能已脱敏显示。保持不变即可保留已存储的密钥，输入新密钥将替换原有密钥。"
-        />
+        <Tabs
+          activeKey={activeTab}
+          onChange={handleTabChange}
+          items={[
+            {
+              key: 'system',
+              label: '模型与客服',
+              children: (
+                <Space direction="vertical" size="large" style={{ width: '100%' }}>
+                  <Alert
+                    type="info"
+                    showIcon
+                    message="服务器返回的 API 密钥可能已脱敏显示。保持不变即可保留已存储的密钥，输入新密钥将替换原有密钥。"
+                  />
 
-        <Spin spinning={loading}>
+                  <Spin spinning={loading}>
           <Card
             title={
               <Space>
@@ -500,6 +523,16 @@ export default function Settings() {
             </Form>
           </Card>
         </Spin>
+                </Space>
+              ),
+            },
+            {
+              key: 'bots',
+              label: 'Bot 管理',
+              children: <BotManagement />,
+            },
+          ]}
+        />
       </Space>
 
       <Modal

@@ -1,12 +1,10 @@
 import { Routes, Route, Navigate } from 'react-router-dom';
 import AppLayout from './components/AppLayout';
 import Login from './pages/Login';
-import Dashboard from './pages/Dashboard';
 import Conversations from './pages/Conversations';
 import KnowledgeBase from './pages/KnowledgeBase';
 import Contracts from './pages/Contracts';
 import Settings from './pages/Settings';
-import BotManagement from './pages/BotManagement';
 import Products from './pages/Products';
 import SceneLibrary from './pages/SceneLibrary';
 import TelegramSimulator from './pages/TelegramSimulator';
@@ -27,12 +25,12 @@ export default function App() {
           <ProtectedRoute>
             <AppLayout>
               <Routes>
-                <Route path="/" element={<Dashboard />} />
-                <Route path="/conversations" element={<Conversations />} />
+                <Route path="/" element={<Conversations />} />
+                <Route path="/conversations" element={<Navigate to="/" replace />} />
                 <Route path="/conversations/:id" element={<Conversations />} />
                 <Route path="/knowledge" element={<KnowledgeBase />} />
                 <Route path="/contracts" element={<Contracts />} />
-                <Route path="/bots" element={<BotManagement />} />
+                <Route path="/bots" element={<Navigate to="/settings?tab=bots" replace />} />
                 <Route path="/products" element={<Products />} />
                 <Route path="/scenes" element={<SceneLibrary />} />
                 <Route path="/simulator" element={<TelegramSimulator />} />
