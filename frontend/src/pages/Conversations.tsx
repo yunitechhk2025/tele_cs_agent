@@ -15,6 +15,7 @@ import {
   List,
   Modal,
   Radio,
+  Segmented,
   Select,
   Space,
   Spin,
@@ -705,6 +706,33 @@ export default function Conversations() {
       setCustomerServiceSettings(null);
     }
   }, []);
+
+  const [modeUpdating, setModeUpdating] = useState(false);
+  const handleChangeMode = useCallback(
+    async (mode: CustomerServiceSettings['mode']) => {
+      if (!customerServiceSettings || customerServiceSettings.mode === mode) return;
+      setModeUpdating(true);
+      const previous = customerServiceSettings;
+      // 乐观更新，让 Segmented 切换感官即时
+      setCustomerServiceSettings({ ...customerServiceSettings, mode });
+      try {
+        const { data } = await settingsApi.updateCustomerService({ mode });
+        setCustomerServiceSettings(data);
+        const labelMap: Record<CustomerServiceSettings['mode'], string> = {
+          ai_auto: '已切换到「全 AI 自动应答」',
+          ai_assist: '已切换到「人机协同（人工确认 AI 草稿）」',
+          human_only: '已切换到「纯人工应答」',
+        };
+        message.success(labelMap[mode]);
+      } catch {
+        setCustomerServiceSettings(previous);
+        message.error('切换应答模式失败，请稍后重试');
+      } finally {
+        setModeUpdating(false);
+      }
+    },
+    [customerServiceSettings],
+  );
 
   const loadStats = useCallback(async () => {
     try {
@@ -1462,9 +1490,24 @@ export default function Conversations() {
                   <>
                     <Tag color="default">ID #{detail.id}</Tag>
                     <Tag color={statusConfig(detail.status).color}>{statusConfig(detail.status).label}</Tag>
-                    <Tooltip title={currentMode.label}>
-                      <Tag color={currentMode.color}>{currentMode.text}</Tag>
+                    <Tooltip title="切换全局客服应答模式（影响所有对话）">
+                      <Segmented
+                        size="small"
+                        value={customerServiceSettings?.mode ?? 'ai_auto'}
+                        onChange={(val) =>
+                          void handleChangeMode(val as CustomerServiceSettings['mode'])
+                        }
+                        disabled={!customerServiceSettings || modeUpdating}
+                        options={[
+                          { label: '全 AI', value: 'ai_auto' },
+                          { label: '人机协同', value: 'ai_assist' },
+                          { label: '纯人工', value: 'human_only' },
+                        ]}
+                      />
                     </Tooltip>
+                    <Tag color={currentMode.color} style={{ marginInlineStart: 0 }}>
+                      {currentMode.text}
+                    </Tag>
                   </>
                 ) : (
                   <Tag>…</Tag>
