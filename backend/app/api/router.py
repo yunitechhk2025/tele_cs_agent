@@ -430,22 +430,29 @@ async def translate_batch(
     req: TranslateBatchRequest,
     _: str = Depends(get_current_user),
 ):
-    """Translate a batch of texts to the target language. Used for the
-    real-time translation panel in the conversation view. Empty inputs are
-    returned as-is. Failed translations fall back to the original text so
-    the client can still display something."""
+    """Translate a batch of texts to the target language.
+
+    Strategy: try the free MyMemory public API first (no API key required),
+    and only fall back to the configured LLM if MyMemory fails. Empty
+    inputs are returned as-is. If both providers fail we return the
+    original text so the client can still display something."""
+    import httpx
+
+    from app.services.translation_service import translate_simple
+
     target = (req.target_lang or "zh").strip() or "zh"
 
-    async def _one(text: str) -> str:
-        if not text or not text.strip():
-            return text or ""
-        try:
-            translated = await translate_text(text, target)
-        except Exception:
-            translated = None
-        return translated or text
+    async with httpx.AsyncClient(timeout=6.0) as client:
+        async def _one(text: str) -> str:
+            if not text or not text.strip():
+                return text or ""
+            try:
+                translated = await translate_simple(text, target, client=client)
+            except Exception:
+                translated = None
+            return translated or text
 
-    translations = await asyncio.gather(*[_one(t) for t in req.texts])
+        translations = await asyncio.gather(*[_one(t) for t in req.texts])
     return TranslateBatchResponse(translations=list(translations))
 
 
