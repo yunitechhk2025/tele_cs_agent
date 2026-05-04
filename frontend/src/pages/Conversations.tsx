@@ -1078,7 +1078,8 @@ export default function Conversations() {
       if (!src) continue;
       if (translations[src.key] != null) continue;
       if (translateInflight.current.has(src.key)) continue;
-      if (isLikelyChinese(src.text)) continue;
+      // 不再判断"已经是中文就跳过"——按用户要求强制把所有消息送去翻译，
+      // 让 MyMemory / LLM 自己处理中→中或混合语言情况。
       missing.push(src);
     }
     if (missing.length === 0) return undefined;
@@ -1117,9 +1118,7 @@ export default function Conversations() {
       const tr = src ? translations[src.key] : undefined;
       // 译文未到位时（非中文且尚未缓存），在左侧气泡里显示占位提示。
       const pending =
-        useTranslation && !!src && tr == null && !isLikelyChinese(src.text)
-          ? 'AI 实时翻译中…'
-          : undefined;
+        useTranslation && !!src && tr == null ? 'AI 实时翻译中…' : undefined;
       const override = tr ?? pending;
       // 译文已成功生成时，对译文气泡使用打字机效果（占位文本不动画）。
       const translationAnimKey =

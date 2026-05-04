@@ -122,8 +122,6 @@ async def translate_simple(
     避免任何一个卡住导致整个 /api/translate 请求挂死。"""
     if not text or not text.strip():
         return text or ""
-    if _looks_like(text, target_lang):
-        return text  # already in target language
 
     import asyncio
 
