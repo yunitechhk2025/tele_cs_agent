@@ -1090,9 +1090,13 @@ export default function Conversations() {
     // 译文丢掉，导致页面永远卡在"AI 实时翻译中…"。
     missing.forEach((m) => translateInflight.current.add(m.key));
     setTranslating(true);
+    // eslint-disable-next-line no-console
+    console.log('[translate] sending batch', missing.length, 'items', missing.map((m) => m.text.slice(0, 40)));
     translateApi
       .batch(missing.map((m) => m.text), 'zh')
       .then((res) => {
+        // eslint-disable-next-line no-console
+        console.log('[translate] got', res.data?.translations?.length, 'translations:', res.data?.translations);
         setTranslations((prev) => {
           const next = { ...prev };
           missing.forEach((m, i) => {
@@ -1101,8 +1105,9 @@ export default function Conversations() {
           return next;
         });
       })
-      .catch(() => {
-        /* keep original on failure */
+      .catch((err) => {
+        // eslint-disable-next-line no-console
+        console.error('[translate] request failed:', err?.message || err, err?.response?.data);
       })
       .finally(() => {
         missing.forEach((m) => translateInflight.current.delete(m.key));
