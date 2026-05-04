@@ -1063,6 +1063,13 @@ export default function Conversations() {
     return !!matches && matches.length / text.length > 0.5;
   }, []);
 
+  // 切换翻译开关 / 切换对话时，清空 inflight 集合，避免上一次失败/挂死的请求
+  // 在 ref 里残留导致后续请求被误判为"已在请求中"。
+  useEffect(() => {
+    translateInflight.current.clear();
+    setTranslating(false);
+  }, [translationEnabled, selectedId]);
+
   useEffect(() => {
     if (!translationEnabled) return undefined;
     const missing: { key: string; text: string }[] = [];
