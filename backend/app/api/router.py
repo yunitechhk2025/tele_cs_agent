@@ -440,15 +440,32 @@ async def translate_batch(
 
     from app.services.translation_service import translate_simple
 
+    from app.services.translation_service import translate_batch_via_llm
+
     target = (req.target_lang or "zh").strip() or "zh"
 
     async def _do() -> list[str]:
+        # 1) 优先：单次 LLM 调用整批翻译，避开并发限流和 MyMemory 配额
+        try:
+            llm_batch = await translate_batch_via_llm(list(req.texts), target)
+        except Exception:
+            llm_batch = None
+        if llm_batch is not None and len(llm_batch) == len(req.texts):
+            # LLM 偶尔会对极短/无内容项返回 "(empty)"，这种情况退回原文
+            return [
+                tr if tr and tr.strip() and tr.strip() != "(empty)" else (orig or "")
+                for tr, orig in zip(llm_batch, req.texts)
+            ]
+
+        # 2) 失败时降级：MyMemory 逐条并发翻译
         async with httpx.AsyncClient(timeout=6.0) as client:
             async def _one(text: str) -> str:
                 if not text or not text.strip():
                     return text or ""
                 try:
-                    translated = await translate_simple(text, target, client=client)
+                    translated = await translate_simple(
+                        text, target, client=client, llm_fallback=False
+                    )
                 except Exception:
                     translated = None
                 return translated or text
@@ -456,8 +473,8 @@ async def translate_batch(
             return list(await asyncio.gather(*[_one(t) for t in req.texts]))
 
     try:
-        # 整个批次最多 12s，无论 MyMemory / LLM 是否挂掉，前端都不会被吊死
-        translations = await asyncio.wait_for(_do(), timeout=12.0)
+        # 整个批次最多 30s，无论 LLM/MyMemory 是否挂掉，前端都不会被吊死
+        translations = await asyncio.wait_for(_do(), timeout=30.0)
     except asyncio.TimeoutError:
         translations = list(req.texts)
     return TranslateBatchResponse(translations=translations)

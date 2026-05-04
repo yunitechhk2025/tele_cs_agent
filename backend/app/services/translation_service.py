@@ -19,6 +19,7 @@ from typing import Optional
 import httpx
 
 from app.services.llm_service import translate_text as _llm_translate
+from app.services.llm_service import _chat_completion
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +108,91 @@ async def _translate_via_mymemory(
     finally:
         if own_client and client is not None:
             await client.aclose()
+
+
+_LANG_NAMES = {
+    "zh": "Simplified Chinese",
+    "zh-cn": "Simplified Chinese",
+    "zh-tw": "Traditional Chinese",
+    "en": "English",
+    "ja": "Japanese",
+    "ko": "Korean",
+    "ru": "Russian",
+    "es": "Spanish",
+    "fr": "French",
+    "de": "German",
+}
+
+
+async def translate_batch_via_llm(
+    texts: list[str],
+    target_lang: str,
+    *,
+    timeout: float = 25.0,
+) -> Optional[list[str]]:
+    """单次 LLM 调用批量翻译。返回与输入等长的列表；失败返回 None。
+
+    通过让模型输出 JSON 数组来保证顺序对齐。把空文本占位成 "" 仍然送过去，
+    简化客户端解析。"""
+    import asyncio
+    import json
+
+    if not texts:
+        return []
+
+    target_name = _LANG_NAMES.get((target_lang or "zh").lower().strip(), target_lang)
+
+    # 索引文本，让模型保留顺序。
+    numbered = "\n".join(f"[{i}] {t if t and t.strip() else '(empty)'}" for i, t in enumerate(texts))
+    system_prompt = (
+        f"You are a professional translator. Translate each numbered item below into {target_name}. "
+        "Preserve emoji, URLs, numbers, formatting and tone. "
+        "Return ONLY a JSON array of strings, in the same order as the input, with the same length. "
+        "Do not include the [N] index prefix in your output. Do not add any commentary."
+    )
+
+    try:
+        raw = await asyncio.wait_for(
+            _chat_completion(
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": numbered},
+                ],
+                max_tokens=4000,
+                temperature=0.2,
+            ),
+            timeout=timeout,
+        )
+    except Exception as exc:
+        logger.warning("Batch LLM translate failed: %s", exc)
+        return None
+
+    if not raw:
+        return None
+
+    cleaned = raw.strip()
+    # 模型偶尔会包一层 ```json ... ``` 代码块，剥掉。
+    if cleaned.startswith("```"):
+        cleaned = cleaned.strip("`")
+        if cleaned.lower().startswith("json"):
+            cleaned = cleaned[4:]
+        cleaned = cleaned.strip()
+
+    try:
+        arr = json.loads(cleaned)
+    except Exception as exc:
+        logger.warning("Batch LLM translate non-JSON output: %s | head=%r", exc, cleaned[:160])
+        return None
+
+    if not isinstance(arr, list) or len(arr) != len(texts):
+        logger.warning(
+            "Batch LLM translate length mismatch: got %s, want %s",
+            len(arr) if isinstance(arr, list) else type(arr).__name__,
+            len(texts),
+        )
+        return None
+
+    return [str(x) if x is not None else "" for x in arr]
 
 
 async def translate_simple(
