@@ -1083,13 +1083,15 @@ export default function Conversations() {
     }
     if (missing.length === 0) return undefined;
 
-    let cancelled = false;
+    // 注意：这里**不**用 cancel 标记。translations 是按消息 key 写入的纯 cache，
+    // 即使 effect 在请求未完成前因 timeline 轮询重建而再次运行，把延迟到达的
+    // 译文写入也是安全且必要的——之前用 cancelled 反而会把好不容易到手的
+    // 译文丢掉，导致页面永远卡在"AI 实时翻译中…"。
     missing.forEach((m) => translateInflight.current.add(m.key));
     setTranslating(true);
     translateApi
       .batch(missing.map((m) => m.text), 'zh')
       .then((res) => {
-        if (cancelled) return;
         setTranslations((prev) => {
           const next = { ...prev };
           missing.forEach((m, i) => {
@@ -1106,9 +1108,7 @@ export default function Conversations() {
         setTranslating(false);
       });
 
-    return () => {
-      cancelled = true;
-    };
+    return undefined;
   }, [timeline, translationEnabled, translations, timelineKeyAndText, isLikelyChinese]);
 
   const renderTimelineItem = useCallback(
