@@ -22,6 +22,7 @@ from app.services.llm_service import (
     get_llm_settings,
     select_scene_bundle_products,
 )
+from app.services.conversation_monitoring import set_conversation_stage
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -860,6 +861,7 @@ async def _run_scene_generation_for_record(
     related_product_ids: list[int] | None = None,
     reference_image_items: list[dict[str, Any]] | None = None,
     timeout_seconds: int = BACKEND_SCENE_TIMEOUT_SECONDS,
+    conversation_id: int | None = None,
 ) -> SceneGenerationRecord:
     total_start = time.perf_counter()
     cfg = await get_llm_settings()
@@ -892,6 +894,8 @@ async def _run_scene_generation_for_record(
     if selected_related_ids is None:
         bundle_start = time.perf_counter()
         try:
+            if conversation_id:
+                await set_conversation_stage(conversation_id, "scene_bundle_selection")
             selected_related_ids = await asyncio.wait_for(
                 select_scene_bundle_products(
                     user_message=user_request or primary_product.product_name,
@@ -956,6 +960,8 @@ async def _run_scene_generation_for_record(
 
     image_start = time.perf_counter()
     try:
+        if conversation_id:
+            await set_conversation_stage(conversation_id, "scene_image_generation")
         output_paths, binaries = await asyncio.wait_for(
             _generate_scene_outputs(
                 record_id=record_id,
@@ -1050,6 +1056,7 @@ async def start_scene_generation(
                 related_product_ids=related_product_ids,
                 reference_image_items=reference_image_items,
                 timeout_seconds=BACKEND_SCENE_TIMEOUT_SECONDS,
+                conversation_id=conversation_id,
             )
         except asyncio.CancelledError:
             logger.info("Scene generation background job %s cancelled", record.id)
@@ -1102,4 +1109,5 @@ async def generate_scene_images(
         related_product_ids=related_product_ids,
         reference_image_items=reference_image_items,
         timeout_seconds=timeout_seconds,
+        conversation_id=conversation_id,
     )

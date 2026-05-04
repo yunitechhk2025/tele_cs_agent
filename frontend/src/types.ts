@@ -25,7 +25,34 @@ export interface Conversation {
 export interface ConversationDetail extends Conversation {
   messages: Message[];
   outbound_events: SimulatorOutgoingEvent[];
+  processing_state?: ConversationProcessingState | null;
+  latest_turn_metric?: ConversationTurnMetric | null;
   ai_draft?: PendingAIReply | null;
+}
+
+export interface ConversationProcessingState {
+  stage_key: string;
+  stage_label: string;
+  stage_detail: string;
+  is_processing: boolean;
+  started_at: string | null;
+  updated_at: string | null;
+}
+
+export interface ConversationTurnMetric {
+  id: number;
+  conversation_id: number;
+  user_message_id: number | null;
+  request_text: string;
+  response_kind: string;
+  started_at: string;
+  first_response_at: string | null;
+  completed_at: string | null;
+  first_response_ms: number | null;
+  total_ms: number | null;
+  success: boolean;
+  error_message: string;
+  created_at: string;
 }
 
 export interface PendingAIReply {

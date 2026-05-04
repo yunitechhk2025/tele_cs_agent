@@ -151,6 +151,21 @@ function canEditDraft(detail: ConversationDetail | null) {
   return detail?.ai_draft?.content_kind === 'text';
 }
 
+function processingStageColor(detail: ConversationDetail | null) {
+  const state = detail?.processing_state;
+  if (!state) return 'default' as const;
+  if (state.stage_key === 'failed') return 'red' as const;
+  if (state.is_processing) return 'processing' as const;
+  if (state.stage_key === 'completed') return 'success' as const;
+  return 'default' as const;
+}
+
+function formatLatency(ms?: number | null) {
+  if (ms == null) return '—';
+  if (ms < 1000) return `${ms}ms`;
+  return `${(ms / 1000).toFixed(1)}s`;
+}
+
 type ProductDraftCard = {
   product_id?: number;
   caption?: string;
@@ -608,8 +623,8 @@ export default function Conversations() {
     return () => window.clearInterval(timer);
   }, [loadStats]);
 
-  const loadDetail = useCallback(async (conversationId: number) => {
-    setDetailLoading(true);
+  const loadDetail = useCallback(async (conversationId: number, silent = false) => {
+    if (!silent) setDetailLoading(true);
     try {
       const { data } = await conversationApi.get(conversationId);
       setDetail(data);
@@ -617,7 +632,7 @@ export default function Conversations() {
       message.error('加载对话详情失败');
       setDetail(null);
     } finally {
-      setDetailLoading(false);
+      if (!silent) setDetailLoading(false);
     }
   }, []);
 
@@ -663,10 +678,10 @@ export default function Conversations() {
   useEffect(() => {
     if (selectedId == null) return undefined;
     const timer = window.setInterval(() => {
-      void loadDetail(selectedId);
+      void loadDetail(selectedId, true);
       void loadList();
       void loadCustomerServiceSettings();
-    }, 3000);
+    }, 1000);
     return () => window.clearInterval(timer);
   }, [selectedId, loadCustomerServiceSettings, loadDetail, loadList]);
 
@@ -1178,6 +1193,16 @@ export default function Conversations() {
                     <Tag color={statusConfig(detail.status).color}>{statusConfig(detail.status).label}</Tag>
                     <Tooltip title={currentMode.label}>
                       <Tag color={currentMode.color}>{currentMode.text}</Tag>
+                    </Tooltip>
+                    <Tooltip title={detail.processing_state?.stage_detail || '当前处理阶段'}>
+                      <Tag color={processingStageColor(detail)}>
+                        {detail.processing_state?.stage_label || '空闲'}
+                      </Tag>
+                    </Tooltip>
+                    <Tooltip title="最近一轮：首个可展示响应耗时 / 完整响应耗时">
+                      <Tag color="purple">
+                        首响 {formatLatency(detail.latest_turn_metric?.first_response_ms)} · 总耗时 {formatLatency(detail.latest_turn_metric?.total_ms)}
+                      </Tag>
                     </Tooltip>
                   </>
                 ) : (

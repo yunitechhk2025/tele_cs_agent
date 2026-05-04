@@ -191,6 +191,42 @@ class ConversationSceneState(Base):
     primary_product = relationship("ProductEntry")
 
 
+class ConversationProcessingState(Base):
+    __tablename__ = "conversation_processing_states"
+
+    id = Column(Integer, primary_key=True, index=True)
+    conversation_id = Column(Integer, ForeignKey("conversations.id"), unique=True, index=True, nullable=False)
+    stage_key = Column(String(100), default="idle")
+    stage_label = Column(String(200), default="空闲")
+    stage_detail = Column(Text, default="")
+    is_processing = Column(Boolean, default=False)
+    started_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    conversation = relationship("Conversation")
+
+
+class ConversationTurnMetric(Base):
+    __tablename__ = "conversation_turn_metrics"
+
+    id = Column(Integer, primary_key=True, index=True)
+    conversation_id = Column(Integer, ForeignKey("conversations.id"), index=True, nullable=False)
+    user_message_id = Column(Integer, ForeignKey("messages.id"), nullable=True, index=True)
+    request_text = Column(Text, default="")
+    response_kind = Column(String(100), default="")
+    started_at = Column(DateTime, default=datetime.utcnow)
+    first_response_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    first_response_ms = Column(Integer, nullable=True)
+    total_ms = Column(Integer, nullable=True)
+    success = Column(Boolean, default=True)
+    error_message = Column(Text, default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    conversation = relationship("Conversation")
+    user_message = relationship("Message")
+
+
 class PendingAIReply(Base):
     __tablename__ = "pending_ai_replies"
 

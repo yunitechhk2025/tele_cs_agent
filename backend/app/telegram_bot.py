@@ -31,6 +31,14 @@ from app.services.customer_service_service import (
     get_customer_service_settings,
     create_pending_ai_reply,
 )
+from app.services.conversation_monitoring import (
+    complete_turn_metric,
+    mark_conversation_completed,
+    mark_conversation_failed,
+    mark_turn_first_response,
+    set_conversation_stage,
+    start_turn_metric,
+)
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -378,6 +386,8 @@ async def save_message(
         )
         db.add(msg)
         await db.commit()
+        await db.refresh(msg)
+        return msg.id
 
 
 async def get_chat_history(conversation_id: int) -> list[dict]:
@@ -883,8 +893,26 @@ async def process_customer_text_message(
     notify_bot,
     stop_typing: asyncio.Event,
     typing_task: asyncio.Task,
+    metric_id: int | None = None,
 ):
+    first_response_marked = False
+
+    async def stage(stage_key: str, detail: str = "") -> None:
+        await set_conversation_stage(conversation_id, stage_key, stage_detail=detail)
+
+    async def first_response(response_kind: str) -> None:
+        nonlocal first_response_marked
+        if first_response_marked:
+            return
+        first_response_marked = True
+        await mark_turn_first_response(metric_id, response_kind)
+
+    async def finish(response_kind: str, detail: str = "") -> None:
+        await complete_turn_metric(metric_id, response_kind=response_kind, success=True)
+        await mark_conversation_completed(conversation_id, detail)
+
     try:
+        await stage("checking_service_mode")
         conversation = None
         async with AsyncSessionLocal() as db:
             conversation = await db.get(Conversation, conversation_id)
@@ -892,6 +920,7 @@ async def process_customer_text_message(
         service_mode = service_settings["mode"]
 
         if service_mode == "human_only":
+            await stage("waiting_human", "当前为完全人工模式")
             async with AsyncSessionLocal() as db:
                 conv = await db.get(Conversation, conversation_id)
                 if conv:
@@ -901,6 +930,7 @@ async def process_customer_text_message(
 
             if current_status != ConversationStatus.PENDING_HUMAN:
                 wait_msg = MANUAL_ONLY_WAIT_MESSAGES.get(language, MANUAL_ONLY_WAIT_MESSAGES["en"])
+                await first_response("human_only_wait")
                 await save_message(conversation_id, MessageRole.ASSISTANT, wait_msg, language)
                 stop_typing.set()
                 await typing_task
@@ -917,11 +947,14 @@ async def process_customer_text_message(
                     notify_bot,
                     is_followup=(current_status == ConversationStatus.PENDING_HUMAN),
                 )
+            await finish("human_only_wait", "已转人工")
             return
 
+        await stage("checking_quote_intent")
         is_quote = await check_is_quote_related(user_message)
         logger.info(f"[Bot {bot_id}] Quote related: {is_quote}")
         if is_quote:
+            await stage("waiting_human", "报价相关咨询已转人工")
             async with AsyncSessionLocal() as db:
                 conv = await db.get(Conversation, conversation_id)
                 if conv:
@@ -930,6 +963,7 @@ async def process_customer_text_message(
                     await db.commit()
 
             handoff_msg = HANDOFF_MESSAGES.get(language, HANDOFF_MESSAGES["en"])
+            await first_response("handoff")
             await save_message(conversation_id, MessageRole.ASSISTANT, handoff_msg, language)
             stop_typing.set()
             await typing_task
@@ -942,11 +976,13 @@ async def process_customer_text_message(
                     notify_bot,
                     is_followup=(current_status == ConversationStatus.PENDING_HUMAN),
                 )
+            await finish("handoff", "报价相关咨询已转人工")
             return
 
         if current_status == ConversationStatus.PENDING_HUMAN and run_notify_admin and notify_bot and conversation:
             await notify_admin(bot_id, conversation, user_message, notify_bot, is_followup=True)
 
+        await stage("loading_scene_state")
         scene_state = await get_scene_state(conversation_id)
         recent_scene_product_ids: list[int] = []
         if scene_state:
@@ -957,7 +993,9 @@ async def process_customer_text_message(
             except Exception:
                 recent_scene_product_ids = []
 
+        await stage("loading_products")
         all_products = await get_products_for_bot()
+        await stage("analyzing_scene_request")
         scene_req = await analyze_scene_image_request(
             user_message,
             all_products,
@@ -981,6 +1019,7 @@ async def process_customer_text_message(
                 or await check_is_scene_image_confirmation(user_message)
             )
             if wants_scene:
+                await stage("resolving_product_reference")
                 primary_id = (
                     scene_req.get("target_product_id")
                     or referenced_id
@@ -1008,9 +1047,11 @@ async def process_customer_text_message(
                     await typing_task
                     if service_mode != "ai_assist":
                         generating = SCENE_GENERATING_MESSAGES.get(language, SCENE_GENERATING_MESSAGES["en"])
+                        await first_response("scene_generating_notice")
                         await outbound.reply_text(generating)
                         await save_message(conversation_id, MessageRole.ASSISTANT, generating, language)
                     try:
+                        await stage("scene_image_generation", default_scene or primary_product.space or "")
                         record = await generate_scene_images(
                             primary_product=primary_product,
                             all_products=all_products,
@@ -1022,16 +1063,20 @@ async def process_customer_text_message(
                         )
                     except asyncio.TimeoutError:
                         timeout_text = SCENE_TIMEOUT_MESSAGES.get(language, SCENE_TIMEOUT_MESSAGES["en"])
+                        await first_response("scene_timeout")
                         if service_mode == "ai_assist":
                             await create_pending_ai_reply(conversation_id, timeout_text, language)
                         else:
                             await outbound.reply_text(timeout_text)
                             await save_message(conversation_id, MessageRole.ASSISTANT, timeout_text, language)
                         await clear_scene_state(conversation_id)
+                        await complete_turn_metric(metric_id, response_kind="scene_timeout", success=False, error_message="Scene generation timed out")
+                        await mark_conversation_failed(conversation_id, "场景图生成超时")
                         return
                     if service_mode == "ai_assist":
                         if record.status != "completed":
                             failed_text = SCENE_FAILED_MESSAGES.get(language, SCENE_FAILED_MESSAGES["en"])
+                            await first_response("scene_failed")
                             await create_pending_ai_reply(conversation_id, failed_text, language)
                             await clear_scene_state(conversation_id)
                             if run_notify_admin and notify_bot and conversation:
@@ -1042,6 +1087,8 @@ async def process_customer_text_message(
                                     notify_bot,
                                     is_followup=(current_status in {ConversationStatus.PENDING_HUMAN, ConversationStatus.HUMAN_HANDLING}),
                                 )
+                            await complete_turn_metric(metric_id, response_kind="scene_failed", success=False, error_message=record.error_message or "Scene generation failed")
+                            await mark_conversation_failed(conversation_id, "场景图生成失败")
                             return
                         async with AsyncSessionLocal() as db:
                             current_record = await db.get(type(record), record.id)
@@ -1052,6 +1099,8 @@ async def process_customer_text_message(
                         scene_delivery["record_id"] = record.id
                         scene_delivery["scene_state_action"] = "clear"
                         preview_text = f"{scene_delivery.get('intro_text', '')}\n\n{scene_delivery.get('preview_line', '')}".strip()
+                        await stage("creating_ai_draft", "场景图待确认")
+                        await first_response("scene_result_draft")
                         await create_pending_ai_delivery(
                             conversation_id=conversation_id,
                             draft_text=preview_text,
@@ -1068,12 +1117,17 @@ async def process_customer_text_message(
                                 notify_bot,
                                 is_followup=(current_status in {ConversationStatus.PENDING_HUMAN, ConversationStatus.HUMAN_HANDLING}),
                             )
+                        await finish("scene_result_draft", "场景图已生成，等待人工确认")
                         return
+                    await first_response("scene_result")
+                    await stage("sending_response", "发送场景图")
                     await send_scene_generation_result(language, record, outbound)
                     await clear_scene_state(conversation_id)
+                    await finish("scene_result", "场景图已发送")
                     return
 
         if scene_req.get("is_scene_request"):
+            await stage("resolving_product_reference")
             resolved_ref = await resolve_recent_product_reference(
                 user_message,
                 all_products,
@@ -1089,9 +1143,11 @@ async def process_customer_text_message(
                     await typing_task
                     if service_mode != "ai_assist":
                         generating = SCENE_GENERATING_MESSAGES.get(language, SCENE_GENERATING_MESSAGES["en"])
+                        await first_response("scene_generating_notice")
                         await outbound.reply_text(generating)
                         await save_message(conversation_id, MessageRole.ASSISTANT, generating, language)
                     try:
+                        await stage("scene_image_generation", scene_req.get("scene_name") or primary_product.space or "")
                         record = await generate_scene_images(
                             primary_product=primary_product,
                             all_products=all_products,
@@ -1103,15 +1159,19 @@ async def process_customer_text_message(
                         )
                     except asyncio.TimeoutError:
                         timeout_text = SCENE_TIMEOUT_MESSAGES.get(language, SCENE_TIMEOUT_MESSAGES["en"])
+                        await first_response("scene_timeout")
                         if service_mode == "ai_assist":
                             await create_pending_ai_reply(conversation_id, timeout_text, language)
                         else:
                             await outbound.reply_text(timeout_text)
                             await save_message(conversation_id, MessageRole.ASSISTANT, timeout_text, language)
+                        await complete_turn_metric(metric_id, response_kind="scene_timeout", success=False, error_message="Scene generation timed out")
+                        await mark_conversation_failed(conversation_id, "场景图生成超时")
                         return
                     if service_mode == "ai_assist":
                         if record.status != "completed":
                             failed_text = SCENE_FAILED_MESSAGES.get(language, SCENE_FAILED_MESSAGES["en"])
+                            await first_response("scene_failed")
                             await create_pending_ai_reply(conversation_id, failed_text, language)
                             if run_notify_admin and notify_bot and conversation:
                                 await notify_admin(
@@ -1121,6 +1181,8 @@ async def process_customer_text_message(
                                     notify_bot,
                                     is_followup=(current_status in {ConversationStatus.PENDING_HUMAN, ConversationStatus.HUMAN_HANDLING}),
                                 )
+                            await complete_turn_metric(metric_id, response_kind="scene_failed", success=False, error_message=record.error_message or "Scene generation failed")
+                            await mark_conversation_failed(conversation_id, "场景图生成失败")
                             return
                         async with AsyncSessionLocal() as db:
                             current_record = await db.get(type(record), record.id)
@@ -1140,6 +1202,8 @@ async def process_customer_text_message(
                             "last_customer_request": user_message,
                         }
                         preview_text = f"{scene_delivery.get('intro_text', '')}\n\n{scene_delivery.get('preview_line', '')}".strip()
+                        await stage("creating_ai_draft", "场景图待确认")
+                        await first_response("scene_result_draft")
                         await create_pending_ai_delivery(
                             conversation_id=conversation_id,
                             draft_text=preview_text,
@@ -1155,7 +1219,10 @@ async def process_customer_text_message(
                                 notify_bot,
                                 is_followup=(current_status in {ConversationStatus.PENDING_HUMAN, ConversationStatus.HUMAN_HANDLING}),
                             )
+                        await finish("scene_result_draft", "场景图已生成，等待人工确认")
                         return
+                    await first_response("scene_result")
+                    await stage("sending_response", "发送场景图")
                     await send_scene_generation_result(language, record, outbound)
                     await save_scene_state(
                         conversation_id=conversation_id,
@@ -1167,11 +1234,14 @@ async def process_customer_text_message(
                         reply_language=language,
                         last_customer_request=user_message,
                     )
+                    await finish("scene_result", "场景图已发送")
                     return
 
+        await stage("checking_product_recommendation")
         is_product_rec = await check_is_product_recommendation(user_message)
         logger.info(f"[Bot {bot_id}] Product recommendation: {is_product_rec}")
         if is_product_rec:
+            await stage("product_matching")
             selected_ids = await ai_select_products(user_message, all_products) if all_products else []
             products_by_id = {p["id"]: p for p in all_products}
             selected_products = [products_by_id[pid] for pid in selected_ids if pid in products_by_id]
@@ -1197,6 +1267,8 @@ async def process_customer_text_message(
                         "last_customer_request": user_message,
                     }
                     preview_text = "\n".join([intro, *delivery.get("preview_lines", []), "", followup]).strip()
+                    await stage("creating_ai_draft", "商品推荐待确认")
+                    await first_response("product_recommendation_draft")
                     await create_pending_ai_delivery(
                         conversation_id=conversation_id,
                         draft_text=preview_text,
@@ -1213,7 +1285,10 @@ async def process_customer_text_message(
                             is_followup=(current_status in {ConversationStatus.PENDING_HUMAN, ConversationStatus.HUMAN_HANDLING}),
                         )
                     logger.info(f"[Bot {bot_id}] Queued {len(selected_products)} product recommendations for human confirmation")
+                    await finish("product_recommendation_draft", "商品推荐已生成，等待人工确认")
                     return
+                await first_response("product_recommendation")
+                await stage("sending_response", "发送商品推荐")
                 await outbound.reply_text(intro)
                 await save_message(conversation_id, MessageRole.ASSISTANT, intro, language)
                 await send_product_recommendations(selected_products, language, outbound)
@@ -1233,7 +1308,9 @@ async def process_customer_text_message(
                     last_customer_request=user_message,
                 )
                 logger.info(f"[Bot {bot_id}] Sent {len(selected_products)} product recommendations")
+                await finish("product_recommendation", "商品推荐已发送")
             else:
+                await first_response("product_not_found")
                 if service_mode == "ai_assist":
                     await create_pending_ai_reply(conversation_id, none_msg, language)
                     if run_notify_admin and notify_bot and conversation:
@@ -1248,10 +1325,13 @@ async def process_customer_text_message(
                     await outbound.reply_text(none_msg)
                     await save_message(conversation_id, MessageRole.ASSISTANT, none_msg, language)
                 await clear_scene_state(conversation_id)
+                await finish("product_not_found", "未找到匹配商品")
             return
 
+        await stage("knowledge_retrieval")
         kb_context = await search_knowledge_for_bot(user_message)
 
+        await stage("file_matching")
         all_files = await get_all_file_entries()
         matched_file_ids = await check_file_request(user_message, all_files) if all_files else []
 
@@ -1260,9 +1340,11 @@ async def process_customer_text_message(
             matched_entries = [f for f in all_files if f["id"] in matched_file_ids]
             file_info = "\n".join(f"- {f['name']}: {f['description']}" for f in matched_entries)
 
+        await stage("loading_chat_history")
         chat_history = await get_chat_history(conversation_id)
 
         logger.info(f"[Bot {bot_id}] Generating AI response...")
+        await stage("llm_generating_answer")
         response_text = await generate_response(
             user_message=user_message,
             context=kb_context,
@@ -1275,6 +1357,8 @@ async def process_customer_text_message(
         stop_typing.set()
         await typing_task
         if service_mode == "ai_assist":
+            await stage("creating_ai_draft", "普通文本待确认")
+            await first_response("text_draft")
             await create_pending_ai_reply(conversation_id, response_text, language)
             if run_notify_admin and notify_bot and conversation:
                 await notify_admin(
@@ -1284,17 +1368,23 @@ async def process_customer_text_message(
                     notify_bot,
                     is_followup=(current_status in {ConversationStatus.PENDING_HUMAN, ConversationStatus.HUMAN_HANDLING}),
                 )
+            await finish("text_draft", "AI 回复已生成，等待人工确认")
             return
 
+        await first_response("text")
+        await stage("sending_response", "发送文本回复")
         await save_message(conversation_id, MessageRole.ASSISTANT, response_text, language)
         await outbound.reply_text(response_text)
 
         if matched_file_ids:
             await send_files_to_user(matched_file_ids, outbound)
+        await finish("text", "回复已发送")
     except Exception as e:
         stop_typing.set()
         await typing_task
         logger.error(f"[Bot {bot_id}] Error processing message: {e}", exc_info=True)
+        await complete_turn_metric(metric_id, response_kind="error", success=False, error_message=str(e))
+        await mark_conversation_failed(conversation_id, str(e))
         fallback = {
             "zh": "抱歉，系统暂时出现问题，请稍后再试或联系人工客服。",
             "en": "Sorry, the system is temporarily unavailable. Please try again later.",
@@ -1346,6 +1436,7 @@ def make_message_handler(bot_id: int):
             await update.message.reply_text("系统错误，请稍后再试。")
             return
 
+        await set_conversation_stage(conversation.id, "detecting_language")
         try:
             detected_language = await detect_language(user_message)
             logger.info(f"[Bot {bot_id}] Detected language: {detected_language}")
@@ -1371,7 +1462,12 @@ def make_message_handler(bot_id: int):
         except Exception as e:
             logger.error(f"[Bot {bot_id}] Failed to update language: {e}", exc_info=True)
 
-        await save_message(conversation.id, MessageRole.USER, user_message, language)
+        user_message_id = await save_message(conversation.id, MessageRole.USER, user_message, language)
+        metric_id = await start_turn_metric(
+            conversation.id,
+            user_message_id=user_message_id,
+            request_text=user_message,
+        )
 
         async with AsyncSessionLocal() as db:
             fresh_conv = await db.get(Conversation, conversation.id)
@@ -1393,6 +1489,7 @@ def make_message_handler(bot_id: int):
             notify_bot=context.bot,
             stop_typing=stop_typing,
             typing_task=typing_task,
+            metric_id=metric_id,
         )
 
     return handle_message

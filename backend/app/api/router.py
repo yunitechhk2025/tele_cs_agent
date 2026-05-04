@@ -22,6 +22,7 @@ from app.models import (
     Conversation, Message, KnowledgeEntry, Contract, ContractTemplate, FileEntry, TelegramBot,
     ConversationStatus, MessageRole, ProductEntry, ProductImage, SceneGenerationImage, SceneGenerationRecord,
     ConversationSceneState, ConversationOutboundEvent, PendingAIReply,
+    ConversationProcessingState, ConversationTurnMetric,
 )
 from app.schemas import (
     LoginRequest, TokenResponse, ConversationSchema, ConversationDetailSchema,
@@ -70,6 +71,10 @@ from app.services.customer_service_service import (
     pause_pending_ai_reply,
     cancel_pending_ai_reply,
     dispatch_due_pending_ai_replies,
+)
+from app.services.conversation_monitoring import (
+    set_conversation_stage,
+    start_turn_metric,
 )
 from app.services import bot_manager
 from app.telegram_bot import (
@@ -253,6 +258,17 @@ async def get_conversation(
         )
         for event in outbound_result.scalars().all()
     ]
+    state_result = await db.execute(
+        select(ConversationProcessingState).where(ConversationProcessingState.conversation_id == conversation_id)
+    )
+    detail.processing_state = state_result.scalar_one_or_none()
+    metric_result = await db.execute(
+        select(ConversationTurnMetric)
+        .where(ConversationTurnMetric.conversation_id == conversation_id)
+        .order_by(desc(ConversationTurnMetric.started_at), desc(ConversationTurnMetric.id))
+        .limit(1)
+    )
+    detail.latest_turn_metric = metric_result.scalar_one_or_none()
     pending_draft = await get_pending_ai_reply(conversation_id)
     detail.ai_draft = _pending_draft_schema(pending_draft)
     return detail
@@ -638,6 +654,7 @@ async def simulator_send_message(
     if not user_message:
         raise HTTPException(status_code=400, detail="Empty message")
 
+    await set_conversation_stage(conversation_id, "detecting_language")
     try:
         detected_language = await detect_language(user_message)
     except Exception:
@@ -654,7 +671,12 @@ async def simulator_send_message(
     conversation.language = language
     await db.commit()
 
-    await tg_save_message(conversation_id, MessageRole.USER, user_message, language)
+    user_message_id = await tg_save_message(conversation_id, MessageRole.USER, user_message, language)
+    metric_id = await start_turn_metric(
+        conversation_id,
+        user_message_id=user_message_id,
+        request_text=user_message,
+    )
 
     fresh = await db.get(Conversation, conversation_id)
     current_status = fresh.status if fresh else conversation.status
@@ -675,6 +697,7 @@ async def simulator_send_message(
         notify_bot=None,
         stop_typing=stop_typing,
         typing_task=typing_task,
+        metric_id=metric_id,
     )
 
     return TelegramSimulatorSendResponse(
