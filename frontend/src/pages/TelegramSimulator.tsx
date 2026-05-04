@@ -142,15 +142,11 @@ function Bubble({ item }: { item: TimelineItem }) {
               alt={item.caption || 'scene'}
               style={{ width: '100%', borderRadius: 10, display: 'block' }}
             />
-            {item.caption && (
+            {item.caption ? (
               <div style={{ marginTop: 6, whiteSpace: 'pre-wrap' }}>
-                {animate ? (
-                  <TypewriterText id={`sim-cap-${item.id}`} text={item.caption} />
-                ) : (
-                  item.caption
-                )}
+                <TypewriterText id={`sim-cap-${item.id}`} text={item.caption} enabled={animate} />
               </div>
-            )}
+            ) : null}
           </div>
         )}
         {item.kind === 'document' && (
@@ -163,7 +159,7 @@ function Bubble({ item }: { item: TimelineItem }) {
             >
               <LinkOutlined /> {item.filename || 'Document'}
             </a>
-            {item.caption && <div style={{ marginTop: 6, whiteSpace: 'pre-wrap' }}>{item.caption}</div>}
+            {item.caption ? <div style={{ marginTop: 6, whiteSpace: 'pre-wrap' }}>{item.caption}</div> : null}
           </div>
         )}
         <div style={{ textAlign: 'right', marginTop: 4 }}>
