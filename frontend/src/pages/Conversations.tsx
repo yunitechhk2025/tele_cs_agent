@@ -129,18 +129,6 @@ function parseServerUtc(value?: string | null) {
   return parsed.isValid() ? parsed : null;
 }
 
-function modeConfig(mode?: CustomerServiceSettings['mode']) {
-  switch (mode) {
-    case 'ai_auto':
-      return { text: 'mode1: ai_auto', color: 'blue' as const, label: '模式1：全AI客服答复' };
-    case 'ai_assist':
-      return { text: 'mode2: ai_assist', color: 'gold' as const, label: '模式2：人工确认AI生成内容后答复' };
-    case 'human_only':
-      return { text: 'mode3: human_only', color: 'volcano' as const, label: '模式3：无AI，完全人工客服答复' };
-    default:
-      return { text: 'mode?: unknown', color: 'default' as const, label: '未知模式' };
-  }
-}
 
 function draftAutoSendLabel(detail: ConversationDetail | null, draftCountdownSeconds: number | null) {
   if (!detail?.ai_draft) return '—';
@@ -1033,7 +1021,6 @@ export default function Conversations() {
   };
 
   const activeTabKey = filter;
-  const currentMode = modeConfig(customerServiceSettings?.mode);
   const timeline = useMemo<ConversationTimelineItem[]>(() => {
     if (!detail) return [];
     const messageItems = (detail.messages || []).map((msg) => ({
@@ -1505,9 +1492,6 @@ export default function Conversations() {
                         ]}
                       />
                     </Tooltip>
-                    <Tag color={currentMode.color} style={{ marginInlineStart: 0 }}>
-                      {currentMode.text}
-                    </Tag>
                   </>
                 ) : (
                   <Tag>…</Tag>

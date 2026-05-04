@@ -442,18 +442,25 @@ async def translate_batch(
 
     target = (req.target_lang or "zh").strip() or "zh"
 
-    async with httpx.AsyncClient(timeout=6.0) as client:
-        async def _one(text: str) -> str:
-            if not text or not text.strip():
-                return text or ""
-            try:
-                translated = await translate_simple(text, target, client=client)
-            except Exception:
-                translated = None
-            return translated or text
+    async def _do() -> list[str]:
+        async with httpx.AsyncClient(timeout=6.0) as client:
+            async def _one(text: str) -> str:
+                if not text or not text.strip():
+                    return text or ""
+                try:
+                    translated = await translate_simple(text, target, client=client)
+                except Exception:
+                    translated = None
+                return translated or text
 
-        translations = await asyncio.gather(*[_one(t) for t in req.texts])
-    return TranslateBatchResponse(translations=list(translations))
+            return list(await asyncio.gather(*[_one(t) for t in req.texts]))
+
+    try:
+        # 整个批次最多 12s，无论 MyMemory / LLM 是否挂掉，前端都不会被吊死
+        translations = await asyncio.wait_for(_do(), timeout=12.0)
+    except asyncio.TimeoutError:
+        translations = list(req.texts)
+    return TranslateBatchResponse(translations=translations)
 
 
 @router.post("/conversations/{conversation_id}/close")

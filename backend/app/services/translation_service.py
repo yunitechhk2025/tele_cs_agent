@@ -115,22 +115,35 @@ async def translate_simple(
     *,
     source_lang: str = "auto",
     client: Optional[httpx.AsyncClient] = None,
+    llm_fallback: bool = True,
+    overall_timeout: float = 8.0,
 ) -> Optional[str]:
-    """对外主入口：先试 MyMemory，失败再回退 LLM；都失败返回 None。"""
+    """对外主入口：先试 MyMemory，失败再回退 LLM；两者都加了硬超时，
+    避免任何一个卡住导致整个 /api/translate 请求挂死。"""
     if not text or not text.strip():
         return text or ""
     if _looks_like(text, target_lang):
         return text  # already in target language
 
-    via_mm = await _translate_via_mymemory(
-        text, target_lang, source_lang=source_lang, client=client
-    )
+    import asyncio
+
+    try:
+        via_mm = await asyncio.wait_for(
+            _translate_via_mymemory(text, target_lang, source_lang=source_lang, client=client),
+            timeout=6.0,
+        )
+    except (asyncio.TimeoutError, Exception) as exc:
+        logger.warning("MyMemory hard timeout/error: %s", exc)
+        via_mm = None
     if via_mm:
         return via_mm
 
+    if not llm_fallback:
+        return None
+
     try:
-        via_llm = await _llm_translate(text, target_lang)
-    except Exception as exc:
-        logger.warning("LLM translate fallback failed: %s", exc)
+        via_llm = await asyncio.wait_for(_llm_translate(text, target_lang), timeout=overall_timeout)
+    except (asyncio.TimeoutError, Exception) as exc:
+        logger.warning("LLM translate fallback failed/timeout: %s", exc)
         via_llm = None
     return via_llm
