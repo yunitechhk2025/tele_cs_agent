@@ -20,9 +20,9 @@ from app.models import (
     ProductEntry, ConversationSceneState,
 )
 from app.services.llm_service import (
-    detect_language, check_is_quote_related, check_file_request, generate_response,
-    check_is_product_recommendation, ai_select_products, check_is_scene_image_confirmation,
-    analyze_scene_image_request, resolve_recent_product_reference,
+    detect_language, check_file_request, generate_response,
+    classify_customer_intent, classify_customer_intent_fast, ai_select_products,
+    resolve_recent_product_reference,
 )
 from app.services.rag_service import search_knowledge_for_bot
 from app.services.scene_service import CUSTOMER_SCENE_TIMEOUT_SECONDS, build_scene_record_response, generate_scene_images
@@ -950,11 +950,53 @@ async def process_customer_text_message(
             await finish("human_only_wait", "已转人工")
             return
 
-        await stage("checking_quote_intent")
-        is_quote = await check_is_quote_related(user_message)
-        logger.info(f"[Bot {bot_id}] Quote related: {is_quote}")
-        if is_quote:
-            await stage("waiting_human", "报价相关咨询已转人工")
+        await stage("loading_scene_state")
+        scene_state = await get_scene_state(conversation_id)
+        recent_scene_product_ids: list[int] = []
+        if scene_state:
+            try:
+                recent_scene_product_ids = [
+                    int(x) for x in json.loads(scene_state.recommended_product_ids_json or "[]")
+                ]
+            except Exception:
+                recent_scene_product_ids = []
+
+        await stage("classifying_intent_fast")
+        has_pending_scene_confirmation = bool(scene_state and scene_state.pending_confirmation)
+        intent = classify_customer_intent_fast(
+            user_message,
+            has_pending_scene_confirmation=has_pending_scene_confirmation,
+        )
+        all_products: list[dict] | None = None
+        if not intent:
+            await stage("loading_products")
+            all_products = await get_products_for_bot()
+            await stage("classifying_intent")
+            intent = await classify_customer_intent(
+                user_message,
+                products=all_products,
+                recent_product_ids=recent_scene_product_ids,
+                has_pending_scene_confirmation=has_pending_scene_confirmation,
+            )
+        intent_name = intent.get("primary_intent") or "general_question"
+        intent_confidence = float(intent.get("confidence") or 0.0)
+        intent_slots = intent.get("slots") if isinstance(intent.get("slots"), dict) else {}
+        secondary_intents = intent.get("secondary_intents") if isinstance(intent.get("secondary_intents"), list) else []
+        logger.info(
+            "[Bot %s] Intent routed: intent=%s confidence=%.2f source=%s reason=%s",
+            bot_id,
+            intent_name,
+            intent_confidence,
+            intent.get("source"),
+            intent.get("reason"),
+        )
+
+        handoff_intent = intent_name in {"quote_handoff", "human_handoff"} and intent_confidence >= 0.7
+        if not handoff_intent and intent.get("needs_human") and intent_confidence >= 0.85:
+            handoff_intent = True
+        if handoff_intent:
+            detail = "报价相关咨询已转人工" if intent_name == "quote_handoff" else "客户要求转人工"
+            await stage("waiting_human", detail)
             async with AsyncSessionLocal() as db:
                 conv = await db.get(Conversation, conversation_id)
                 if conv:
@@ -962,7 +1004,11 @@ async def process_customer_text_message(
                     conv.quote_language = language
                     await db.commit()
 
-            handoff_msg = HANDOFF_MESSAGES.get(language, HANDOFF_MESSAGES["en"])
+            handoff_msg = (
+                HANDOFF_MESSAGES.get(language, HANDOFF_MESSAGES["en"])
+                if intent_name == "quote_handoff"
+                else MANUAL_ONLY_WAIT_MESSAGES.get(language, MANUAL_ONLY_WAIT_MESSAGES["en"])
+            )
             await first_response("handoff")
             await save_message(conversation_id, MessageRole.ASSISTANT, handoff_msg, language)
             stop_typing.set()
@@ -976,31 +1022,34 @@ async def process_customer_text_message(
                     notify_bot,
                     is_followup=(current_status == ConversationStatus.PENDING_HUMAN),
                 )
-            await finish("handoff", "报价相关咨询已转人工")
+            await finish("handoff", detail)
             return
 
         if current_status == ConversationStatus.PENDING_HUMAN and run_notify_admin and notify_bot and conversation:
             await notify_admin(bot_id, conversation, user_message, notify_bot, is_followup=True)
 
-        await stage("loading_scene_state")
-        scene_state = await get_scene_state(conversation_id)
-        recent_scene_product_ids: list[int] = []
-        if scene_state:
-            try:
-                recent_scene_product_ids = [
-                    int(x) for x in json.loads(scene_state.recommended_product_ids_json or "[]")
-                ]
-            except Exception:
-                recent_scene_product_ids = []
-
-        await stage("loading_products")
-        all_products = await get_products_for_bot()
-        await stage("analyzing_scene_request")
-        scene_req = await analyze_scene_image_request(
-            user_message,
-            all_products,
-            recent_product_ids=recent_scene_product_ids,
+        needs_product_context = (
+            bool(scene_state and scene_state.pending_confirmation)
+            or intent_name in {"product_recommendation", "scene_image_request", "scene_image_confirmation"}
+            or "product_recommendation" in secondary_intents
+            or "scene_image_request" in secondary_intents
         )
+        if all_products is None and needs_product_context:
+            await stage("loading_products")
+            all_products = await get_products_for_bot()
+        if all_products is None:
+            all_products = []
+
+        scene_req = {
+            "is_scene_request": (
+                intent_name == "scene_image_request"
+                or "scene_image_request" in secondary_intents
+            ) and intent_confidence >= 0.55,
+            "scene_name": str(intent_slots.get("scene_name") or ""),
+            "style_hint": str(intent_slots.get("style_hint") or ""),
+            "target_product_id": intent_slots.get("target_product_id"),
+            "reason": str(intent.get("reason") or ""),
+        }
 
         if scene_state and scene_state.pending_confirmation:
             local_referenced_id = resolve_recommended_product_reference_locally(
@@ -1016,7 +1065,10 @@ async def process_customer_text_message(
             wants_scene = (
                 scene_req.get("is_scene_request")
                 or referenced_id is not None
-                or await check_is_scene_image_confirmation(user_message)
+                or (
+                    intent_name == "scene_image_confirmation"
+                    and intent_confidence >= 0.55
+                )
             )
             if wants_scene:
                 await stage("resolving_product_reference")
@@ -1238,7 +1290,10 @@ async def process_customer_text_message(
                     return
 
         await stage("checking_product_recommendation")
-        is_product_rec = await check_is_product_recommendation(user_message)
+        is_product_rec = (
+            intent_name == "product_recommendation"
+            or "product_recommendation" in secondary_intents
+        ) and intent_confidence >= 0.55
         logger.info(f"[Bot {bot_id}] Product recommendation: {is_product_rec}")
         if is_product_rec:
             await stage("product_matching")
@@ -1333,7 +1388,20 @@ async def process_customer_text_message(
 
         await stage("file_matching")
         all_files = await get_all_file_entries()
-        matched_file_ids = await check_file_request(user_message, all_files) if all_files else []
+        is_file_request = (
+            intent_name == "file_request"
+            or "file_request" in secondary_intents
+        ) and intent_confidence >= 0.6
+        router_file_ids = intent_slots.get("file_ids")
+        matched_file_ids = [
+            int(x) for x in router_file_ids
+            if isinstance(x, (int, float, str)) and str(x).strip().isdigit()
+        ] if isinstance(router_file_ids, list) else []
+        if matched_file_ids:
+            valid_file_ids = {int(f["id"]) for f in all_files if f.get("id") is not None}
+            matched_file_ids = [fid for fid in matched_file_ids if fid in valid_file_ids]
+        if is_file_request and all_files and not matched_file_ids:
+            matched_file_ids = await check_file_request(user_message, all_files)
 
         file_info = ""
         if matched_file_ids:
