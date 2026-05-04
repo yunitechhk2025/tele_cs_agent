@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { flushSync } from 'react-dom';
 import { Button, Empty, Input, Select, Space, Spin, Typography, message } from 'antd';
 import {
   LinkOutlined,
@@ -11,6 +12,7 @@ import dayjs from 'dayjs';
 import { Link, useSearchParams } from 'react-router-dom';
 import { botApi, conversationApi, simulatorApi } from '../api';
 import type { Message, SimulatorOutgoingEvent, TelegramBot } from '../types';
+import { TypewriterText } from '../components/TypewriterText';
 
 const { Text } = Typography;
 
@@ -94,6 +96,7 @@ function mapMessages(messages: Message[]): TimelineItem[] {
 function Bubble({ item }: { item: TimelineItem }) {
   const isUser = item.role === 'user';
   const isHuman = item.role === 'human_agent';
+  const animate = item.role === 'assistant';
   const bg = isUser ? TG_USER_BUBBLE : isHuman ? TG_HUMAN_BUBBLE : TG_ASSISTANT_BUBBLE;
   const name = isUser ? '模拟用户' : isHuman ? '人工客服' : 'AI 助手';
   const icon = isUser ? <UserOutlined /> : <RobotOutlined />;
@@ -124,7 +127,13 @@ function Bubble({ item }: { item: TimelineItem }) {
           <Text style={{ color: TG_ACCENT, fontSize: 12, fontWeight: 600 }}>{name}</Text>
         </div>
         {item.kind === 'text' && (
-          <div style={{ whiteSpace: 'pre-wrap' }}>{item.content}</div>
+          <div style={{ whiteSpace: 'pre-wrap' }}>
+            {animate ? (
+              <TypewriterText id={`sim-${item.id}`} text={item.content} />
+            ) : (
+              item.content
+            )}
+          </div>
         )}
         {item.kind === 'photo' && (
           <div>
@@ -133,7 +142,15 @@ function Bubble({ item }: { item: TimelineItem }) {
               alt={item.caption || 'scene'}
               style={{ width: '100%', borderRadius: 10, display: 'block' }}
             />
-            {item.caption && <div style={{ marginTop: 6, whiteSpace: 'pre-wrap' }}>{item.caption}</div>}
+            {item.caption && (
+              <div style={{ marginTop: 6, whiteSpace: 'pre-wrap' }}>
+                {animate ? (
+                  <TypewriterText id={`sim-cap-${item.id}`} text={item.caption} />
+                ) : (
+                  item.caption
+                )}
+              </div>
+            )}
           </div>
         )}
         {item.kind === 'document' && (
@@ -304,8 +321,17 @@ export default function TelegramSimulator() {
 
   const timeline = useMemo(() => {
     const textItems = mapMessages(messages);
+    // 用一个集合记录 messages 中已存在的 (role, content) 组合，
+    // 用于过滤掉本地"乐观更新"的占位条目，避免 DB 回填后短暂出现重复。
+    const messageTextKeys = new Set(
+      textItems
+        .filter((m): m is Extract<TimelineItem, { kind: 'text' }> => m.kind === 'text')
+        .map((m) => `${m.role}::${m.content}`),
+    );
     const dedupedEphemeral = ephemeralEvents.filter((item) => {
-      if (item.kind === 'text') return true;
+      if (item.kind === 'text') {
+        return !messageTextKeys.has(`${item.role}::${item.content}`);
+      }
       return !persistedEvents.some(
         (persisted) =>
           persisted.kind === item.kind &&
@@ -340,33 +366,40 @@ export default function TelegramSimulator() {
     if (!conversationId) return;
     const text = inputText.trim();
     if (!text) return;
-    setSending(true);
-    setInputText('');
+    // 乐观更新：立即把用户消息渲染到时间线，等后端处理完后再由 loadMessages 移除占位。
+    const optimisticId = `optimistic-user-${Date.now()}`;
+    const optimisticItem: TimelineItem = {
+      id: optimisticId,
+      kind: 'text',
+      role: 'user',
+      content: text,
+      created_at: new Date().toISOString(),
+    };
+    // 用 flushSync 强制同步刷新到 DOM，确保浏览器在发起网络请求之前
+    // 已经把这个气泡画出来——否则 React 18 会把乐观更新和后续网络
+    // 完成后的状态变化合并成一次提交，用户感知不到立即出现。
+    flushSync(() => {
+      setSending(true);
+      setInputText('');
+      setEphemeralEvents((prev) => [...prev, optimisticItem]);
+    });
     try {
       const { data } = await simulatorApi.sendMessage(conversationId, text);
       await Promise.all([loadMessages(conversationId), loadEvents(conversationId)]);
       const outgoingEvents = (data.outgoing || [])
-        .filter((event) => event.type === 'text' || isMediaEvent(event))
+        .filter(isMediaEvent)
         .map<TimelineItem>((event, index) => ({
           id: event.id || `evt-${Date.now()}-${index}`,
-          ...(event.type === 'text'
-            ? {
-                kind: 'text' as const,
-                role: event.role === 'human_agent' ? 'human_agent' : (event.role as 'user' | 'assistant'),
-                content: event.text || '',
-                created_at: event.created_at,
-              }
-            : {
-                kind: event.type,
-                role: 'assistant' as const,
-                url: event.url || '',
-                caption: event.caption,
-                filename: event.filename,
-                created_at: event.created_at,
-              }),
+          kind: event.type,
+          role: 'assistant' as const,
+          url: event.url || '',
+          caption: event.caption,
+          filename: event.filename,
+          created_at: event.created_at,
         }));
-      setEphemeralEvents((prev) => [...prev, ...outgoingEvents]);
+      setEphemeralEvents((prev) => [...prev.filter((it) => it.id !== optimisticId), ...outgoingEvents]);
     } catch {
+      setEphemeralEvents((prev) => prev.filter((it) => it.id !== optimisticId));
       message.error('发送失败');
     } finally {
       setSending(false);

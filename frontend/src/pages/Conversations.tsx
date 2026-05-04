@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime';
@@ -9,6 +9,7 @@ import {
   Button,
   Card,
   Divider,
+  Dropdown,
   Empty,
   Input,
   List,
@@ -17,6 +18,7 @@ import {
   Select,
   Space,
   Spin,
+  Switch,
   Tabs,
   Tag,
   Tooltip,
@@ -30,13 +32,18 @@ import {
   EditOutlined,
   ExportOutlined,
   FileTextOutlined,
+  LoadingOutlined,
+  MenuFoldOutlined,
+  MenuUnfoldOutlined,
   RobotOutlined,
   SearchOutlined,
   SendOutlined,
   SwapOutlined,
+  TranslationOutlined,
   UserOutlined,
 } from '@ant-design/icons';
-import { conversationApi, contractApi, contractTemplateApi, dashboardApi, settingsApi } from '../api';
+import { conversationApi, contractApi, contractTemplateApi, dashboardApi, settingsApi, translateApi } from '../api';
+import { TypewriterText } from '../components/TypewriterText';
 import type {
   Contract,
   ContractTemplate,
@@ -54,7 +61,7 @@ dayjs.locale('zh-cn');
 
 const { Text, Title } = Typography;
 
-const PANEL_HEIGHT = 'calc(100vh - 248px)';
+const PANEL_HEIGHT = 'calc(100vh - 188px)';
 
 type FilterKey = 'all' | 'active' | 'pending_human' | 'human_handling';
 
@@ -379,7 +386,18 @@ type ConversationTimelineItem =
       event: SimulatorOutgoingEvent;
     };
 
-function OutboundEventBubble({ event }: { event: SimulatorOutgoingEvent }) {
+function OutboundEventBubble({
+  event,
+  textOverride,
+  captionOverride,
+  animateKey,
+}: {
+  event: SimulatorOutgoingEvent;
+  textOverride?: string;
+  captionOverride?: string;
+  /** 提供时使用打字机效果输出文本/图片说明。 */
+  animateKey?: string;
+}) {
   const isHuman = event.role === 'human_agent';
   const bg = isHuman ? '#f6ffed' : '#fff';
   const name = isHuman ? '人工客服' : 'AI 助手';
@@ -418,9 +436,13 @@ function OutboundEventBubble({ event }: { event: SimulatorOutgoingEvent }) {
               src={event.url}
               style={{ maxWidth: '100%', maxHeight: 320, borderRadius: 10, display: 'block', background: '#fafafa' }}
             />
-            {event.caption ? (
+            {(captionOverride ?? event.caption) ? (
               <div style={{ marginTop: 10, whiteSpace: 'pre-wrap', wordBreak: 'break-word', lineHeight: 1.55, fontSize: 14 }}>
-                {event.caption}
+                {animateKey ? (
+                  <TypewriterText id={animateKey} text={(captionOverride ?? event.caption) || ''} />
+                ) : (
+                  captionOverride ?? event.caption
+                )}
               </div>
             ) : null}
           </div>
@@ -430,9 +452,13 @@ function OutboundEventBubble({ event }: { event: SimulatorOutgoingEvent }) {
             {event.filename || 'Document'}
           </a>
         ) : null}
-        {event.type === 'text' && event.text ? (
+        {event.type === 'text' && (textOverride ?? event.text) ? (
           <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', lineHeight: 1.55, fontSize: 14 }}>
-            {event.text}
+            {animateKey ? (
+              <TypewriterText id={animateKey} text={(textOverride ?? event.text) || ''} />
+            ) : (
+              textOverride ?? event.text
+            )}
           </div>
         ) : null}
       </div>
@@ -440,7 +466,15 @@ function OutboundEventBubble({ event }: { event: SimulatorOutgoingEvent }) {
   );
 }
 
-function MessageBubble({ msg }: { msg: Message }) {
+function MessageBubble({
+  msg,
+  contentOverride,
+  animateKey,
+}: {
+  msg: Message;
+  contentOverride?: string;
+  animateKey?: string;
+}) {
   const isUser = msg.role === 'user';
   const isAssistant = msg.role === 'assistant';
 
@@ -495,7 +529,11 @@ function MessageBubble({ msg }: { msg: Message }) {
           </Text>
         </Space>
         <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 14, lineHeight: 1.55 }}>
-          {msg.content}
+          {animateKey ? (
+            <TypewriterText id={animateKey} text={(contentOverride ?? msg.content) || ''} />
+          ) : (
+            contentOverride ?? msg.content
+          )}
         </div>
         {msg.attachment_file_id != null && msg.attachment_file_id !== undefined && (
           <div style={{ marginTop: 10 }}>
@@ -548,6 +586,89 @@ export default function Conversations() {
   const [genTemplateId, setGenTemplateId] = useState<number | null>(null);
   const [genOutputLang, setGenOutputLang] = useState<string>('en');
   const [templatesLoading, setTemplatesLoading] = useState(false);
+
+  const [translationEnabled, setTranslationEnabled] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('conv:translation') === '1';
+    } catch {
+      return false;
+    }
+  });
+  const [translations, setTranslations] = useState<Record<string, string>>({});
+  const [translating, setTranslating] = useState(false);
+  const translateInflight = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('conv:translation', translationEnabled ? '1' : '0');
+    } catch {
+      /* ignore */
+    }
+  }, [translationEnabled]);
+
+  const [listWidth, setListWidth] = useState<number>(() => {
+    try {
+      const v = parseInt(localStorage.getItem('conv:listWidth') || '', 10);
+      if (Number.isFinite(v) && v >= 220 && v <= 720) return v;
+    } catch {
+      /* ignore */
+    }
+    return 350;
+  });
+  const [listCollapsed, setListCollapsed] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('conv:listCollapsed') === '1';
+    } catch {
+      return false;
+    }
+  });
+  const resizingRef = useRef(false);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('conv:listWidth', String(listWidth));
+    } catch {
+      /* ignore */
+    }
+  }, [listWidth]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('conv:listCollapsed', listCollapsed ? '1' : '0');
+    } catch {
+      /* ignore */
+    }
+  }, [listCollapsed]);
+
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      if (!resizingRef.current) return;
+      const box = containerRef.current?.getBoundingClientRect();
+      if (!box) return;
+      const next = Math.min(720, Math.max(220, e.clientX - box.left));
+      setListWidth(next);
+    };
+    const onUp = () => {
+      if (!resizingRef.current) return;
+      resizingRef.current = false;
+      document.body.style.userSelect = '';
+      document.body.style.cursor = '';
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    return () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+  }, []);
+
+  const startResizing = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    resizingRef.current = true;
+    document.body.style.userSelect = 'none';
+    document.body.style.cursor = 'col-resize';
+  }, []);
 
   const [sendModalOpen, setSendModalOpen] = useState(false);
   const [convContracts, setConvContracts] = useState<Contract[]>([]);
@@ -909,6 +1030,107 @@ export default function Conversations() {
     });
   }, [detail]);
 
+  const timelineKeyAndText = useCallback((item: ConversationTimelineItem): { key: string; text: string } | null => {
+    if (item.kind === 'message') {
+      const text = item.message.content;
+      if (!text || !text.trim()) return null;
+      return { key: `msg-${item.message.id}`, text };
+    }
+    const ev = item.event;
+    const text = ev.type === 'text' ? ev.text || '' : ev.type === 'photo' ? ev.caption || '' : '';
+    if (!text.trim()) return null;
+    return { key: `evt-${ev.id}`, text };
+  }, []);
+
+  const isLikelyChinese = useCallback((text: string) => {
+    if (!text) return true;
+    const matches = text.match(/[\u4e00-\u9fff]/g);
+    return !!matches && matches.length / text.length > 0.5;
+  }, []);
+
+  useEffect(() => {
+    if (!translationEnabled) return undefined;
+    const missing: { key: string; text: string }[] = [];
+    for (const item of timeline) {
+      const src = timelineKeyAndText(item);
+      if (!src) continue;
+      if (translations[src.key] != null) continue;
+      if (translateInflight.current.has(src.key)) continue;
+      if (isLikelyChinese(src.text)) continue;
+      missing.push(src);
+    }
+    if (missing.length === 0) return undefined;
+
+    let cancelled = false;
+    missing.forEach((m) => translateInflight.current.add(m.key));
+    setTranslating(true);
+    translateApi
+      .batch(missing.map((m) => m.text), 'zh')
+      .then((res) => {
+        if (cancelled) return;
+        setTranslations((prev) => {
+          const next = { ...prev };
+          missing.forEach((m, i) => {
+            next[m.key] = res.data.translations?.[i] ?? m.text;
+          });
+          return next;
+        });
+      })
+      .catch(() => {
+        /* keep original on failure */
+      })
+      .finally(() => {
+        missing.forEach((m) => translateInflight.current.delete(m.key));
+        setTranslating(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [timeline, translationEnabled, translations, timelineKeyAndText, isLikelyChinese]);
+
+  const renderTimelineItem = useCallback(
+    (item: ConversationTimelineItem, useTranslation: boolean) => {
+      const src = useTranslation ? timelineKeyAndText(item) : null;
+      const tr = src ? translations[src.key] : undefined;
+      // 译文未到位时（非中文且尚未缓存），在左侧气泡里显示占位提示。
+      const pending =
+        useTranslation && !!src && tr == null && !isLikelyChinese(src.text)
+          ? 'AI 实时翻译中…'
+          : undefined;
+      const override = tr ?? pending;
+      // 译文已成功生成时，对译文气泡使用打字机效果（占位文本不动画）。
+      const translationAnimKey =
+        useTranslation && tr != null ? `tr-${item.id}` : undefined;
+      if (item.kind === 'message') {
+        // 原文气泡：仅 AI 回复使用打字机效果。
+        const originalAnimKey =
+          !useTranslation && item.message.role === 'assistant' ? `msg-${item.id}` : undefined;
+        return (
+          <MessageBubble
+            key={item.id}
+            msg={item.message}
+            contentOverride={useTranslation ? override : undefined}
+            animateKey={translationAnimKey ?? originalAnimKey}
+          />
+        );
+      }
+      const ev = item.event;
+      const originalAnimKey =
+        !useTranslation && ev.role !== 'human_agent' ? `evt-${item.id}` : undefined;
+      return (
+        <OutboundEventBubble
+          key={item.id}
+          event={ev}
+          textOverride={useTranslation && ev.type === 'text' ? override : undefined}
+          captionOverride={useTranslation && ev.type === 'photo' ? override : undefined}
+          animateKey={translationAnimKey ?? originalAnimKey}
+        />
+      );
+    },
+    [timelineKeyAndText, translations, isLikelyChinese],
+  );
+
   const pendingCount = stats?.pending_human ?? 0;
   const renderStatItem = (
     label: string,
@@ -934,10 +1156,10 @@ export default function Conversations() {
         if (options?.onClick) (e.currentTarget as HTMLDivElement).style.background = 'transparent';
       }}
     >
-      <span style={{ fontSize: 12, color: '#8c8c8c', lineHeight: 1.2 }}>{label}</span>
+      <span style={{ fontSize: 11, color: '#8c8c8c', lineHeight: 1.1 }}>{label}</span>
       <span
         style={{
-          fontSize: 20,
+          fontSize: 16,
           fontWeight: 600,
           lineHeight: 1.2,
           color: options?.emphasizeWhen ? options.color : undefined,
@@ -949,14 +1171,14 @@ export default function Conversations() {
   );
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
       <div
         style={{
           display: 'flex',
           alignItems: 'center',
           flexWrap: 'wrap',
-          gap: 28,
-          padding: '12px 20px',
+          gap: 22,
+          padding: '6px 16px',
           background: '#fff',
           borderRadius: 12,
           boxShadow: '0 2px 12px rgba(0,0,0,0.04)',
@@ -981,6 +1203,7 @@ export default function Conversations() {
         </Text>
       </div>
       <div
+        ref={containerRef}
         style={{
           display: 'flex',
           gap: 0,
@@ -992,31 +1215,41 @@ export default function Conversations() {
           overflow: 'hidden',
           boxShadow: '0 2px 12px rgba(0,0,0,0.06)',
           border: '1px solid #f0f0f0',
+          position: 'relative',
         }}
       >
       {/* 左侧：对话列表（minHeight:0 让内部列表在任意会话下都能出现滚动条） */}
       <div
         style={{
-          width: 350,
+          width: listCollapsed ? 0 : listWidth,
           flexShrink: 0,
           alignSelf: 'stretch',
           minHeight: 0,
-          display: 'flex',
+          display: listCollapsed ? 'none' : 'flex',
           flexDirection: 'column',
           overflow: 'hidden',
           borderRight: '1px solid #f0f0f0',
           background: '#fafafa',
         }}
       >
-        <div style={{ padding: 16, paddingBottom: 8 }}>
+        <div style={{ padding: '12px 12px 6px', display: 'flex', alignItems: 'center', gap: 6 }}>
           <Input
             allowClear
-            size="large"
+            size="small"
             placeholder="搜索对话…"
             prefix={<SearchOutlined style={{ color: '#bfbfbf' }} />}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
+            style={{ flex: 1 }}
           />
+          <Tooltip title="收起对话列表" placement="left">
+            <Button
+              size="small"
+              type="text"
+              icon={<MenuFoldOutlined />}
+              onClick={() => setListCollapsed(true)}
+            />
+          </Tooltip>
         </div>
         <Tabs
           size="small"
@@ -1130,6 +1363,59 @@ export default function Conversations() {
         </div>
       </div>
 
+      {/* 拖动分隔条 */}
+      {!listCollapsed && (
+        <div
+          onMouseDown={startResizing}
+          title="拖动调整宽度"
+          style={{
+            width: 6,
+            cursor: 'col-resize',
+            background: 'transparent',
+            position: 'relative',
+            flexShrink: 0,
+            zIndex: 2,
+          }}
+          onMouseEnter={(e) => {
+            (e.currentTarget as HTMLDivElement).style.background = 'rgba(24,144,255,0.12)';
+          }}
+          onMouseLeave={(e) => {
+            (e.currentTarget as HTMLDivElement).style.background = 'transparent';
+          }}
+        >
+          <div
+            style={{
+              position: 'absolute',
+              top: 0,
+              bottom: 0,
+              left: 2,
+              width: 2,
+              background: '#f0f0f0',
+            }}
+          />
+        </div>
+      )}
+
+      {/* 折叠时显示的展开浮动按钮 */}
+      {listCollapsed && (
+        <Tooltip title="展开对话列表" placement="right">
+          <Button
+            size="small"
+            type="default"
+            icon={<MenuUnfoldOutlined />}
+            onClick={() => setListCollapsed(false)}
+            style={{
+              position: 'absolute',
+              top: 10,
+              left: 8,
+              zIndex: 5,
+              boxShadow: '0 2px 6px rgba(0,0,0,0.08)',
+              background: '#fff',
+            }}
+          />
+        </Tooltip>
+      )}
+
       {/* 右侧：对话详情 */}
       <div
         style={{
@@ -1202,23 +1488,30 @@ export default function Conversations() {
                     </Button>
                   </>
                 ) : null}
-                <Tooltip title="选择模板后根据聊天记录生成合同">
-                  <Button
-                    icon={<FileTextOutlined />}
+                <Tooltip title="点击生成合同；右侧箭头可发送已生成合同">
+                  <Dropdown.Button
                     loading={contractLoading}
                     onClick={() => void openGenerateModal()}
+                    menu={{
+                      items: [
+                        {
+                          key: 'generate',
+                          icon: <FileTextOutlined />,
+                          label: '生成合同',
+                          onClick: () => void openGenerateModal(),
+                        },
+                        {
+                          key: 'send',
+                          icon: <ExportOutlined />,
+                          label: '发送合同给客户',
+                          disabled: detail?.status === 'closed',
+                          onClick: () => void openSendContractModal(),
+                        },
+                      ],
+                    }}
                   >
-                    生成合同
-                  </Button>
-                </Tooltip>
-                <Tooltip title="将已生成的合同以消息形式发送给客户">
-                  <Button
-                    icon={<ExportOutlined />}
-                    onClick={() => void openSendContractModal()}
-                    disabled={detail?.status === 'closed'}
-                  >
-                    发送合同
-                  </Button>
+                    <FileTextOutlined /> 合同
+                  </Dropdown.Button>
                 </Tooltip>
                 <Button
                   danger
@@ -1229,6 +1522,22 @@ export default function Conversations() {
                 >
                   关闭对话
                 </Button>
+                <Tooltip title="开启后左侧实时同步翻译为简体中文">
+                  <Space size={6} align="center">
+                    <TranslationOutlined style={{ color: translationEnabled ? '#1677ff' : '#bfbfbf' }} />
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      实时翻译
+                    </Text>
+                    <Switch
+                      size="small"
+                      checked={translationEnabled}
+                      onChange={setTranslationEnabled}
+                    />
+                    {translationEnabled && translating ? (
+                      <LoadingOutlined style={{ color: '#1677ff', fontSize: 12 }} />
+                    ) : null}
+                  </Space>
+                </Tooltip>
               </Space>
             </div>
 
@@ -1299,34 +1608,121 @@ export default function Conversations() {
               </div>
             ) : null}
 
-            <div
-              style={{
-                flex: 1,
-                minHeight: 0,
-                overflowY: 'scroll',
-                overflowX: 'hidden',
-                overscrollBehavior: 'contain',
-                scrollbarGutter: 'stable',
-                WebkitOverflowScrolling: 'touch',
-                padding: '20px 20px 20px 24px',
-                background: 'linear-gradient(180deg, #f0f2f5 0%, #f5f5f5 100%)',
-                position: 'relative',
-              }}
-            >
-              <Spin spinning={detailLoading}>
-                {detail && !detailLoading && timeline.length === 0 ? (
-                  <Empty description="暂无消息" />
-                ) : timeline.length ? (
-                  timeline.map((item) =>
-                    item.kind === 'message' ? (
-                      <MessageBubble key={item.id} msg={item.message} />
-                    ) : (
-                      <OutboundEventBubble key={item.id} event={item.event} />
-                    ),
-                  )
-                ) : null}
-              </Spin>
-            </div>
+            {translationEnabled ? (
+              <div
+                style={{
+                  flex: 1,
+                  display: 'flex',
+                  minHeight: 0,
+                  overflow: 'hidden',
+                }}
+              >
+                <div
+                  style={{
+                    flex: 1,
+                    minWidth: 0,
+                    minHeight: 0,
+                    overflowY: 'scroll',
+                    overflowX: 'hidden',
+                    overscrollBehavior: 'contain',
+                    scrollbarGutter: 'stable',
+                    background: 'linear-gradient(180deg, #f0f7ff 0%, #f8fbff 100%)',
+                    borderRight: '1px solid #e8e8e8',
+                    position: 'relative',
+                  }}
+                >
+                  <div
+                    style={{
+                      position: 'sticky',
+                      top: 0,
+                      zIndex: 2,
+                      padding: '8px 16px',
+                      background: '#e6f4ff',
+                      borderBottom: '1px solid #bae0ff',
+                      fontSize: 12,
+                      color: '#1677ff',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 6,
+                    }}
+                  >
+                    <TranslationOutlined /> 简体中文译文
+                    {translating ? (
+                      <LoadingOutlined style={{ marginLeft: 'auto' }} />
+                    ) : null}
+                  </div>
+                  <div style={{ padding: '20px 20px 20px 24px' }}>
+                    <Spin spinning={detailLoading}>
+                      {detail && !detailLoading && timeline.length === 0 ? (
+                        <Empty description="暂无消息" />
+                      ) : timeline.length ? (
+                        timeline.map((item) => renderTimelineItem(item, true))
+                      ) : null}
+                    </Spin>
+                  </div>
+                </div>
+                <div
+                  style={{
+                    flex: 1,
+                    minWidth: 0,
+                    minHeight: 0,
+                    overflowY: 'scroll',
+                    overflowX: 'hidden',
+                    overscrollBehavior: 'contain',
+                    scrollbarGutter: 'stable',
+                    background: 'linear-gradient(180deg, #f0f2f5 0%, #f5f5f5 100%)',
+                    position: 'relative',
+                  }}
+                >
+                  <div
+                    style={{
+                      position: 'sticky',
+                      top: 0,
+                      zIndex: 2,
+                      padding: '8px 16px',
+                      background: '#fafafa',
+                      borderBottom: '1px solid #e8e8e8',
+                      fontSize: 12,
+                      color: '#666',
+                    }}
+                  >
+                    原始消息
+                  </div>
+                  <div style={{ padding: '20px 20px 20px 24px' }}>
+                    <Spin spinning={detailLoading}>
+                      {detail && !detailLoading && timeline.length === 0 ? (
+                        <Empty description="暂无消息" />
+                      ) : timeline.length ? (
+                        timeline.map((item) => renderTimelineItem(item, false))
+                      ) : null}
+                    </Spin>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div
+                style={{
+                  flex: 1,
+                  minHeight: 0,
+                  overflowY: 'scroll',
+                  overflowX: 'hidden',
+                  overscrollBehavior: 'contain',
+                  scrollbarGutter: 'stable',
+                  WebkitOverflowScrolling: 'touch',
+                  padding: '20px 20px 20px 24px',
+                  background: 'linear-gradient(180deg, #f0f2f5 0%, #f5f5f5 100%)',
+                  position: 'relative',
+                }}
+              >
+                <Spin spinning={detailLoading}>
+                  {detail && !detailLoading && timeline.length === 0 ? (
+                    <Empty description="暂无消息" />
+                  ) : timeline.length ? (
+                    timeline.map((item) => renderTimelineItem(item, false))
+                  ) : null}
+                </Spin>
+              </div>
+            )}
 
             <div
               style={{

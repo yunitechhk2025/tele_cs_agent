@@ -164,6 +164,15 @@ class DashboardStats(BaseModel):
     recent_conversations: list[ConversationSchema]
 
 
+class TranslateBatchRequest(BaseModel):
+    texts: list[str]
+    target_lang: str = "zh"
+
+
+class TranslateBatchResponse(BaseModel):
+    translations: list[str]
+
+
 class TelegramSimulatorSessionCreate(BaseModel):
     bot_id: int
     language: Optional[str] = "zh"

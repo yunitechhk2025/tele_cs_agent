@@ -36,6 +36,14 @@ export const dashboardApi = {
   getStats: () => api.get<DashboardStats>('/dashboard/stats'),
 };
 
+export const translateApi = {
+  batch: (texts: string[], targetLang = 'zh') =>
+    api.post<{ translations: string[] }>('/translate', {
+      texts,
+      target_lang: targetLang,
+    }),
+};
+
 export const conversationApi = {
   list: (params?: { status?: string; search?: string }) =>
     api.get<Conversation[]>('/conversations', { params }),

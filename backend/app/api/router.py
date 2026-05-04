@@ -37,6 +37,7 @@ from app.schemas import (
     ContractTemplateSchema,
     ProductEntrySchema, ProductEntryListSchema, ProductImageSchema, SceneGenerationRequest, SceneGenerationRecordSchema,
     SceneLibraryItemSchema, SceneGeneratorRequest, SceneBatchActionRequest, SceneBatchActionResponse,
+    TranslateBatchRequest, TranslateBatchResponse,
 )
 from app.services.rag_service import (
     add_to_knowledge_base, remove_from_knowledge_base,
@@ -422,6 +423,30 @@ async def send_contract_to_customer(
     await db.commit()
 
     return {"status": "sent", "contract_id": contract.id}
+
+
+@router.post("/translate", response_model=TranslateBatchResponse)
+async def translate_batch(
+    req: TranslateBatchRequest,
+    _: str = Depends(get_current_user),
+):
+    """Translate a batch of texts to the target language. Used for the
+    real-time translation panel in the conversation view. Empty inputs are
+    returned as-is. Failed translations fall back to the original text so
+    the client can still display something."""
+    target = (req.target_lang or "zh").strip() or "zh"
+
+    async def _one(text: str) -> str:
+        if not text or not text.strip():
+            return text or ""
+        try:
+            translated = await translate_text(text, target)
+        except Exception:
+            translated = None
+        return translated or text
+
+    translations = await asyncio.gather(*[_one(t) for t in req.texts])
+    return TranslateBatchResponse(translations=list(translations))
 
 
 @router.post("/conversations/{conversation_id}/close")
