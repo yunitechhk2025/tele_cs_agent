@@ -174,9 +174,13 @@ INTENT_VALUES = {
     "quote_handoff",
     "human_handoff",
     "product_recommendation",
+    "product_intro",
     "scene_image_request",
     "scene_image_confirmation",
     "file_request",
+    "warranty_policy",
+    "return_exchange_policy",
+    "shipping_delivery",
     "complaint",
     "out_of_scope",
 }
@@ -275,6 +279,36 @@ def _fast_intent_from_rules(text: str, *, has_pending_scene_confirmation: bool =
         return _intent_result("scene_image_request", 0.9, source="rules", reason="scene image keyword")
 
     if has_any([
+        r"保修", r"质保", r"售后", r"保固", r"维修", r"坏了怎么办",
+        r"\bwarranty\b", r"\bguarantee\b", r"after[- ]?sales", r"repair policy",
+        r"保証", r"アフターサービス", r"수리", r"보증", r"garantía", r"garantie",
+    ]):
+        return _intent_result("warranty_policy", 0.88, source="rules", reason="warranty or after-sales keyword")
+
+    if has_any([
+        r"退换货", r"退货", r"换货", r"退款", r"退换", r"退订",
+        r"\breturn\b", r"\bexchange\b", r"\brefund\b", r"return policy", r"exchange policy",
+        r"返品", r"交換", r"返金", r"반품", r"교환", r"환불",
+        r"devolución", r"cambio", r"reembolso", r"retour", r"échange", r"remboursement",
+    ]):
+        return _intent_result("return_exchange_policy", 0.9, source="rules", reason="return or exchange policy keyword")
+
+    if has_any([
+        r"物流", r"配送", r"发货", r"送货", r"运费", r"多久到", r"什么时候到",
+        r"\bshipping\b", r"\bdelivery\b", r"freight", r"lead time", r"when.*arrive",
+        r"配送", r"送料", r"配達", r"배송", r"운송", r"envío", r"entrega", r"livraison",
+    ]):
+        return _intent_result("shipping_delivery", 0.86, source="rules", reason="shipping or delivery keyword")
+
+    if has_any([
+        r"介绍", r"讲讲", r"说明一下", r"特点", r"材质", r"尺寸", r"规格", r"参数", r"适合",
+        r"tell me about", r"introduce", r"details", r"features", r"material", r"size", r"dimensions", r"specs",
+        r"紹介", r"特徴", r"素材", r"サイズ", r"상세", r"특징", r"소재", r"크기",
+        r"presentar", r"características", r"material", r"tamaño", r"présenter", r"caractéristiques", r"dimensions",
+    ]):
+        return _intent_result("product_intro", 0.82, source="rules", reason="product introduction or detail keyword")
+
+    if has_any([
         r"推荐", r"有哪些", r"有什么.*(产品|沙发|床|桌|椅|柜)", r"产品图", r"款式", r"看看.*(产品|沙发|床|桌|椅|柜)",
         r"recommend", r"show me.*(product|sofa|bed|table|chair|cabinet)", r"what.*(products|sofas|chairs).*have",
     ]):
@@ -344,9 +378,13 @@ async def classify_customer_intent(
         "- quote_handoff: pricing, quotation, purchase cost, quote request. High-risk; usually needs human.\n"
         "- human_handoff: customer explicitly asks for a human/support representative.\n"
         "- product_recommendation: browsing products, asking what products are available, product photos, recommendations.\n"
+        "- product_intro: asks about a specific product's features, material, size, specs, usage, or introduction.\n"
         "- scene_image_request: wants a product shown in a styled scene/render/showroom/effect image.\n"
         "- scene_image_confirmation: confirms a previous offer to generate scene images.\n"
         "- file_request: asks for catalog, brochure, manual, PDF, document, spec sheet, or file.\n"
+        "- warranty_policy: asks about warranty, after-sales service, repair, guarantee, or quality coverage.\n"
+        "- return_exchange_policy: asks about returns, exchanges, refunds, cancellation, or related policy.\n"
+        "- shipping_delivery: asks about shipping, delivery, freight, lead time, or arrival time.\n"
         "- complaint: angry, dissatisfied, says the answer is useless, or threatens complaint.\n"
         "- out_of_scope: unrelated or unsupported request.\n"
         "- general_question: normal FAQ, product/policy question, or anything else.\n\n"

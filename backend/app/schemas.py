@@ -60,6 +60,11 @@ class ConversationTurnMetricSchema(BaseModel):
     conversation_id: int
     user_message_id: Optional[int] = None
     request_text: str = ""
+    primary_intent: str = ""
+    secondary_intents_json: str = "[]"
+    intent_confidence: Optional[float] = None
+    intent_source: str = ""
+    intent_reason: str = ""
     response_kind: str = ""
     started_at: datetime
     first_response_at: Optional[datetime] = None

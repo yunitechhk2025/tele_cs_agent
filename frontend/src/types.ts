@@ -44,6 +44,11 @@ export interface ConversationTurnMetric {
   conversation_id: number;
   user_message_id: number | null;
   request_text: string;
+  primary_intent: string;
+  secondary_intents_json: string;
+  intent_confidence: number | null;
+  intent_source: string;
+  intent_reason: string;
   response_kind: string;
   started_at: string;
   first_response_at: string | null;

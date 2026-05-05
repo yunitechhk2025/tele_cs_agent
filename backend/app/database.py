@@ -60,6 +60,26 @@ def _run_migrations(conn):
             "scene_generation_records", "deferred_delivery",
             "ALTER TABLE scene_generation_records ADD COLUMN deferred_delivery BOOLEAN DEFAULT FALSE"
         ),
+        (
+            "conversation_turn_metrics", "primary_intent",
+            "ALTER TABLE conversation_turn_metrics ADD COLUMN primary_intent VARCHAR(100) DEFAULT ''"
+        ),
+        (
+            "conversation_turn_metrics", "secondary_intents_json",
+            "ALTER TABLE conversation_turn_metrics ADD COLUMN secondary_intents_json TEXT DEFAULT '[]'"
+        ),
+        (
+            "conversation_turn_metrics", "intent_confidence",
+            "ALTER TABLE conversation_turn_metrics ADD COLUMN intent_confidence FLOAT"
+        ),
+        (
+            "conversation_turn_metrics", "intent_source",
+            "ALTER TABLE conversation_turn_metrics ADD COLUMN intent_source VARCHAR(50) DEFAULT ''"
+        ),
+        (
+            "conversation_turn_metrics", "intent_reason",
+            "ALTER TABLE conversation_turn_metrics ADD COLUMN intent_reason TEXT DEFAULT ''"
+        ),
     ]
     for table, column, ddl in migrations:
         result = conn.execute(text(

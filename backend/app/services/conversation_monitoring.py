@@ -1,4 +1,5 @@
 import logging
+import json
 from datetime import datetime
 
 from sqlalchemy import select
@@ -128,6 +129,32 @@ async def mark_turn_first_response(metric_id: int | None, response_kind: str) ->
             await db.commit()
     except Exception:
         logger.exception("Failed to mark first response metric_id=%s", metric_id)
+
+
+async def mark_turn_intent(
+    metric_id: int | None,
+    *,
+    primary_intent: str,
+    confidence: float | None,
+    source: str = "",
+    secondary_intents: list[str] | None = None,
+    reason: str = "",
+) -> None:
+    if not metric_id:
+        return
+    try:
+        async with AsyncSessionLocal() as db:
+            metric = await db.get(ConversationTurnMetric, metric_id)
+            if not metric:
+                return
+            metric.primary_intent = (primary_intent or "")[:100]
+            metric.secondary_intents_json = json.dumps(secondary_intents or [], ensure_ascii=False)
+            metric.intent_confidence = confidence
+            metric.intent_source = (source or "")[:50]
+            metric.intent_reason = (reason or "")[:2000]
+            await db.commit()
+    except Exception:
+        logger.exception("Failed to mark turn intent metric_id=%s", metric_id)
 
 
 async def complete_turn_metric(

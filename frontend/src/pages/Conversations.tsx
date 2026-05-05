@@ -100,6 +100,45 @@ function statusConfig(status: Conversation['status']) {
   }
 }
 
+const INTENT_LABELS: Record<string, string> = {
+  general_question: '普通问题',
+  quote_handoff: '询价',
+  human_handoff: '转人工',
+  product_recommendation: '商品推荐',
+  product_intro: '商品介绍',
+  scene_image_request: '场景图生成',
+  scene_image_confirmation: '确认生成场景图',
+  file_request: '资料文件',
+  warranty_policy: '保修',
+  return_exchange_policy: '退换货政策',
+  shipping_delivery: '物流配送',
+  complaint: '投诉/负面情绪',
+  out_of_scope: '超出范围',
+};
+
+function intentConfig(metric?: ConversationDetail['latest_turn_metric'] | null) {
+  const intent = metric?.primary_intent || '';
+  const confidence = metric?.intent_confidence;
+  if (!intent) {
+    return { label: '意图待识别', color: 'default', tooltip: '还没有可展示的意图识别结果' };
+  }
+  if (typeof confidence === 'number' && confidence < 0.45) {
+    return {
+      label: '待澄清',
+      color: 'orange',
+      tooltip: `原始意图：${INTENT_LABELS[intent] || intent}，置信度 ${Math.round(confidence * 100)}%`,
+    };
+  }
+  const percent = typeof confidence === 'number' ? ` ${Math.round(confidence * 100)}%` : '';
+  const source = metric?.intent_source ? `来源：${metric.intent_source}` : '来源：未记录';
+  const reason = metric?.intent_reason ? `；${metric.intent_reason}` : '';
+  return {
+    label: `${INTENT_LABELS[intent] || intent}${percent}`,
+    color: intent === 'complaint' ? 'red' : intent === 'quote_handoff' ? 'volcano' : 'geekblue',
+    tooltip: `${source}${reason}`,
+  };
+}
+
 function languageLabel(code: string) {
   const upper = code?.toUpperCase() || '—';
   try {
@@ -1197,6 +1236,11 @@ export default function Conversations() {
                     <Tooltip title={detail.processing_state?.stage_detail || '当前处理阶段'}>
                       <Tag color={processingStageColor(detail)}>
                         {detail.processing_state?.stage_label || '空闲'}
+                      </Tag>
+                    </Tooltip>
+                    <Tooltip title={intentConfig(detail.latest_turn_metric).tooltip}>
+                      <Tag color={intentConfig(detail.latest_turn_metric).color}>
+                        意图 {intentConfig(detail.latest_turn_metric).label}
                       </Tag>
                     </Tooltip>
                     <Tooltip title="最近一轮：首个可展示响应耗时 / 完整响应耗时">

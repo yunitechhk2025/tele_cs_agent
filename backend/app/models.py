@@ -1,6 +1,6 @@
 import enum
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Text, DateTime, BigInteger, Boolean, ForeignKey, Enum as SQLEnum, LargeBinary
+from sqlalchemy import Column, Integer, String, Text, DateTime, BigInteger, Boolean, ForeignKey, Enum as SQLEnum, LargeBinary, Float
 from sqlalchemy.orm import relationship
 from app.database import Base
 
@@ -213,6 +213,11 @@ class ConversationTurnMetric(Base):
     conversation_id = Column(Integer, ForeignKey("conversations.id"), index=True, nullable=False)
     user_message_id = Column(Integer, ForeignKey("messages.id"), nullable=True, index=True)
     request_text = Column(Text, default="")
+    primary_intent = Column(String(100), default="")
+    secondary_intents_json = Column(Text, default="[]")
+    intent_confidence = Column(Float, nullable=True)
+    intent_source = Column(String(50), default="")
+    intent_reason = Column(Text, default="")
     response_kind = Column(String(100), default="")
     started_at = Column(DateTime, default=datetime.utcnow)
     first_response_at = Column(DateTime, nullable=True)

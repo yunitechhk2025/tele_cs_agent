@@ -36,6 +36,7 @@ from app.services.conversation_monitoring import (
     mark_conversation_completed,
     mark_conversation_failed,
     mark_turn_first_response,
+    mark_turn_intent,
     set_conversation_stage,
     start_turn_metric,
 )
@@ -1056,6 +1057,22 @@ async def process_customer_text_message(
         )
 
         all_intents = {intent_name, *secondary_intents}
+        if "complaint" in all_intents and intent_name != "complaint":
+            intent_name = "complaint"
+        elif "quote_handoff" in all_intents and intent_name != "quote_handoff":
+            intent_name = "quote_handoff"
+        elif "human_handoff" in all_intents and intent_name != "human_handoff":
+            intent_name = "human_handoff"
+
+        await mark_turn_intent(
+            metric_id,
+            primary_intent=intent_name,
+            confidence=intent_confidence,
+            source=str(intent.get("source") or ""),
+            secondary_intents=secondary_intents,
+            reason=str(intent.get("reason") or ""),
+        )
+
         if "complaint" in all_intents and intent_confidence >= 0.65:
             await stage("waiting_human", "客户情绪或投诉已转人工")
             async with AsyncSessionLocal() as db:
@@ -1081,11 +1098,6 @@ async def process_customer_text_message(
                 )
             await finish("complaint_handoff", "客户情绪或投诉已转人工")
             return
-
-        if "quote_handoff" in all_intents and intent_name != "quote_handoff":
-            intent_name = "quote_handoff"
-        elif "human_handoff" in all_intents and intent_name != "human_handoff":
-            intent_name = "human_handoff"
 
         handoff_intent = intent_name in {"quote_handoff", "human_handoff"} and intent_confidence >= 0.7
         if not handoff_intent and intent.get("needs_human") and intent_confidence >= 0.85:
