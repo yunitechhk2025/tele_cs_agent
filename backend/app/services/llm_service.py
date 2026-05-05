@@ -237,12 +237,28 @@ def _fast_intent_from_rules(text: str, *, has_pending_scene_confirmation: bool =
     if has_any([
         r"转人工", r"人工客服", r"真人", r"人工服务", r"接人工",
         r"\bhuman\b", r"\bagent\b", r"real person", r"representative", r"manual support",
+        r"担当者", r"オペレーター", r"人工 상담", r"상담원", r"사람 상담",
+        r"agente humano", r"persona real", r"representante", r"agent humain", r"conseiller", r"personne réelle",
     ]):
         return _intent_result("human_handoff", 0.98, source="rules", needs_human=True, reason="explicit human handoff request")
 
     if has_any([
+        r"没用", r"太差", r"差劲", r"垃圾", r"投诉", r"生气", r"不满意", r"糟糕", r"骗人",
+        r"useless", r"terrible", r"awful", r"angry", r"complaint", r"not satisfied", r"bad service",
+        r"役に立たない", r"ひどい", r"最悪", r"不満", r"苦情",
+        r"쓸모없", r"최악", r"불만", r"화가", r"항의",
+        r"inútil", r"terrible", r"enojado", r"queja", r"no estoy satisfecho",
+        r"inutile", r"mécontent", r"plainte", r"pas satisfait", r"service mauvais",
+    ]):
+        return _intent_result("complaint", 0.9, source="rules", needs_human=True, reason="complaint or negative sentiment keyword")
+
+    if has_any([
         r"报价", r"价格", r"价钱", r"多少钱", r"费用", r"预算", r"询价", r"采购",
         r"\bprice\b", r"\bpricing\b", r"\bquote\b", r"quotation", r"\bcost\b", r"how much",
+        r"価格", r"値段", r"見積", r"いくら", r"費用",
+        r"가격", r"견적", r"얼마", r"비용",
+        r"precio", r"cotización", r"presupuesto", r"cuánto cuesta", r"coste",
+        r"prix", r"devis", r"combien", r"coût", r"budget",
     ]):
         return _intent_result("quote_handoff", 0.95, source="rules", needs_human=True, reason="pricing or quotation keyword")
 
@@ -334,6 +350,10 @@ async def classify_customer_intent(
         "- complaint: angry, dissatisfied, says the answer is useless, or threatens complaint.\n"
         "- out_of_scope: unrelated or unsupported request.\n"
         "- general_question: normal FAQ, product/policy question, or anything else.\n\n"
+        "Edge handling hints:\n"
+        "- Put pricing/human_handoff/complaint in secondary_intents if they appear together with another request.\n"
+        "- Use a useful clarification_question when the request is vague or under-specified.\n"
+        "- If the user asks several things at once, make the most urgent/high-risk item primary and put the rest in secondary_intents.\n\n"
         "Return ONLY compact JSON with this shape:\n"
         '{"primary_intent":"general_question","secondary_intents":[],"confidence":0.0,'
         '"slots":{"target_product_id":null,"scene_name":"","style_hint":"","file_ids":[]},'

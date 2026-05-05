@@ -74,6 +74,51 @@ MANUAL_ONLY_WAIT_MESSAGES = {
     "fr": "J'ai transmis votre message à un agent. Veuillez patienter pour la réponse.",
 }
 
+COMPLAINT_HANDOFF_MESSAGES = {
+    "zh": "抱歉给您带来了不好的体验。我已为您转接人工客服，请稍候，我们会优先处理您的问题。",
+    "en": "Sorry for the poor experience. I've connected you to a human agent so we can handle this with priority.",
+    "ja": "ご不便をおかけして申し訳ありません。担当者にお繋ぎしますので、少々お待ちください。",
+    "ko": "불편을 드려 죄송합니다. 상담원에게 연결해 우선적으로 도와드리겠습니다.",
+    "es": "Lamento la mala experiencia. Le he conectado con un agente para atenderlo con prioridad.",
+    "fr": "Désolé pour cette mauvaise expérience. Je vous mets en relation avec un agent pour traiter cela en priorité.",
+}
+
+OUT_OF_SCOPE_MESSAGES = {
+    "zh": "抱歉，这个问题超出了当前家具客服的支持范围。您可以继续咨询产品、材质、搭配、资料或售后相关问题。",
+    "en": "Sorry, that is outside the current furniture support scope. I can help with products, materials, styling, documents, or after-sales questions.",
+    "ja": "申し訳ありませんが、その内容は現在の家具カスタマーサポートの対応範囲外です。商品、素材、コーディネート、資料、アフターサービスについては引き続きお手伝いできます。",
+    "ko": "죄송하지만 해당 내용은 현재 가구 고객지원 범위를 벗어납니다. 제품, 소재, 스타일링, 자료 또는 사후 지원 관련 문의는 계속 도와드릴 수 있습니다.",
+    "es": "Lo siento, eso está fuera del alcance actual del soporte de muebles. Puedo ayudarle con productos, materiales, combinaciones, documentos o servicio posventa.",
+    "fr": "Désolé, cette demande dépasse le périmètre actuel du support mobilier. Je peux vous aider pour les produits, matériaux, mises en scène, documents ou questions après-vente.",
+}
+
+CLARIFICATION_MESSAGES = {
+    "zh": "我还需要一点更具体的信息，才能准确处理。您可以补充一下想了解的产品、空间、风格或具体问题吗？",
+    "en": "I need a bit more detail to handle this accurately. Could you share the product, room, style, or specific question?",
+    "ja": "正確に対応するため、もう少し詳しい情報が必要です。商品、空間、スタイル、または具体的なご質問を教えていただけますか？",
+    "ko": "정확히 처리하려면 조금 더 구체적인 정보가 필요합니다. 제품, 공간, 스타일 또는 구체적인 질문을 알려주시겠어요?",
+    "es": "Necesito un poco más de detalle para atenderlo con precisión. ¿Podría indicar el producto, espacio, estilo o pregunta específica?",
+    "fr": "J'ai besoin d'un peu plus de précisions pour traiter votre demande correctement. Pouvez-vous indiquer le produit, l'espace, le style ou la question précise ?",
+}
+
+TOPIC_SWITCH_PREFIX = {
+    "zh": "好的，我们先处理您新的问题。\n\n",
+    "en": "Sure, let's handle your new question first.\n\n",
+    "ja": "承知しました。まず新しいご質問に対応します。\n\n",
+    "ko": "좋습니다. 먼저 새 문의를 처리하겠습니다.\n\n",
+    "es": "De acuerdo, primero atendamos su nueva consulta.\n\n",
+    "fr": "D'accord, traitons d'abord votre nouvelle question.\n\n",
+}
+
+REPEATED_QUESTION_PREFIX = {
+    "zh": "我换一种方式说明：\n\n",
+    "en": "Let me explain this another way:\n\n",
+    "ja": "別の言い方でご説明します：\n\n",
+    "ko": "다른 방식으로 설명드리겠습니다:\n\n",
+    "es": "Permítame explicarlo de otra manera:\n\n",
+    "fr": "Permettez-moi de l'expliquer autrement :\n\n",
+}
+
 PRODUCT_REC_INTRO = {
     "zh": "为您推荐以下产品：",
     "en": "Here are some products that may interest you:",
@@ -401,6 +446,25 @@ async def get_chat_history(conversation_id: int) -> list[dict]:
             {"role": "user" if m.role == MessageRole.USER else "assistant", "content": m.content}
             for m in reversed(messages)
         ]
+
+
+def _normalize_repeat_text(text: str) -> str:
+    normalized = (text or "").strip().lower()
+    normalized = re.sub(r"[\s\W_]+", "", normalized, flags=re.UNICODE)
+    return normalized
+
+
+def _is_repeated_user_question(chat_history: list[dict], user_message: str) -> bool:
+    normalized = _normalize_repeat_text(user_message)
+    if len(normalized) < 2:
+        return False
+    count = 0
+    for msg in chat_history:
+        if msg.get("role") != "user":
+            continue
+        if _normalize_repeat_text(msg.get("content") or "") == normalized:
+            count += 1
+    return count >= 2
 
 
 async def get_all_file_entries() -> list[dict]:
@@ -991,6 +1055,38 @@ async def process_customer_text_message(
             intent.get("reason"),
         )
 
+        all_intents = {intent_name, *secondary_intents}
+        if "complaint" in all_intents and intent_confidence >= 0.65:
+            await stage("waiting_human", "客户情绪或投诉已转人工")
+            async with AsyncSessionLocal() as db:
+                conv = await db.get(Conversation, conversation_id)
+                if conv:
+                    conv.status = ConversationStatus.PENDING_HUMAN
+                    conv.quote_language = language
+                    await db.commit()
+
+            complaint_msg = COMPLAINT_HANDOFF_MESSAGES.get(language, COMPLAINT_HANDOFF_MESSAGES["en"])
+            await first_response("complaint_handoff")
+            await save_message(conversation_id, MessageRole.ASSISTANT, complaint_msg, language)
+            stop_typing.set()
+            await typing_task
+            await outbound.reply_text(complaint_msg)
+            if run_notify_admin and notify_bot and conversation:
+                await notify_admin(
+                    bot_id,
+                    conversation,
+                    user_message,
+                    notify_bot,
+                    is_followup=(current_status == ConversationStatus.PENDING_HUMAN),
+                )
+            await finish("complaint_handoff", "客户情绪或投诉已转人工")
+            return
+
+        if "quote_handoff" in all_intents and intent_name != "quote_handoff":
+            intent_name = "quote_handoff"
+        elif "human_handoff" in all_intents and intent_name != "human_handoff":
+            intent_name = "human_handoff"
+
         handoff_intent = intent_name in {"quote_handoff", "human_handoff"} and intent_confidence >= 0.7
         if not handoff_intent and intent.get("needs_human") and intent_confidence >= 0.85:
             handoff_intent = True
@@ -1027,6 +1123,39 @@ async def process_customer_text_message(
 
         if current_status == ConversationStatus.PENDING_HUMAN and run_notify_admin and notify_bot and conversation:
             await notify_admin(bot_id, conversation, user_message, notify_bot, is_followup=True)
+
+        if intent_name == "out_of_scope" and intent_confidence >= 0.7:
+            out_of_scope_msg = OUT_OF_SCOPE_MESSAGES.get(language, OUT_OF_SCOPE_MESSAGES["en"])
+            await first_response("out_of_scope")
+            await save_message(conversation_id, MessageRole.ASSISTANT, out_of_scope_msg, language)
+            stop_typing.set()
+            await typing_task
+            await outbound.reply_text(out_of_scope_msg)
+            await finish("out_of_scope", "超出支持范围")
+            return
+
+        clarification_question = str(intent.get("clarification_question") or "").strip()
+        if intent_confidence < 0.45:
+            clarification_msg = clarification_question or CLARIFICATION_MESSAGES.get(language, CLARIFICATION_MESSAGES["en"])
+            await first_response("clarification")
+            await save_message(conversation_id, MessageRole.ASSISTANT, clarification_msg, language)
+            stop_typing.set()
+            await typing_task
+            await outbound.reply_text(clarification_msg)
+            await finish("clarification", "低置信度追问澄清")
+            return
+
+        topic_switch = (
+            bool(scene_state and scene_state.pending_confirmation)
+            and intent_name not in {"scene_image_request", "scene_image_confirmation"}
+            and "scene_image_request" not in secondary_intents
+            and intent_confidence >= 0.55
+        )
+        if topic_switch:
+            await clear_scene_state(conversation_id)
+            if scene_state:
+                scene_state.pending_confirmation = False
+                scene_state.last_customer_request = ""
 
         needs_product_context = (
             bool(scene_state and scene_state.pending_confirmation)
@@ -1410,6 +1539,18 @@ async def process_customer_text_message(
 
         await stage("loading_chat_history")
         chat_history = await get_chat_history(conversation_id)
+        repeated_question = _is_repeated_user_question(chat_history, user_message)
+
+        edge_notes: list[str] = []
+        if repeated_question:
+            edge_notes.append("The customer has repeated the same question. Explain it in a different way, be more concrete, and offer another path or human support if needed.")
+        if topic_switch:
+            edge_notes.append("The customer switched topics from a pending scene-image confirmation. Acknowledge the new topic briefly before answering it.")
+        if secondary_intents:
+            edge_notes.append("The customer may have asked multiple things. Address the primary intent first and briefly say what can be handled next.")
+        if edge_notes:
+            notes = "\n".join(f"- {note}" for note in edge_notes)
+            file_info = f"{file_info}\n\nConversation handling notes:\n{notes}".strip()
 
         logger.info(f"[Bot {bot_id}] Generating AI response...")
         await stage("llm_generating_answer")
@@ -1420,6 +1561,13 @@ async def process_customer_text_message(
             chat_history=chat_history,
             file_info=file_info,
         )
+        prefix = ""
+        if topic_switch:
+            prefix += TOPIC_SWITCH_PREFIX.get(language, TOPIC_SWITCH_PREFIX["en"])
+        if repeated_question:
+            prefix += REPEATED_QUESTION_PREFIX.get(language, REPEATED_QUESTION_PREFIX["en"])
+        if prefix:
+            response_text = f"{prefix}{response_text}"
         logger.info(f"[Bot {bot_id}] AI response generated ({len(response_text)} chars)")
 
         stop_typing.set()
