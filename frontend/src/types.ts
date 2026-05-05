@@ -27,6 +27,7 @@ export interface ConversationDetail extends Conversation {
   outbound_events: SimulatorOutgoingEvent[];
   processing_state?: ConversationProcessingState | null;
   latest_turn_metric?: ConversationTurnMetric | null;
+  latest_turn_steps?: ConversationTurnStepMetric[];
   ai_draft?: PendingAIReply | null;
 }
 
@@ -55,6 +56,22 @@ export interface ConversationTurnMetric {
   completed_at: string | null;
   first_response_ms: number | null;
   total_ms: number | null;
+  success: boolean;
+  error_message: string;
+  created_at: string;
+}
+
+export interface ConversationTurnStepMetric {
+  id: number;
+  turn_metric_id: number;
+  conversation_id: number;
+  step_index: number;
+  stage_key: string;
+  stage_label: string;
+  stage_detail: string;
+  started_at: string;
+  completed_at: string | null;
+  duration_ms: number | null;
   success: boolean;
   error_message: string;
   created_at: string;

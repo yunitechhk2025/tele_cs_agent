@@ -22,7 +22,7 @@ from app.models import (
     Conversation, Message, KnowledgeEntry, Contract, ContractTemplate, FileEntry, TelegramBot,
     ConversationStatus, MessageRole, ProductEntry, ProductImage, SceneGenerationImage, SceneGenerationRecord,
     ConversationSceneState, ConversationOutboundEvent, PendingAIReply,
-    ConversationProcessingState, ConversationTurnMetric,
+    ConversationProcessingState, ConversationTurnMetric, ConversationTurnStepMetric,
 )
 from app.schemas import (
     LoginRequest, TokenResponse, ConversationSchema, ConversationDetailSchema,
@@ -30,7 +30,7 @@ from app.schemas import (
     ContractSchema, ContractUpdateRequest, ContractGenerateRequest, SendContractRequest, DashboardStats,
     TelegramSimulatorSessionCreate, TelegramSimulatorSessionResponse,
     TelegramSimulatorSendRequest, TelegramSimulatorSendResponse, TelegramSimulatorEventSchema,
-    PendingAIReplySchema, SendPendingAIReplyRequest,
+    PendingAIReplySchema, SendPendingAIReplyRequest, ConversationTurnStepMetricSchema,
     CustomerServiceSettingsSchema, CustomerServiceSettingsUpdateRequest,
     LLMSettingsSchema, LLMSettingsUpdateRequest,
     FileEntrySchema, FileEntryUpdateRequest,
@@ -73,6 +73,8 @@ from app.services.customer_service_service import (
     dispatch_due_pending_ai_replies,
 )
 from app.services.conversation_monitoring import (
+    attach_turn_user_message,
+    record_turn_step,
     set_conversation_stage,
     start_turn_metric,
 )
@@ -269,6 +271,16 @@ async def get_conversation(
         .limit(1)
     )
     detail.latest_turn_metric = metric_result.scalar_one_or_none()
+    if detail.latest_turn_metric:
+        step_result = await db.execute(
+            select(ConversationTurnStepMetric)
+            .where(ConversationTurnStepMetric.turn_metric_id == detail.latest_turn_metric.id)
+            .order_by(ConversationTurnStepMetric.step_index, ConversationTurnStepMetric.id)
+        )
+        detail.latest_turn_steps = [
+            ConversationTurnStepMetricSchema.model_validate(step)
+            for step in step_result.scalars().all()
+        ]
     pending_draft = await get_pending_ai_reply(conversation_id)
     detail.ai_draft = _pending_draft_schema(pending_draft)
     return detail
@@ -654,6 +666,12 @@ async def simulator_send_message(
     if not user_message:
         raise HTTPException(status_code=400, detail="Empty message")
 
+    metric_id = await start_turn_metric(
+        conversation_id,
+        user_message_id=None,
+        request_text=user_message,
+    )
+    language_step_started_at = datetime.utcnow()
     await set_conversation_stage(conversation_id, "detecting_language")
     try:
         detected_language = await detect_language(user_message)
@@ -672,10 +690,13 @@ async def simulator_send_message(
     await db.commit()
 
     user_message_id = await tg_save_message(conversation_id, MessageRole.USER, user_message, language)
-    metric_id = await start_turn_metric(
+    await attach_turn_user_message(metric_id, user_message_id)
+    await record_turn_step(
+        metric_id,
         conversation_id,
-        user_message_id=user_message_id,
-        request_text=user_message,
+        step_index=0,
+        stage_key="detecting_language",
+        started_at=language_step_started_at,
     )
 
     fresh = await db.get(Conversation, conversation_id)

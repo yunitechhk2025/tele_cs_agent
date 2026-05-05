@@ -79,11 +79,31 @@ class ConversationTurnMetricSchema(BaseModel):
         from_attributes = True
 
 
+class ConversationTurnStepMetricSchema(BaseModel):
+    id: int
+    turn_metric_id: int
+    conversation_id: int
+    step_index: int = 0
+    stage_key: str = ""
+    stage_label: str = ""
+    stage_detail: str = ""
+    started_at: datetime
+    completed_at: Optional[datetime] = None
+    duration_ms: Optional[int] = None
+    success: bool = True
+    error_message: str = ""
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
 class ConversationDetailSchema(ConversationSchema):
     messages: list[MessageSchema] = []
     outbound_events: list["TelegramSimulatorEventSchema"] = []
     processing_state: Optional[ConversationProcessingStateSchema] = None
     latest_turn_metric: Optional[ConversationTurnMetricSchema] = None
+    latest_turn_steps: list[ConversationTurnStepMetricSchema] = []
     ai_draft: Optional["PendingAIReplySchema"] = None
 
 

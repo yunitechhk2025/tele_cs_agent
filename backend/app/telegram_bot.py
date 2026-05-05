@@ -32,11 +32,13 @@ from app.services.customer_service_service import (
     create_pending_ai_reply,
 )
 from app.services.conversation_monitoring import (
+    attach_turn_user_message,
     complete_turn_metric,
     mark_conversation_completed,
     mark_conversation_failed,
     mark_turn_first_response,
     mark_turn_intent,
+    record_turn_step,
     set_conversation_stage,
     start_turn_metric,
 )
@@ -961,9 +963,48 @@ async def process_customer_text_message(
     metric_id: int | None = None,
 ):
     first_response_marked = False
+    current_step_key: str | None = None
+    current_step_detail = ""
+    current_step_started_at: datetime | None = None
+    step_index = 0
 
     async def stage(stage_key: str, detail: str = "") -> None:
+        nonlocal current_step_key, current_step_detail, current_step_started_at, step_index
+        now = datetime.utcnow()
+        if current_step_key and current_step_started_at:
+            await record_turn_step(
+                metric_id,
+                conversation_id,
+                step_index=step_index,
+                stage_key=current_step_key,
+                stage_detail=current_step_detail,
+                started_at=current_step_started_at,
+                completed_at=now,
+                success=True,
+            )
+        step_index += 1
+        current_step_key = stage_key
+        current_step_detail = detail
+        current_step_started_at = now
         await set_conversation_stage(conversation_id, stage_key, stage_detail=detail)
+
+    async def close_current_step(success: bool = True, error_message: str = "") -> None:
+        nonlocal current_step_key, current_step_detail, current_step_started_at
+        if not current_step_key or not current_step_started_at:
+            return
+        await record_turn_step(
+            metric_id,
+            conversation_id,
+            step_index=step_index,
+            stage_key=current_step_key,
+            stage_detail=current_step_detail,
+            started_at=current_step_started_at,
+            success=success,
+            error_message=error_message,
+        )
+        current_step_key = None
+        current_step_detail = ""
+        current_step_started_at = None
 
     async def first_response(response_kind: str) -> None:
         nonlocal first_response_marked
@@ -973,6 +1014,7 @@ async def process_customer_text_message(
         await mark_turn_first_response(metric_id, response_kind)
 
     async def finish(response_kind: str, detail: str = "") -> None:
+        await close_current_step(success=True)
         await complete_turn_metric(metric_id, response_kind=response_kind, success=True)
         await mark_conversation_completed(conversation_id, detail)
 
@@ -1263,6 +1305,7 @@ async def process_customer_text_message(
                             await outbound.reply_text(timeout_text)
                             await save_message(conversation_id, MessageRole.ASSISTANT, timeout_text, language)
                         await clear_scene_state(conversation_id)
+                        await close_current_step(success=False, error_message="Scene generation timed out")
                         await complete_turn_metric(metric_id, response_kind="scene_timeout", success=False, error_message="Scene generation timed out")
                         await mark_conversation_failed(conversation_id, "场景图生成超时")
                         return
@@ -1280,6 +1323,7 @@ async def process_customer_text_message(
                                     notify_bot,
                                     is_followup=(current_status in {ConversationStatus.PENDING_HUMAN, ConversationStatus.HUMAN_HANDLING}),
                                 )
+                            await close_current_step(success=False, error_message=record.error_message or "Scene generation failed")
                             await complete_turn_metric(metric_id, response_kind="scene_failed", success=False, error_message=record.error_message or "Scene generation failed")
                             await mark_conversation_failed(conversation_id, "场景图生成失败")
                             return
@@ -1358,6 +1402,7 @@ async def process_customer_text_message(
                         else:
                             await outbound.reply_text(timeout_text)
                             await save_message(conversation_id, MessageRole.ASSISTANT, timeout_text, language)
+                        await close_current_step(success=False, error_message="Scene generation timed out")
                         await complete_turn_metric(metric_id, response_kind="scene_timeout", success=False, error_message="Scene generation timed out")
                         await mark_conversation_failed(conversation_id, "场景图生成超时")
                         return
@@ -1374,6 +1419,7 @@ async def process_customer_text_message(
                                     notify_bot,
                                     is_followup=(current_status in {ConversationStatus.PENDING_HUMAN, ConversationStatus.HUMAN_HANDLING}),
                                 )
+                            await close_current_step(success=False, error_message=record.error_message or "Scene generation failed")
                             await complete_turn_metric(metric_id, response_kind="scene_failed", success=False, error_message=record.error_message or "Scene generation failed")
                             await mark_conversation_failed(conversation_id, "场景图生成失败")
                             return
@@ -1611,6 +1657,7 @@ async def process_customer_text_message(
         stop_typing.set()
         await typing_task
         logger.error(f"[Bot {bot_id}] Error processing message: {e}", exc_info=True)
+        await close_current_step(success=False, error_message=str(e))
         await complete_turn_metric(metric_id, response_kind="error", success=False, error_message=str(e))
         await mark_conversation_failed(conversation_id, str(e))
         fallback = {
@@ -1664,6 +1711,12 @@ def make_message_handler(bot_id: int):
             await update.message.reply_text("系统错误，请稍后再试。")
             return
 
+        metric_id = await start_turn_metric(
+            conversation.id,
+            user_message_id=None,
+            request_text=user_message,
+        )
+        language_step_started_at = datetime.utcnow()
         await set_conversation_stage(conversation.id, "detecting_language")
         try:
             detected_language = await detect_language(user_message)
@@ -1691,10 +1744,13 @@ def make_message_handler(bot_id: int):
             logger.error(f"[Bot {bot_id}] Failed to update language: {e}", exc_info=True)
 
         user_message_id = await save_message(conversation.id, MessageRole.USER, user_message, language)
-        metric_id = await start_turn_metric(
+        await attach_turn_user_message(metric_id, user_message_id)
+        await record_turn_step(
+            metric_id,
             conversation.id,
-            user_message_id=user_message_id,
-            request_text=user_message,
+            step_index=0,
+            stage_key="detecting_language",
+            started_at=language_step_started_at,
         )
 
         async with AsyncSessionLocal() as db:

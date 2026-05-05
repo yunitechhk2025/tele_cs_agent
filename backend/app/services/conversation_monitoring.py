@@ -5,7 +5,7 @@ from datetime import datetime
 from sqlalchemy import select
 
 from app.database import AsyncSessionLocal
-from app.models import ConversationProcessingState, ConversationTurnMetric
+from app.models import ConversationProcessingState, ConversationTurnMetric, ConversationTurnStepMetric
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +112,64 @@ async def start_turn_metric(
     except Exception:
         logger.exception("Failed to start turn metric conversation_id=%s", conversation_id)
         return None
+
+
+async def attach_turn_user_message(metric_id: int | None, user_message_id: int | None) -> None:
+    if not metric_id or not user_message_id:
+        return
+    try:
+        async with AsyncSessionLocal() as db:
+            metric = await db.get(ConversationTurnMetric, metric_id)
+            if not metric:
+                return
+            metric.user_message_id = user_message_id
+            await db.commit()
+    except Exception:
+        logger.exception("Failed to attach user message metric_id=%s", metric_id)
+
+
+async def record_turn_step(
+    metric_id: int | None,
+    conversation_id: int,
+    *,
+    step_index: int,
+    stage_key: str,
+    stage_detail: str = "",
+    started_at: datetime,
+    completed_at: datetime | None = None,
+    success: bool = True,
+    error_message: str = "",
+) -> None:
+    if not metric_id:
+        return
+    completed = completed_at or datetime.utcnow()
+    duration_ms = int((completed - started_at).total_seconds() * 1000)
+    try:
+        async with AsyncSessionLocal() as db:
+            db.add(ConversationTurnStepMetric(
+                turn_metric_id=metric_id,
+                conversation_id=conversation_id,
+                step_index=step_index,
+                stage_key=stage_key,
+                stage_label=_label(stage_key),
+                stage_detail=(stage_detail or "")[:1000],
+                started_at=started_at,
+                completed_at=completed,
+                duration_ms=max(0, duration_ms),
+                success=success,
+                error_message=(error_message or "")[:2000],
+            ))
+            await db.commit()
+        logger.info(
+            "Turn step metric conversation_id=%s metric_id=%s step=%s duration_ms=%s success=%s",
+            conversation_id,
+            metric_id,
+            stage_key,
+            max(0, duration_ms),
+            success,
+        )
+    except Exception:
+        logger.exception("Failed to record turn step metric_id=%s stage=%s", metric_id, stage_key)
 
 
 async def mark_turn_first_response(metric_id: int | None, response_kind: str) -> None:

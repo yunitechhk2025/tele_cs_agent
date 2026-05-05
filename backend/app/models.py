@@ -232,6 +232,27 @@ class ConversationTurnMetric(Base):
     user_message = relationship("Message")
 
 
+class ConversationTurnStepMetric(Base):
+    __tablename__ = "conversation_turn_step_metrics"
+
+    id = Column(Integer, primary_key=True, index=True)
+    turn_metric_id = Column(Integer, ForeignKey("conversation_turn_metrics.id"), index=True, nullable=False)
+    conversation_id = Column(Integer, ForeignKey("conversations.id"), index=True, nullable=False)
+    step_index = Column(Integer, default=0)
+    stage_key = Column(String(100), default="")
+    stage_label = Column(String(200), default="")
+    stage_detail = Column(Text, default="")
+    started_at = Column(DateTime, default=datetime.utcnow)
+    completed_at = Column(DateTime, nullable=True)
+    duration_ms = Column(Integer, nullable=True)
+    success = Column(Boolean, default=True)
+    error_message = Column(Text, default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    turn_metric = relationship("ConversationTurnMetric")
+    conversation = relationship("Conversation")
+
+
 class PendingAIReply(Base):
     __tablename__ = "pending_ai_replies"
 
