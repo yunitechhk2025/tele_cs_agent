@@ -105,6 +105,14 @@ def _build_embedding_client(cfg: dict[str, str]) -> AsyncOpenAI:
     return AsyncOpenAI(api_key=api_key, base_url=base_url)
 
 
+def _resolve_embedding_model(base_url: str, model: str | None) -> str:
+    configured = (model or "").strip()
+    base = (base_url or "").lower()
+    if "dashscope" in base and configured in {"", "text-embedding-3-small", "text-embedding-3-large", "text-embedding-ada-002"}:
+        return "text-embedding-v4"
+    return configured or "text-embedding-3-small"
+
+
 async def _chat_completion(messages: list[dict], max_tokens: int | None = None, temperature: float | None = None) -> str:
     """Unified chat completion that routes to the correct provider."""
     cfg = await get_llm_settings()
@@ -151,7 +159,8 @@ async def get_embedding(text: str) -> list[float]:
     """Get embedding vector for text using the configured embedding provider."""
     cfg = await get_llm_settings()
     client = _build_embedding_client(cfg)
-    model = cfg.get("embedding_model", "text-embedding-3-small")
+    base_url = cfg.get("embedding_base_url") or cfg.get("llm_base_url", "https://api.openai.com/v1")
+    model = _resolve_embedding_model(base_url, cfg.get("embedding_model"))
     try:
         response = await client.embeddings.create(model=model, input=text)
         return response.data[0].embedding
@@ -978,9 +987,10 @@ async def test_embedding_connection(api_key: str, base_url: str, model: str) -> 
     """Test the embedding model connection. Returns {ok, message}."""
     try:
         client = AsyncOpenAI(api_key=api_key, base_url=base_url)
-        resp = await client.embeddings.create(model=model, input="hello")
+        resolved_model = _resolve_embedding_model(base_url, model)
+        resp = await client.embeddings.create(model=resolved_model, input="hello")
         dim = len(resp.data[0].embedding)
-        return {"ok": True, "message": f"Embedding OK — dimension: {dim}"}
+        return {"ok": True, "message": f"Embedding OK — model: {resolved_model}, dimension: {dim}"}
     except Exception as e:
         return {"ok": False, "message": str(e)}
 

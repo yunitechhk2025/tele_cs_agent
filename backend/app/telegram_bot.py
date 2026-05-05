@@ -1572,6 +1572,7 @@ async def process_customer_text_message(
 
         await stage("knowledge_retrieval")
         kb_context = await search_knowledge_for_bot(user_message)
+        current_step_detail = f"retrieved_chars={len(kb_context or '')}"
 
         await stage("file_matching")
         all_files = await get_all_file_entries()
