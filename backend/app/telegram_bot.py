@@ -20,9 +20,9 @@ from app.models import (
     ProductEntry, ConversationSceneState,
 )
 from app.services.llm_service import (
-    detect_language, check_is_quote_related, check_file_request, generate_response,
-    check_is_product_recommendation, ai_select_products, check_is_scene_image_confirmation,
-    analyze_scene_image_request, resolve_recent_product_reference,
+    detect_language, check_file_request, generate_response,
+    classify_customer_intent, classify_customer_intent_fast, ai_select_products,
+    resolve_recent_product_reference,
 )
 from app.services.rag_service import search_knowledge_for_bot
 from app.services.scene_service import CUSTOMER_SCENE_TIMEOUT_SECONDS, build_scene_record_response, generate_scene_images
@@ -30,6 +30,17 @@ from app.services.customer_service_service import (
     create_pending_ai_delivery,
     get_customer_service_settings,
     create_pending_ai_reply,
+)
+from app.services.conversation_monitoring import (
+    attach_turn_user_message,
+    complete_turn_metric,
+    mark_conversation_completed,
+    mark_conversation_failed,
+    mark_turn_first_response,
+    mark_turn_intent,
+    record_turn_step,
+    set_conversation_stage,
+    start_turn_metric,
 )
 
 logger = logging.getLogger(__name__)
@@ -64,6 +75,51 @@ MANUAL_ONLY_WAIT_MESSAGES = {
     "ko": "상담원에게 연결했습니다. 답변을 잠시 기다려 주세요.",
     "es": "He transferido su mensaje a un agente humano. Por favor espere la respuesta.",
     "fr": "J'ai transmis votre message à un agent. Veuillez patienter pour la réponse.",
+}
+
+COMPLAINT_HANDOFF_MESSAGES = {
+    "zh": "抱歉给您带来了不好的体验。我已为您转接人工客服，请稍候，我们会优先处理您的问题。",
+    "en": "Sorry for the poor experience. I've connected you to a human agent so we can handle this with priority.",
+    "ja": "ご不便をおかけして申し訳ありません。担当者にお繋ぎしますので、少々お待ちください。",
+    "ko": "불편을 드려 죄송합니다. 상담원에게 연결해 우선적으로 도와드리겠습니다.",
+    "es": "Lamento la mala experiencia. Le he conectado con un agente para atenderlo con prioridad.",
+    "fr": "Désolé pour cette mauvaise expérience. Je vous mets en relation avec un agent pour traiter cela en priorité.",
+}
+
+OUT_OF_SCOPE_MESSAGES = {
+    "zh": "抱歉，这个问题超出了当前家具客服的支持范围。您可以继续咨询产品、材质、搭配、资料或售后相关问题。",
+    "en": "Sorry, that is outside the current furniture support scope. I can help with products, materials, styling, documents, or after-sales questions.",
+    "ja": "申し訳ありませんが、その内容は現在の家具カスタマーサポートの対応範囲外です。商品、素材、コーディネート、資料、アフターサービスについては引き続きお手伝いできます。",
+    "ko": "죄송하지만 해당 내용은 현재 가구 고객지원 범위를 벗어납니다. 제품, 소재, 스타일링, 자료 또는 사후 지원 관련 문의는 계속 도와드릴 수 있습니다.",
+    "es": "Lo siento, eso está fuera del alcance actual del soporte de muebles. Puedo ayudarle con productos, materiales, combinaciones, documentos o servicio posventa.",
+    "fr": "Désolé, cette demande dépasse le périmètre actuel du support mobilier. Je peux vous aider pour les produits, matériaux, mises en scène, documents ou questions après-vente.",
+}
+
+CLARIFICATION_MESSAGES = {
+    "zh": "我还需要一点更具体的信息，才能准确处理。您可以补充一下想了解的产品、空间、风格或具体问题吗？",
+    "en": "I need a bit more detail to handle this accurately. Could you share the product, room, style, or specific question?",
+    "ja": "正確に対応するため、もう少し詳しい情報が必要です。商品、空間、スタイル、または具体的なご質問を教えていただけますか？",
+    "ko": "정확히 처리하려면 조금 더 구체적인 정보가 필요합니다. 제품, 공간, 스타일 또는 구체적인 질문을 알려주시겠어요?",
+    "es": "Necesito un poco más de detalle para atenderlo con precisión. ¿Podría indicar el producto, espacio, estilo o pregunta específica?",
+    "fr": "J'ai besoin d'un peu plus de précisions pour traiter votre demande correctement. Pouvez-vous indiquer le produit, l'espace, le style ou la question précise ?",
+}
+
+TOPIC_SWITCH_PREFIX = {
+    "zh": "好的，我们先处理您新的问题。\n\n",
+    "en": "Sure, let's handle your new question first.\n\n",
+    "ja": "承知しました。まず新しいご質問に対応します。\n\n",
+    "ko": "좋습니다. 먼저 새 문의를 처리하겠습니다.\n\n",
+    "es": "De acuerdo, primero atendamos su nueva consulta.\n\n",
+    "fr": "D'accord, traitons d'abord votre nouvelle question.\n\n",
+}
+
+REPEATED_QUESTION_PREFIX = {
+    "zh": "我换一种方式说明：\n\n",
+    "en": "Let me explain this another way:\n\n",
+    "ja": "別の言い方でご説明します：\n\n",
+    "ko": "다른 방식으로 설명드리겠습니다:\n\n",
+    "es": "Permítame explicarlo de otra manera:\n\n",
+    "fr": "Permettez-moi de l'expliquer autrement :\n\n",
 }
 
 PRODUCT_REC_INTRO = {
@@ -378,6 +434,8 @@ async def save_message(
         )
         db.add(msg)
         await db.commit()
+        await db.refresh(msg)
+        return msg.id
 
 
 async def get_chat_history(conversation_id: int) -> list[dict]:
@@ -391,6 +449,25 @@ async def get_chat_history(conversation_id: int) -> list[dict]:
             {"role": "user" if m.role == MessageRole.USER else "assistant", "content": m.content}
             for m in reversed(messages)
         ]
+
+
+def _normalize_repeat_text(text: str) -> str:
+    normalized = (text or "").strip().lower()
+    normalized = re.sub(r"[\s\W_]+", "", normalized, flags=re.UNICODE)
+    return normalized
+
+
+def _is_repeated_user_question(chat_history: list[dict], user_message: str) -> bool:
+    normalized = _normalize_repeat_text(user_message)
+    if len(normalized) < 2:
+        return False
+    count = 0
+    for msg in chat_history:
+        if msg.get("role") != "user":
+            continue
+        if _normalize_repeat_text(msg.get("content") or "") == normalized:
+            count += 1
+    return count >= 2
 
 
 async def get_all_file_entries() -> list[dict]:
@@ -883,8 +960,66 @@ async def process_customer_text_message(
     notify_bot,
     stop_typing: asyncio.Event,
     typing_task: asyncio.Task,
+    metric_id: int | None = None,
 ):
+    first_response_marked = False
+    current_step_key: str | None = None
+    current_step_detail = ""
+    current_step_started_at: datetime | None = None
+    step_index = 0
+
+    async def stage(stage_key: str, detail: str = "") -> None:
+        nonlocal current_step_key, current_step_detail, current_step_started_at, step_index
+        now = datetime.utcnow()
+        if current_step_key and current_step_started_at:
+            await record_turn_step(
+                metric_id,
+                conversation_id,
+                step_index=step_index,
+                stage_key=current_step_key,
+                stage_detail=current_step_detail,
+                started_at=current_step_started_at,
+                completed_at=now,
+                success=True,
+            )
+        step_index += 1
+        current_step_key = stage_key
+        current_step_detail = detail
+        current_step_started_at = now
+        await set_conversation_stage(conversation_id, stage_key, stage_detail=detail)
+
+    async def close_current_step(success: bool = True, error_message: str = "") -> None:
+        nonlocal current_step_key, current_step_detail, current_step_started_at
+        if not current_step_key or not current_step_started_at:
+            return
+        await record_turn_step(
+            metric_id,
+            conversation_id,
+            step_index=step_index,
+            stage_key=current_step_key,
+            stage_detail=current_step_detail,
+            started_at=current_step_started_at,
+            success=success,
+            error_message=error_message,
+        )
+        current_step_key = None
+        current_step_detail = ""
+        current_step_started_at = None
+
+    async def first_response(response_kind: str) -> None:
+        nonlocal first_response_marked
+        if first_response_marked:
+            return
+        first_response_marked = True
+        await mark_turn_first_response(metric_id, response_kind)
+
+    async def finish(response_kind: str, detail: str = "") -> None:
+        await close_current_step(success=True)
+        await complete_turn_metric(metric_id, response_kind=response_kind, success=True)
+        await mark_conversation_completed(conversation_id, detail)
+
     try:
+        await stage("checking_service_mode")
         conversation = None
         async with AsyncSessionLocal() as db:
             conversation = await db.get(Conversation, conversation_id)
@@ -892,6 +1027,7 @@ async def process_customer_text_message(
         service_mode = service_settings["mode"]
 
         if service_mode == "human_only":
+            await stage("waiting_human", "当前为完全人工模式")
             async with AsyncSessionLocal() as db:
                 conv = await db.get(Conversation, conversation_id)
                 if conv:
@@ -901,6 +1037,7 @@ async def process_customer_text_message(
 
             if current_status != ConversationStatus.PENDING_HUMAN:
                 wait_msg = MANUAL_ONLY_WAIT_MESSAGES.get(language, MANUAL_ONLY_WAIT_MESSAGES["en"])
+                await first_response("human_only_wait")
                 await save_message(conversation_id, MessageRole.ASSISTANT, wait_msg, language)
                 stop_typing.set()
                 await typing_task
@@ -917,11 +1054,69 @@ async def process_customer_text_message(
                     notify_bot,
                     is_followup=(current_status == ConversationStatus.PENDING_HUMAN),
                 )
+            await finish("human_only_wait", "已转人工")
             return
 
-        is_quote = await check_is_quote_related(user_message)
-        logger.info(f"[Bot {bot_id}] Quote related: {is_quote}")
-        if is_quote:
+        await stage("loading_scene_state")
+        scene_state = await get_scene_state(conversation_id)
+        recent_scene_product_ids: list[int] = []
+        if scene_state:
+            try:
+                recent_scene_product_ids = [
+                    int(x) for x in json.loads(scene_state.recommended_product_ids_json or "[]")
+                ]
+            except Exception:
+                recent_scene_product_ids = []
+
+        await stage("classifying_intent_fast")
+        has_pending_scene_confirmation = bool(scene_state and scene_state.pending_confirmation)
+        intent = classify_customer_intent_fast(
+            user_message,
+            has_pending_scene_confirmation=has_pending_scene_confirmation,
+        )
+        all_products: list[dict] | None = None
+        if not intent:
+            await stage("loading_products")
+            all_products = await get_products_for_bot()
+            await stage("classifying_intent")
+            intent = await classify_customer_intent(
+                user_message,
+                products=all_products,
+                recent_product_ids=recent_scene_product_ids,
+                has_pending_scene_confirmation=has_pending_scene_confirmation,
+            )
+        intent_name = intent.get("primary_intent") or "general_question"
+        intent_confidence = float(intent.get("confidence") or 0.0)
+        intent_slots = intent.get("slots") if isinstance(intent.get("slots"), dict) else {}
+        secondary_intents = intent.get("secondary_intents") if isinstance(intent.get("secondary_intents"), list) else []
+        logger.info(
+            "[Bot %s] Intent routed: intent=%s confidence=%.2f source=%s reason=%s",
+            bot_id,
+            intent_name,
+            intent_confidence,
+            intent.get("source"),
+            intent.get("reason"),
+        )
+
+        all_intents = {intent_name, *secondary_intents}
+        if "complaint" in all_intents and intent_name != "complaint":
+            intent_name = "complaint"
+        elif "quote_handoff" in all_intents and intent_name != "quote_handoff":
+            intent_name = "quote_handoff"
+        elif "human_handoff" in all_intents and intent_name != "human_handoff":
+            intent_name = "human_handoff"
+
+        await mark_turn_intent(
+            metric_id,
+            primary_intent=intent_name,
+            confidence=intent_confidence,
+            source=str(intent.get("source") or ""),
+            secondary_intents=secondary_intents,
+            reason=str(intent.get("reason") or ""),
+        )
+
+        if "complaint" in all_intents and intent_confidence >= 0.65:
+            await stage("waiting_human", "客户情绪或投诉已转人工")
             async with AsyncSessionLocal() as db:
                 conv = await db.get(Conversation, conversation_id)
                 if conv:
@@ -929,7 +1124,42 @@ async def process_customer_text_message(
                     conv.quote_language = language
                     await db.commit()
 
-            handoff_msg = HANDOFF_MESSAGES.get(language, HANDOFF_MESSAGES["en"])
+            complaint_msg = COMPLAINT_HANDOFF_MESSAGES.get(language, COMPLAINT_HANDOFF_MESSAGES["en"])
+            await first_response("complaint_handoff")
+            await save_message(conversation_id, MessageRole.ASSISTANT, complaint_msg, language)
+            stop_typing.set()
+            await typing_task
+            await outbound.reply_text(complaint_msg)
+            if run_notify_admin and notify_bot and conversation:
+                await notify_admin(
+                    bot_id,
+                    conversation,
+                    user_message,
+                    notify_bot,
+                    is_followup=(current_status == ConversationStatus.PENDING_HUMAN),
+                )
+            await finish("complaint_handoff", "客户情绪或投诉已转人工")
+            return
+
+        handoff_intent = intent_name in {"quote_handoff", "human_handoff"} and intent_confidence >= 0.7
+        if not handoff_intent and intent.get("needs_human") and intent_confidence >= 0.85:
+            handoff_intent = True
+        if handoff_intent:
+            detail = "报价相关咨询已转人工" if intent_name == "quote_handoff" else "客户要求转人工"
+            await stage("waiting_human", detail)
+            async with AsyncSessionLocal() as db:
+                conv = await db.get(Conversation, conversation_id)
+                if conv:
+                    conv.status = ConversationStatus.PENDING_HUMAN
+                    conv.quote_language = language
+                    await db.commit()
+
+            handoff_msg = (
+                HANDOFF_MESSAGES.get(language, HANDOFF_MESSAGES["en"])
+                if intent_name == "quote_handoff"
+                else MANUAL_ONLY_WAIT_MESSAGES.get(language, MANUAL_ONLY_WAIT_MESSAGES["en"])
+            )
+            await first_response("handoff")
             await save_message(conversation_id, MessageRole.ASSISTANT, handoff_msg, language)
             stop_typing.set()
             await typing_task
@@ -942,27 +1172,67 @@ async def process_customer_text_message(
                     notify_bot,
                     is_followup=(current_status == ConversationStatus.PENDING_HUMAN),
                 )
+            await finish("handoff", detail)
             return
 
         if current_status == ConversationStatus.PENDING_HUMAN and run_notify_admin and notify_bot and conversation:
             await notify_admin(bot_id, conversation, user_message, notify_bot, is_followup=True)
 
-        scene_state = await get_scene_state(conversation_id)
-        recent_scene_product_ids: list[int] = []
-        if scene_state:
-            try:
-                recent_scene_product_ids = [
-                    int(x) for x in json.loads(scene_state.recommended_product_ids_json or "[]")
-                ]
-            except Exception:
-                recent_scene_product_ids = []
+        if intent_name == "out_of_scope" and intent_confidence >= 0.7:
+            out_of_scope_msg = OUT_OF_SCOPE_MESSAGES.get(language, OUT_OF_SCOPE_MESSAGES["en"])
+            await first_response("out_of_scope")
+            await save_message(conversation_id, MessageRole.ASSISTANT, out_of_scope_msg, language)
+            stop_typing.set()
+            await typing_task
+            await outbound.reply_text(out_of_scope_msg)
+            await finish("out_of_scope", "超出支持范围")
+            return
 
-        all_products = await get_products_for_bot()
-        scene_req = await analyze_scene_image_request(
-            user_message,
-            all_products,
-            recent_product_ids=recent_scene_product_ids,
+        clarification_question = str(intent.get("clarification_question") or "").strip()
+        if intent_confidence < 0.45:
+            clarification_msg = clarification_question or CLARIFICATION_MESSAGES.get(language, CLARIFICATION_MESSAGES["en"])
+            await first_response("clarification")
+            await save_message(conversation_id, MessageRole.ASSISTANT, clarification_msg, language)
+            stop_typing.set()
+            await typing_task
+            await outbound.reply_text(clarification_msg)
+            await finish("clarification", "低置信度追问澄清")
+            return
+
+        topic_switch = (
+            bool(scene_state and scene_state.pending_confirmation)
+            and intent_name not in {"scene_image_request", "scene_image_confirmation"}
+            and "scene_image_request" not in secondary_intents
+            and intent_confidence >= 0.55
         )
+        if topic_switch:
+            await clear_scene_state(conversation_id)
+            if scene_state:
+                scene_state.pending_confirmation = False
+                scene_state.last_customer_request = ""
+
+        needs_product_context = (
+            bool(scene_state and scene_state.pending_confirmation)
+            or intent_name in {"product_recommendation", "scene_image_request", "scene_image_confirmation"}
+            or "product_recommendation" in secondary_intents
+            or "scene_image_request" in secondary_intents
+        )
+        if all_products is None and needs_product_context:
+            await stage("loading_products")
+            all_products = await get_products_for_bot()
+        if all_products is None:
+            all_products = []
+
+        scene_req = {
+            "is_scene_request": (
+                intent_name == "scene_image_request"
+                or "scene_image_request" in secondary_intents
+            ) and intent_confidence >= 0.55,
+            "scene_name": str(intent_slots.get("scene_name") or ""),
+            "style_hint": str(intent_slots.get("style_hint") or ""),
+            "target_product_id": intent_slots.get("target_product_id"),
+            "reason": str(intent.get("reason") or ""),
+        }
 
         if scene_state and scene_state.pending_confirmation:
             local_referenced_id = resolve_recommended_product_reference_locally(
@@ -978,9 +1248,13 @@ async def process_customer_text_message(
             wants_scene = (
                 scene_req.get("is_scene_request")
                 or referenced_id is not None
-                or await check_is_scene_image_confirmation(user_message)
+                or (
+                    intent_name == "scene_image_confirmation"
+                    and intent_confidence >= 0.55
+                )
             )
             if wants_scene:
+                await stage("resolving_product_reference")
                 primary_id = (
                     scene_req.get("target_product_id")
                     or referenced_id
@@ -1008,9 +1282,11 @@ async def process_customer_text_message(
                     await typing_task
                     if service_mode != "ai_assist":
                         generating = SCENE_GENERATING_MESSAGES.get(language, SCENE_GENERATING_MESSAGES["en"])
+                        await first_response("scene_generating_notice")
                         await outbound.reply_text(generating)
                         await save_message(conversation_id, MessageRole.ASSISTANT, generating, language)
                     try:
+                        await stage("scene_image_generation", default_scene or primary_product.space or "")
                         record = await generate_scene_images(
                             primary_product=primary_product,
                             all_products=all_products,
@@ -1022,16 +1298,21 @@ async def process_customer_text_message(
                         )
                     except asyncio.TimeoutError:
                         timeout_text = SCENE_TIMEOUT_MESSAGES.get(language, SCENE_TIMEOUT_MESSAGES["en"])
+                        await first_response("scene_timeout")
                         if service_mode == "ai_assist":
                             await create_pending_ai_reply(conversation_id, timeout_text, language)
                         else:
                             await outbound.reply_text(timeout_text)
                             await save_message(conversation_id, MessageRole.ASSISTANT, timeout_text, language)
                         await clear_scene_state(conversation_id)
+                        await close_current_step(success=False, error_message="Scene generation timed out")
+                        await complete_turn_metric(metric_id, response_kind="scene_timeout", success=False, error_message="Scene generation timed out")
+                        await mark_conversation_failed(conversation_id, "场景图生成超时")
                         return
                     if service_mode == "ai_assist":
                         if record.status != "completed":
                             failed_text = SCENE_FAILED_MESSAGES.get(language, SCENE_FAILED_MESSAGES["en"])
+                            await first_response("scene_failed")
                             await create_pending_ai_reply(conversation_id, failed_text, language)
                             await clear_scene_state(conversation_id)
                             if run_notify_admin and notify_bot and conversation:
@@ -1042,6 +1323,9 @@ async def process_customer_text_message(
                                     notify_bot,
                                     is_followup=(current_status in {ConversationStatus.PENDING_HUMAN, ConversationStatus.HUMAN_HANDLING}),
                                 )
+                            await close_current_step(success=False, error_message=record.error_message or "Scene generation failed")
+                            await complete_turn_metric(metric_id, response_kind="scene_failed", success=False, error_message=record.error_message or "Scene generation failed")
+                            await mark_conversation_failed(conversation_id, "场景图生成失败")
                             return
                         async with AsyncSessionLocal() as db:
                             current_record = await db.get(type(record), record.id)
@@ -1052,6 +1336,8 @@ async def process_customer_text_message(
                         scene_delivery["record_id"] = record.id
                         scene_delivery["scene_state_action"] = "clear"
                         preview_text = f"{scene_delivery.get('intro_text', '')}\n\n{scene_delivery.get('preview_line', '')}".strip()
+                        await stage("creating_ai_draft", "场景图待确认")
+                        await first_response("scene_result_draft")
                         await create_pending_ai_delivery(
                             conversation_id=conversation_id,
                             draft_text=preview_text,
@@ -1068,12 +1354,17 @@ async def process_customer_text_message(
                                 notify_bot,
                                 is_followup=(current_status in {ConversationStatus.PENDING_HUMAN, ConversationStatus.HUMAN_HANDLING}),
                             )
+                        await finish("scene_result_draft", "场景图已生成，等待人工确认")
                         return
+                    await first_response("scene_result")
+                    await stage("sending_response", "发送场景图")
                     await send_scene_generation_result(language, record, outbound)
                     await clear_scene_state(conversation_id)
+                    await finish("scene_result", "场景图已发送")
                     return
 
         if scene_req.get("is_scene_request"):
+            await stage("resolving_product_reference")
             resolved_ref = await resolve_recent_product_reference(
                 user_message,
                 all_products,
@@ -1089,9 +1380,11 @@ async def process_customer_text_message(
                     await typing_task
                     if service_mode != "ai_assist":
                         generating = SCENE_GENERATING_MESSAGES.get(language, SCENE_GENERATING_MESSAGES["en"])
+                        await first_response("scene_generating_notice")
                         await outbound.reply_text(generating)
                         await save_message(conversation_id, MessageRole.ASSISTANT, generating, language)
                     try:
+                        await stage("scene_image_generation", scene_req.get("scene_name") or primary_product.space or "")
                         record = await generate_scene_images(
                             primary_product=primary_product,
                             all_products=all_products,
@@ -1103,15 +1396,20 @@ async def process_customer_text_message(
                         )
                     except asyncio.TimeoutError:
                         timeout_text = SCENE_TIMEOUT_MESSAGES.get(language, SCENE_TIMEOUT_MESSAGES["en"])
+                        await first_response("scene_timeout")
                         if service_mode == "ai_assist":
                             await create_pending_ai_reply(conversation_id, timeout_text, language)
                         else:
                             await outbound.reply_text(timeout_text)
                             await save_message(conversation_id, MessageRole.ASSISTANT, timeout_text, language)
+                        await close_current_step(success=False, error_message="Scene generation timed out")
+                        await complete_turn_metric(metric_id, response_kind="scene_timeout", success=False, error_message="Scene generation timed out")
+                        await mark_conversation_failed(conversation_id, "场景图生成超时")
                         return
                     if service_mode == "ai_assist":
                         if record.status != "completed":
                             failed_text = SCENE_FAILED_MESSAGES.get(language, SCENE_FAILED_MESSAGES["en"])
+                            await first_response("scene_failed")
                             await create_pending_ai_reply(conversation_id, failed_text, language)
                             if run_notify_admin and notify_bot and conversation:
                                 await notify_admin(
@@ -1121,6 +1419,9 @@ async def process_customer_text_message(
                                     notify_bot,
                                     is_followup=(current_status in {ConversationStatus.PENDING_HUMAN, ConversationStatus.HUMAN_HANDLING}),
                                 )
+                            await close_current_step(success=False, error_message=record.error_message or "Scene generation failed")
+                            await complete_turn_metric(metric_id, response_kind="scene_failed", success=False, error_message=record.error_message or "Scene generation failed")
+                            await mark_conversation_failed(conversation_id, "场景图生成失败")
                             return
                         async with AsyncSessionLocal() as db:
                             current_record = await db.get(type(record), record.id)
@@ -1140,6 +1441,8 @@ async def process_customer_text_message(
                             "last_customer_request": user_message,
                         }
                         preview_text = f"{scene_delivery.get('intro_text', '')}\n\n{scene_delivery.get('preview_line', '')}".strip()
+                        await stage("creating_ai_draft", "场景图待确认")
+                        await first_response("scene_result_draft")
                         await create_pending_ai_delivery(
                             conversation_id=conversation_id,
                             draft_text=preview_text,
@@ -1155,7 +1458,10 @@ async def process_customer_text_message(
                                 notify_bot,
                                 is_followup=(current_status in {ConversationStatus.PENDING_HUMAN, ConversationStatus.HUMAN_HANDLING}),
                             )
+                        await finish("scene_result_draft", "场景图已生成，等待人工确认")
                         return
+                    await first_response("scene_result")
+                    await stage("sending_response", "发送场景图")
                     await send_scene_generation_result(language, record, outbound)
                     await save_scene_state(
                         conversation_id=conversation_id,
@@ -1167,11 +1473,17 @@ async def process_customer_text_message(
                         reply_language=language,
                         last_customer_request=user_message,
                     )
+                    await finish("scene_result", "场景图已发送")
                     return
 
-        is_product_rec = await check_is_product_recommendation(user_message)
+        await stage("checking_product_recommendation")
+        is_product_rec = (
+            intent_name == "product_recommendation"
+            or "product_recommendation" in secondary_intents
+        ) and intent_confidence >= 0.55
         logger.info(f"[Bot {bot_id}] Product recommendation: {is_product_rec}")
         if is_product_rec:
+            await stage("product_matching")
             selected_ids = await ai_select_products(user_message, all_products) if all_products else []
             products_by_id = {p["id"]: p for p in all_products}
             selected_products = [products_by_id[pid] for pid in selected_ids if pid in products_by_id]
@@ -1197,6 +1509,8 @@ async def process_customer_text_message(
                         "last_customer_request": user_message,
                     }
                     preview_text = "\n".join([intro, *delivery.get("preview_lines", []), "", followup]).strip()
+                    await stage("creating_ai_draft", "商品推荐待确认")
+                    await first_response("product_recommendation_draft")
                     await create_pending_ai_delivery(
                         conversation_id=conversation_id,
                         draft_text=preview_text,
@@ -1213,7 +1527,10 @@ async def process_customer_text_message(
                             is_followup=(current_status in {ConversationStatus.PENDING_HUMAN, ConversationStatus.HUMAN_HANDLING}),
                         )
                     logger.info(f"[Bot {bot_id}] Queued {len(selected_products)} product recommendations for human confirmation")
+                    await finish("product_recommendation_draft", "商品推荐已生成，等待人工确认")
                     return
+                await first_response("product_recommendation")
+                await stage("sending_response", "发送商品推荐")
                 await outbound.reply_text(intro)
                 await save_message(conversation_id, MessageRole.ASSISTANT, intro, language)
                 await send_product_recommendations(selected_products, language, outbound)
@@ -1233,7 +1550,9 @@ async def process_customer_text_message(
                     last_customer_request=user_message,
                 )
                 logger.info(f"[Bot {bot_id}] Sent {len(selected_products)} product recommendations")
+                await finish("product_recommendation", "商品推荐已发送")
             else:
+                await first_response("product_not_found")
                 if service_mode == "ai_assist":
                     await create_pending_ai_reply(conversation_id, none_msg, language)
                     if run_notify_admin and notify_bot and conversation:
@@ -1248,21 +1567,52 @@ async def process_customer_text_message(
                     await outbound.reply_text(none_msg)
                     await save_message(conversation_id, MessageRole.ASSISTANT, none_msg, language)
                 await clear_scene_state(conversation_id)
+                await finish("product_not_found", "未找到匹配商品")
             return
 
+        await stage("knowledge_retrieval")
         kb_context = await search_knowledge_for_bot(user_message)
+        current_step_detail = f"retrieved_chars={len(kb_context or '')}"
 
+        await stage("file_matching")
         all_files = await get_all_file_entries()
-        matched_file_ids = await check_file_request(user_message, all_files) if all_files else []
+        is_file_request = (
+            intent_name == "file_request"
+            or "file_request" in secondary_intents
+        ) and intent_confidence >= 0.6
+        router_file_ids = intent_slots.get("file_ids")
+        matched_file_ids = [
+            int(x) for x in router_file_ids
+            if isinstance(x, (int, float, str)) and str(x).strip().isdigit()
+        ] if isinstance(router_file_ids, list) else []
+        if matched_file_ids:
+            valid_file_ids = {int(f["id"]) for f in all_files if f.get("id") is not None}
+            matched_file_ids = [fid for fid in matched_file_ids if fid in valid_file_ids]
+        if is_file_request and all_files and not matched_file_ids:
+            matched_file_ids = await check_file_request(user_message, all_files)
 
         file_info = ""
         if matched_file_ids:
             matched_entries = [f for f in all_files if f["id"] in matched_file_ids]
             file_info = "\n".join(f"- {f['name']}: {f['description']}" for f in matched_entries)
 
+        await stage("loading_chat_history")
         chat_history = await get_chat_history(conversation_id)
+        repeated_question = _is_repeated_user_question(chat_history, user_message)
+
+        edge_notes: list[str] = []
+        if repeated_question:
+            edge_notes.append("The customer has repeated the same question. Explain it in a different way, be more concrete, and offer another path or human support if needed.")
+        if topic_switch:
+            edge_notes.append("The customer switched topics from a pending scene-image confirmation. Acknowledge the new topic briefly before answering it.")
+        if secondary_intents:
+            edge_notes.append("The customer may have asked multiple things. Address the primary intent first and briefly say what can be handled next.")
+        if edge_notes:
+            notes = "\n".join(f"- {note}" for note in edge_notes)
+            file_info = f"{file_info}\n\nConversation handling notes:\n{notes}".strip()
 
         logger.info(f"[Bot {bot_id}] Generating AI response...")
+        await stage("llm_generating_answer")
         response_text = await generate_response(
             user_message=user_message,
             context=kb_context,
@@ -1270,11 +1620,20 @@ async def process_customer_text_message(
             chat_history=chat_history,
             file_info=file_info,
         )
+        prefix = ""
+        if topic_switch:
+            prefix += TOPIC_SWITCH_PREFIX.get(language, TOPIC_SWITCH_PREFIX["en"])
+        if repeated_question:
+            prefix += REPEATED_QUESTION_PREFIX.get(language, REPEATED_QUESTION_PREFIX["en"])
+        if prefix:
+            response_text = f"{prefix}{response_text}"
         logger.info(f"[Bot {bot_id}] AI response generated ({len(response_text)} chars)")
 
         stop_typing.set()
         await typing_task
         if service_mode == "ai_assist":
+            await stage("creating_ai_draft", "普通文本待确认")
+            await first_response("text_draft")
             await create_pending_ai_reply(conversation_id, response_text, language)
             if run_notify_admin and notify_bot and conversation:
                 await notify_admin(
@@ -1284,17 +1643,24 @@ async def process_customer_text_message(
                     notify_bot,
                     is_followup=(current_status in {ConversationStatus.PENDING_HUMAN, ConversationStatus.HUMAN_HANDLING}),
                 )
+            await finish("text_draft", "AI 回复已生成，等待人工确认")
             return
 
+        await first_response("text")
+        await stage("sending_response", "发送文本回复")
         await save_message(conversation_id, MessageRole.ASSISTANT, response_text, language)
         await outbound.reply_text(response_text)
 
         if matched_file_ids:
             await send_files_to_user(matched_file_ids, outbound)
+        await finish("text", "回复已发送")
     except Exception as e:
         stop_typing.set()
         await typing_task
         logger.error(f"[Bot {bot_id}] Error processing message: {e}", exc_info=True)
+        await close_current_step(success=False, error_message=str(e))
+        await complete_turn_metric(metric_id, response_kind="error", success=False, error_message=str(e))
+        await mark_conversation_failed(conversation_id, str(e))
         fallback = {
             "zh": "抱歉，系统暂时出现问题，请稍后再试或联系人工客服。",
             "en": "Sorry, the system is temporarily unavailable. Please try again later.",
@@ -1346,6 +1712,13 @@ def make_message_handler(bot_id: int):
             await update.message.reply_text("系统错误，请稍后再试。")
             return
 
+        metric_id = await start_turn_metric(
+            conversation.id,
+            user_message_id=None,
+            request_text=user_message,
+        )
+        language_step_started_at = datetime.utcnow()
+        await set_conversation_stage(conversation.id, "detecting_language")
         try:
             detected_language = await detect_language(user_message)
             logger.info(f"[Bot {bot_id}] Detected language: {detected_language}")
@@ -1371,7 +1744,15 @@ def make_message_handler(bot_id: int):
         except Exception as e:
             logger.error(f"[Bot {bot_id}] Failed to update language: {e}", exc_info=True)
 
-        await save_message(conversation.id, MessageRole.USER, user_message, language)
+        user_message_id = await save_message(conversation.id, MessageRole.USER, user_message, language)
+        await attach_turn_user_message(metric_id, user_message_id)
+        await record_turn_step(
+            metric_id,
+            conversation.id,
+            step_index=0,
+            stage_key="detecting_language",
+            started_at=language_step_started_at,
+        )
 
         async with AsyncSessionLocal() as db:
             fresh_conv = await db.get(Conversation, conversation.id)
@@ -1393,6 +1774,7 @@ def make_message_handler(bot_id: int):
             notify_bot=context.bot,
             stop_typing=stop_typing,
             typing_task=typing_task,
+            metric_id=metric_id,
         )
 
     return handle_message

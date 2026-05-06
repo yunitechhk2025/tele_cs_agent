@@ -62,7 +62,7 @@ dayjs.locale('zh-cn');
 
 const { Text, Title } = Typography;
 
-const PANEL_HEIGHT = 'calc(100vh - 188px)';
+const PANEL_HEIGHT = 'calc(100vh - 248px)';
 
 type FilterKey = 'all' | 'active' | 'pending_human' | 'human_handling';
 
@@ -108,6 +108,45 @@ function statusConfig(status: Conversation['status']) {
   }
 }
 
+const INTENT_LABELS: Record<string, string> = {
+  general_question: '普通问题',
+  quote_handoff: '询价',
+  human_handoff: '转人工',
+  product_recommendation: '商品推荐',
+  product_intro: '商品介绍',
+  scene_image_request: '场景图生成',
+  scene_image_confirmation: '确认生成场景图',
+  file_request: '资料文件',
+  warranty_policy: '保修',
+  return_exchange_policy: '退换货政策',
+  shipping_delivery: '物流配送',
+  complaint: '投诉/负面情绪',
+  out_of_scope: '超出范围',
+};
+
+function intentConfig(metric?: ConversationDetail['latest_turn_metric'] | null) {
+  const intent = metric?.primary_intent || '';
+  const confidence = metric?.intent_confidence;
+  if (!intent) {
+    return { label: '意图待识别', color: 'default', tooltip: '还没有可展示的意图识别结果' };
+  }
+  if (typeof confidence === 'number' && confidence < 0.45) {
+    return {
+      label: '待澄清',
+      color: 'orange',
+      tooltip: `原始意图：${INTENT_LABELS[intent] || intent}，置信度 ${Math.round(confidence * 100)}%`,
+    };
+  }
+  const percent = typeof confidence === 'number' ? ` ${Math.round(confidence * 100)}%` : '';
+  const source = metric?.intent_source ? `来源：${metric.intent_source}` : '来源：未记录';
+  const reason = metric?.intent_reason ? `；${metric.intent_reason}` : '';
+  return {
+    label: `${INTENT_LABELS[intent] || intent}${percent}`,
+    color: intent === 'complaint' ? 'red' : intent === 'quote_handoff' ? 'volcano' : 'geekblue',
+    tooltip: `${source}${reason}`,
+  };
+}
+
 function languageLabel(code: string) {
   const upper = code?.toUpperCase() || '—';
   try {
@@ -145,6 +184,21 @@ function draftTitle(detail: ConversationDetail | null) {
 
 function canEditDraft(detail: ConversationDetail | null) {
   return detail?.ai_draft?.content_kind === 'text';
+}
+
+function processingStageColor(detail: ConversationDetail | null) {
+  const state = detail?.processing_state;
+  if (!state) return 'default' as const;
+  if (state.stage_key === 'failed') return 'red' as const;
+  if (state.is_processing) return 'processing' as const;
+  if (state.stage_key === 'completed') return 'success' as const;
+  return 'default' as const;
+}
+
+function formatLatency(ms?: number | null) {
+  if (ms == null) return '—';
+  if (ms < 1000) return `${ms}ms`;
+  return `${(ms / 1000).toFixed(1)}s`;
 }
 
 type ProductDraftCard = {
@@ -721,7 +775,6 @@ export default function Conversations() {
     },
     [customerServiceSettings],
   );
-
   const loadStats = useCallback(async () => {
     try {
       const { data } = await dashboardApi.getStats();
@@ -745,8 +798,8 @@ export default function Conversations() {
     return () => window.clearInterval(timer);
   }, [loadStats]);
 
-  const loadDetail = useCallback(async (conversationId: number) => {
-    setDetailLoading(true);
+  const loadDetail = useCallback(async (conversationId: number, silent = false) => {
+    if (!silent) setDetailLoading(true);
     try {
       const { data } = await conversationApi.get(conversationId);
       setDetail(data);
@@ -754,7 +807,7 @@ export default function Conversations() {
       message.error('加载对话详情失败');
       setDetail(null);
     } finally {
-      setDetailLoading(false);
+      if (!silent) setDetailLoading(false);
     }
   }, []);
 
@@ -800,10 +853,10 @@ export default function Conversations() {
   useEffect(() => {
     if (selectedId == null) return undefined;
     const timer = window.setInterval(() => {
-      void loadDetail(selectedId);
+      void loadDetail(selectedId, true);
       void loadList();
       void loadCustomerServiceSettings();
-    }, 3000);
+    }, 1000);
     return () => window.clearInterval(timer);
   }, [selectedId, loadCustomerServiceSettings, loadDetail, loadList]);
 
@@ -1156,7 +1209,6 @@ export default function Conversations() {
     },
     [timelineKeyAndText, translations, isLikelyChinese],
   );
-
   const pendingCount = stats?.pending_human ?? 0;
   const renderStatItem = (
     label: string,
@@ -1182,10 +1234,10 @@ export default function Conversations() {
         if (options?.onClick) (e.currentTarget as HTMLDivElement).style.background = 'transparent';
       }}
     >
-      <span style={{ fontSize: 11, color: '#8c8c8c', lineHeight: 1.1 }}>{label}</span>
+      <span style={{ fontSize: 12, color: '#8c8c8c', lineHeight: 1.2 }}>{label}</span>
       <span
         style={{
-          fontSize: 16,
+          fontSize: 20,
           fontWeight: 600,
           lineHeight: 1.2,
           color: options?.emphasizeWhen ? options.color : undefined,
@@ -1197,14 +1249,14 @@ export default function Conversations() {
   );
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
       <div
         style={{
           display: 'flex',
           alignItems: 'center',
           flexWrap: 'wrap',
-          gap: 22,
-          padding: '6px 16px',
+          gap: 28,
+          padding: '12px 20px',
           background: '#fff',
           borderRadius: 12,
           boxShadow: '0 2px 12px rgba(0,0,0,0.04)',
@@ -1502,6 +1554,21 @@ export default function Conversations() {
                           { label: '纯人工', value: 'human_only' },
                         ]}
                       />
+                    </Tooltip>
+                    <Tooltip title={detail.processing_state?.stage_detail || '当前处理阶段'}>
+                      <Tag color={processingStageColor(detail)}>
+                        {detail.processing_state?.stage_label || '空闲'}
+                      </Tag>
+                    </Tooltip>
+                    <Tooltip title={intentConfig(detail.latest_turn_metric).tooltip}>
+                      <Tag color={intentConfig(detail.latest_turn_metric).color}>
+                        意图 {intentConfig(detail.latest_turn_metric).label}
+                      </Tag>
+                    </Tooltip>
+                    <Tooltip title="最近一轮：首个可展示响应耗时 / 完整响应耗时">
+                      <Tag color="purple">
+                        首响 {formatLatency(detail.latest_turn_metric?.first_response_ms)} · 总耗时 {formatLatency(detail.latest_turn_metric?.total_ms)}
+                      </Tag>
                     </Tooltip>
                   </>
                 ) : (

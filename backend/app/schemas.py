@@ -43,9 +43,67 @@ class ConversationSchema(BaseModel):
         from_attributes = True
 
 
+class ConversationProcessingStateSchema(BaseModel):
+    stage_key: str = "idle"
+    stage_label: str = "空闲"
+    stage_detail: str = ""
+    is_processing: bool = False
+    started_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+class ConversationTurnMetricSchema(BaseModel):
+    id: int
+    conversation_id: int
+    user_message_id: Optional[int] = None
+    request_text: str = ""
+    primary_intent: str = ""
+    secondary_intents_json: str = "[]"
+    intent_confidence: Optional[float] = None
+    intent_source: str = ""
+    intent_reason: str = ""
+    response_kind: str = ""
+    started_at: datetime
+    first_response_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    first_response_ms: Optional[int] = None
+    total_ms: Optional[int] = None
+    success: bool = True
+    error_message: str = ""
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class ConversationTurnStepMetricSchema(BaseModel):
+    id: int
+    turn_metric_id: int
+    conversation_id: int
+    step_index: int = 0
+    stage_key: str = ""
+    stage_label: str = ""
+    stage_detail: str = ""
+    started_at: datetime
+    completed_at: Optional[datetime] = None
+    duration_ms: Optional[int] = None
+    success: bool = True
+    error_message: str = ""
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
 class ConversationDetailSchema(ConversationSchema):
     messages: list[MessageSchema] = []
     outbound_events: list["TelegramSimulatorEventSchema"] = []
+    processing_state: Optional[ConversationProcessingStateSchema] = None
+    latest_turn_metric: Optional[ConversationTurnMetricSchema] = None
+    latest_turn_steps: list[ConversationTurnStepMetricSchema] = []
     ai_draft: Optional["PendingAIReplySchema"] = None
 
 

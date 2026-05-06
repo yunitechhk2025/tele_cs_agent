@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 from typing import Any
 
 from openai import AsyncOpenAI
@@ -104,6 +105,14 @@ def _build_embedding_client(cfg: dict[str, str]) -> AsyncOpenAI:
     return AsyncOpenAI(api_key=api_key, base_url=base_url)
 
 
+def _resolve_embedding_model(base_url: str, model: str | None) -> str:
+    configured = (model or "").strip()
+    base = (base_url or "").lower()
+    if "dashscope" in base and configured in {"", "text-embedding-3-small", "text-embedding-3-large", "text-embedding-ada-002"}:
+        return "text-embedding-v4"
+    return configured or "text-embedding-3-small"
+
+
 async def _chat_completion(messages: list[dict], max_tokens: int | None = None, temperature: float | None = None) -> str:
     """Unified chat completion that routes to the correct provider."""
     cfg = await get_llm_settings()
@@ -150,7 +159,8 @@ async def get_embedding(text: str) -> list[float]:
     """Get embedding vector for text using the configured embedding provider."""
     cfg = await get_llm_settings()
     client = _build_embedding_client(cfg)
-    model = cfg.get("embedding_model", "text-embedding-3-small")
+    base_url = cfg.get("embedding_base_url") or cfg.get("llm_base_url", "https://api.openai.com/v1")
+    model = _resolve_embedding_model(base_url, cfg.get("embedding_model"))
     try:
         response = await client.embeddings.create(model=model, input=text)
         return response.data[0].embedding
@@ -184,6 +194,271 @@ def _heuristic_language(text: str) -> str | None:
     return None
 
 
+INTENT_VALUES = {
+    "general_question",
+    "quote_handoff",
+    "human_handoff",
+    "product_recommendation",
+    "product_intro",
+    "scene_image_request",
+    "scene_image_confirmation",
+    "file_request",
+    "warranty_policy",
+    "return_exchange_policy",
+    "shipping_delivery",
+    "complaint",
+    "out_of_scope",
+}
+
+
+def _intent_result(
+    primary_intent: str = "general_question",
+    confidence: float = 0.0,
+    *,
+    source: str = "fallback",
+    secondary_intents: list[str] | None = None,
+    slots: dict[str, Any] | None = None,
+    needs_human: bool = False,
+    clarification_question: str = "",
+    reason: str = "",
+) -> dict[str, Any]:
+    if primary_intent not in INTENT_VALUES:
+        primary_intent = "general_question"
+    return {
+        "primary_intent": primary_intent,
+        "secondary_intents": [x for x in (secondary_intents or []) if x in INTENT_VALUES and x != primary_intent],
+        "confidence": max(0.0, min(1.0, float(confidence or 0.0))),
+        "slots": {
+            "target_product_id": None,
+            "scene_name": "",
+            "style_hint": "",
+            "file_ids": [],
+            **(slots or {}),
+        },
+        "needs_human": bool(needs_human),
+        "clarification_question": clarification_question or "",
+        "reason": reason or "",
+        "source": source,
+    }
+
+
+def _extract_json_object(raw: str) -> dict[str, Any]:
+    text = (raw or "").strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"\s*```$", "", text)
+    start = text.find("{")
+    end = text.rfind("}")
+    if start >= 0 and end >= start:
+        text = text[start:end + 1]
+    data = json.loads(text)
+    return data if isinstance(data, dict) else {}
+
+
+def _fast_intent_from_rules(text: str, *, has_pending_scene_confirmation: bool = False) -> dict[str, Any] | None:
+    normalized = (text or "").strip().lower()
+    if not normalized:
+        return None
+
+    def has_any(patterns: list[str]) -> bool:
+        return any(re.search(pattern, normalized, flags=re.IGNORECASE) for pattern in patterns)
+
+    if has_any([
+        r"转人工", r"人工客服", r"真人", r"人工服务", r"接人工",
+        r"\bhuman\b", r"\bagent\b", r"real person", r"representative", r"manual support",
+        r"担当者", r"オペレーター", r"人工 상담", r"상담원", r"사람 상담",
+        r"agente humano", r"persona real", r"representante", r"agent humain", r"conseiller", r"personne réelle",
+    ]):
+        return _intent_result("human_handoff", 0.98, source="rules", needs_human=True, reason="explicit human handoff request")
+
+    if has_any([
+        r"没用", r"太差", r"差劲", r"垃圾", r"投诉", r"生气", r"不满意", r"糟糕", r"骗人",
+        r"useless", r"terrible", r"awful", r"angry", r"complaint", r"not satisfied", r"bad service",
+        r"役に立たない", r"ひどい", r"最悪", r"不満", r"苦情",
+        r"쓸모없", r"최악", r"불만", r"화가", r"항의",
+        r"inútil", r"terrible", r"enojado", r"queja", r"no estoy satisfecho",
+        r"inutile", r"mécontent", r"plainte", r"pas satisfait", r"service mauvais",
+    ]):
+        return _intent_result("complaint", 0.9, source="rules", needs_human=True, reason="complaint or negative sentiment keyword")
+
+    if has_any([
+        r"报价", r"价格", r"价钱", r"多少钱", r"费用", r"预算", r"询价", r"采购",
+        r"\bprice\b", r"\bpricing\b", r"\bquote\b", r"quotation", r"\bcost\b", r"how much",
+        r"価格", r"値段", r"見積", r"いくら", r"費用",
+        r"가격", r"견적", r"얼마", r"비용",
+        r"precio", r"cotización", r"presupuesto", r"cuánto cuesta", r"coste",
+        r"prix", r"devis", r"combien", r"coût", r"budget",
+    ]):
+        return _intent_result("quote_handoff", 0.95, source="rules", needs_human=True, reason="pricing or quotation keyword")
+
+    if has_pending_scene_confirmation and has_any([
+        r"^好$", r"^可以$", r"^要$", r"^是$", r"^yes$", r"^ok$", r"^sure$",
+        r"想看看", r"生成", r"来一?张", r"看.*效果", r"show me", r"generate",
+    ]):
+        return _intent_result("scene_image_confirmation", 0.88, source="rules", reason="scene confirmation after recommendation")
+
+    if has_any([
+        r"场景图", r"效果图", r"搭配图", r"实景", r"渲染", r"空间效果", r"摆在.*(客厅|卧室|餐厅|书房)",
+        r"scene image", r"render", r"showroom", r"styled image", r"effect image", r"in (a|the).*(room|living room|bedroom|dining room)",
+    ]):
+        return _intent_result("scene_image_request", 0.9, source="rules", reason="scene image keyword")
+
+    if has_any([
+        r"保修", r"质保", r"售后", r"保固", r"维修", r"坏了怎么办",
+        r"\bwarranty\b", r"\bguarantee\b", r"after[- ]?sales", r"repair policy",
+        r"保証", r"アフターサービス", r"수리", r"보증", r"garantía", r"garantie",
+    ]):
+        return _intent_result("warranty_policy", 0.88, source="rules", reason="warranty or after-sales keyword")
+
+    if has_any([
+        r"退换货", r"退货", r"换货", r"退款", r"退换", r"退订",
+        r"\breturn\b", r"\bexchange\b", r"\brefund\b", r"return policy", r"exchange policy",
+        r"返品", r"交換", r"返金", r"반품", r"교환", r"환불",
+        r"devolución", r"cambio", r"reembolso", r"retour", r"échange", r"remboursement",
+    ]):
+        return _intent_result("return_exchange_policy", 0.9, source="rules", reason="return or exchange policy keyword")
+
+    if has_any([
+        r"物流", r"配送", r"发货", r"送货", r"运费", r"多久到", r"什么时候到",
+        r"\bshipping\b", r"\bdelivery\b", r"freight", r"lead time", r"when.*arrive",
+        r"配送", r"送料", r"配達", r"배송", r"운송", r"envío", r"entrega", r"livraison",
+    ]):
+        return _intent_result("shipping_delivery", 0.86, source="rules", reason="shipping or delivery keyword")
+
+    if has_any([
+        r"介绍", r"讲讲", r"说明一下", r"特点", r"材质", r"尺寸", r"规格", r"参数", r"适合",
+        r"tell me about", r"introduce", r"details", r"features", r"material", r"size", r"dimensions", r"specs",
+        r"紹介", r"特徴", r"素材", r"サイズ", r"상세", r"특징", r"소재", r"크기",
+        r"presentar", r"características", r"material", r"tamaño", r"présenter", r"caractéristiques", r"dimensions",
+    ]):
+        return _intent_result("product_intro", 0.82, source="rules", reason="product introduction or detail keyword")
+
+    if has_any([
+        r"推荐", r"有哪些", r"有什么.*(产品|沙发|床|桌|椅|柜)", r"产品图", r"款式", r"看看.*(产品|沙发|床|桌|椅|柜)",
+        r"recommend", r"show me.*(product|sofa|bed|table|chair|cabinet)", r"what.*(products|sofas|chairs).*have",
+    ]):
+        return _intent_result("product_recommendation", 0.84, source="rules", reason="product browsing or recommendation keyword")
+
+    if has_any([
+        r"资料", r"文件", r"手册", r"说明书", r"目录", r"catalog", r"brochure", r"manual", r"pdf", r"document", r"file",
+    ]):
+        return _intent_result("file_request", 0.82, source="rules", reason="file or document request keyword")
+
+    return None
+
+
+def _product_router_context(products: list[dict] | None, recent_product_ids: list[int] | None) -> str:
+    products = products or []
+    recent_product_ids = recent_product_ids or []
+    products_by_id = {int(p["id"]): p for p in products if p.get("id") is not None}
+    recent = [products_by_id[pid] for pid in recent_product_ids if pid in products_by_id]
+    recent_lines = [
+        f"SLOT:{idx} | ID:{p['id']} | {p.get('name', '')} | space:{p.get('space', '')} | style:{p.get('style', '')}"
+        for idx, p in enumerate(recent, start=1)
+    ]
+    catalog_lines = [
+        f"ID:{p['id']} | {p.get('name', '')} | space:{p.get('space', '')} | style:{p.get('style', '')} | material:{p.get('material', '')}"
+        for p in products[:80]
+    ]
+    return (
+        f"Recent recommended products:\n{chr(10).join(recent_lines) or '(none)'}\n\n"
+        f"Product catalog sample:\n{chr(10).join(catalog_lines) or '(none)'}"
+    )
+
+
+def classify_customer_intent_fast(
+    user_message: str,
+    *,
+    has_pending_scene_confirmation: bool = False,
+) -> dict[str, Any] | None:
+    """Return a high-confidence local-rule intent without calling the LLM."""
+    return _fast_intent_from_rules(
+        user_message,
+        has_pending_scene_confirmation=has_pending_scene_confirmation,
+    )
+
+
+async def classify_customer_intent(
+    user_message: str,
+    *,
+    products: list[dict] | None = None,
+    recent_product_ids: list[int] | None = None,
+    has_pending_scene_confirmation: bool = False,
+) -> dict[str, Any]:
+    """Classify the next customer intent once, with a fast rules path before LLM routing."""
+    fast = _fast_intent_from_rules(
+        user_message,
+        has_pending_scene_confirmation=has_pending_scene_confirmation,
+    )
+    if fast:
+        return fast
+
+    if not user_message or len(user_message.strip()) < 2:
+        return _intent_result("general_question", 0.3, source="rules", reason="empty or too short")
+
+    prompt = (
+        "You are the intent router for a furniture customer-service agent.\n"
+        "Classify the customer's latest message into exactly one primary intent and optional secondary intents.\n"
+        "Allowed intents:\n"
+        "- quote_handoff: pricing, quotation, purchase cost, quote request. High-risk; usually needs human.\n"
+        "- human_handoff: customer explicitly asks for a human/support representative.\n"
+        "- product_recommendation: browsing products, asking what products are available, product photos, recommendations.\n"
+        "- product_intro: asks about a specific product's features, material, size, specs, usage, or introduction.\n"
+        "- scene_image_request: wants a product shown in a styled scene/render/showroom/effect image.\n"
+        "- scene_image_confirmation: confirms a previous offer to generate scene images.\n"
+        "- file_request: asks for catalog, brochure, manual, PDF, document, spec sheet, or file.\n"
+        "- warranty_policy: asks about warranty, after-sales service, repair, guarantee, or quality coverage.\n"
+        "- return_exchange_policy: asks about returns, exchanges, refunds, cancellation, or related policy.\n"
+        "- shipping_delivery: asks about shipping, delivery, freight, lead time, or arrival time.\n"
+        "- complaint: angry, dissatisfied, says the answer is useless, or threatens complaint.\n"
+        "- out_of_scope: unrelated or unsupported request.\n"
+        "- general_question: normal FAQ, product/policy question, or anything else.\n\n"
+        "Edge handling hints:\n"
+        "- Put pricing/human_handoff/complaint in secondary_intents if they appear together with another request.\n"
+        "- Use a useful clarification_question when the request is vague or under-specified.\n"
+        "- If the user asks several things at once, make the most urgent/high-risk item primary and put the rest in secondary_intents.\n\n"
+        "Return ONLY compact JSON with this shape:\n"
+        '{"primary_intent":"general_question","secondary_intents":[],"confidence":0.0,'
+        '"slots":{"target_product_id":null,"scene_name":"","style_hint":"","file_ids":[]},'
+        '"needs_human":false,"clarification_question":"","reason":""}\n'
+        "Confidence must be 0-1. Use lower confidence when ambiguous. For scene requests, extract scene_name, "
+        "style_hint, and target_product_id if clear from recent products or catalog.\n\n"
+        f"Pending scene confirmation: {has_pending_scene_confirmation}\n"
+        f"{_product_router_context(products, recent_product_ids)}"
+    )
+    try:
+        raw = await _chat_completion(
+            messages=[
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": user_message},
+            ],
+            max_tokens=220,
+            temperature=0,
+        )
+        data = _extract_json_object(raw)
+        slots = data.get("slots") if isinstance(data.get("slots"), dict) else {}
+        target_id = slots.get("target_product_id")
+        if target_id is not None:
+            try:
+                target_id = int(target_id)
+            except (TypeError, ValueError):
+                target_id = None
+        slots["target_product_id"] = target_id
+        file_ids = slots.get("file_ids")
+        slots["file_ids"] = file_ids if isinstance(file_ids, list) else []
+        return _intent_result(
+            str(data.get("primary_intent") or "general_question"),
+            float(data.get("confidence") or 0.0),
+            source="llm_router",
+            secondary_intents=data.get("secondary_intents") if isinstance(data.get("secondary_intents"), list) else [],
+            slots=slots,
+            needs_human=bool(data.get("needs_human")),
+            clarification_question=str(data.get("clarification_question") or ""),
+            reason=str(data.get("reason") or ""),
+        )
+    except Exception as e:
+        logger.error(f"Intent classification failed: {e}")
+        return _intent_result("general_question", 0.0, reason="intent classifier failed")
 async def detect_language(text: str) -> str:
     heuristic = _heuristic_language(text)
     if heuristic:
@@ -730,9 +1005,10 @@ async def test_embedding_connection(api_key: str, base_url: str, model: str) -> 
     """Test the embedding model connection. Returns {ok, message}."""
     try:
         client = AsyncOpenAI(api_key=api_key, base_url=base_url)
-        resp = await client.embeddings.create(model=model, input="hello")
+        resolved_model = _resolve_embedding_model(base_url, model)
+        resp = await client.embeddings.create(model=resolved_model, input="hello")
         dim = len(resp.data[0].embedding)
-        return {"ok": True, "message": f"Embedding OK — dimension: {dim}"}
+        return {"ok": True, "message": f"Embedding OK — model: {resolved_model}, dimension: {dim}"}
     except Exception as e:
         return {"ok": False, "message": str(e)}
 

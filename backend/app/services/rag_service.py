@@ -3,7 +3,7 @@ import os
 import re
 import chromadb
 from chromadb.config import Settings as ChromaSettings
-from sqlalchemy import or_, select
+from sqlalchemy import select
 
 from app.config import get_settings
 from app.database import AsyncSessionLocal
@@ -96,31 +96,91 @@ async def search_knowledge_base(query: str, top_k: int = 5) -> str:
 
 
 async def search_knowledge_keyword_fallback(query: str, limit: int = 5) -> str:
-    """When Chroma is empty or embeddings miss, match words against knowledge_entries in PostgreSQL."""
+    """When Chroma is empty or embeddings miss, score knowledge_entries with lexical terms.
+
+    Chinese user questions often arrive as one continuous token like "你们公司的隐私政策是什么".
+    A plain ILIKE on that whole sentence misses entries titled "隐私政策", so we extract
+    domain phrases and short Chinese n-grams, then rank rows in Python.
+    """
     q = (query or "").strip()
     if len(q) < 2:
         return ""
-    tokens = re.findall(r"[\w\u4e00-\u9fff]+", q)
-    tokens = [t for t in tokens if len(t) >= 2][:10]
+
+    def unique_terms(items: list[str]) -> list[str]:
+        seen: set[str] = set()
+        terms: list[str] = []
+        for item in items:
+            term = (item or "").strip().lower()
+            if len(term) < 2 or term in seen:
+                continue
+            seen.add(term)
+            terms.append(term)
+        return terms
+
+    domain_groups = [
+        ["隐私政策", "隐私", "个人信息", "个人资料", "信息安全", "数据保护", "privacy", "personal information"],
+        ["退货政策", "完整退货政策", "退货", "退换货", "退款", "换货", "return policy", "return", "refund", "exchange"],
+        ["保修条款", "保修", "质保", "售后", "维修", "warranty", "guarantee", "repair"],
+        ["发货时效", "物流追踪", "物流", "配送", "发货", "送货", "运费", "shipping", "delivery"],
+        ["订单状态", "订单状态查询", "订单", "order status"],
+    ]
+    terms: list[str] = []
+    q_lower = q.lower()
+    for group in domain_groups:
+        if any(alias.lower() in q_lower for alias in group):
+            terms.extend(group)
+
+    terms.extend(re.findall(r"[a-zA-Z0-9][a-zA-Z0-9_-]{1,}", q_lower))
+    chinese_runs = re.findall(r"[\u4e00-\u9fff]{2,}", q)
+    stop_terms = {
+        "你们", "我们", "公司", "贵司", "这个", "那个", "什么", "是什么", "多少", "怎么",
+        "如何", "一下", "请问", "有没有", "能不能", "可以", "的吗", "政策",
+    }
+    for run in chinese_runs:
+        if run in stop_terms:
+            continue
+        for size in (4, 3, 2):
+            if len(run) < size:
+                continue
+            for idx in range(0, len(run) - size + 1):
+                gram = run[idx:idx + size]
+                if gram not in stop_terms:
+                    terms.append(gram)
+
+    tokens = unique_terms(terms)
     if not tokens:
         return ""
     try:
         async with AsyncSessionLocal() as db:
-            conds = []
-            for t in tokens:
-                conds.append(KnowledgeEntry.content.ilike(f"%{t}%"))
-                conds.append(KnowledgeEntry.title.ilike(f"%{t}%"))
-            stmt = (
-                select(KnowledgeEntry)
-                .where(or_(*conds))
-                .order_by(KnowledgeEntry.id.desc())
-                .limit(limit)
-            )
+            stmt = select(KnowledgeEntry).order_by(KnowledgeEntry.id.desc()).limit(500)
             result = await db.execute(stmt)
             rows = result.scalars().all()
-            if not rows:
+            scored = []
+            for row in rows:
+                title = (row.title or "").lower()
+                category = (row.category or "").lower()
+                content = (row.content or "").lower()
+                score = 0
+                for term in tokens:
+                    if term in title:
+                        score += 8
+                    if term in category:
+                        score += 5
+                    if term in content:
+                        score += 1
+                if score > 0:
+                    scored.append((score, row.id, row))
+            scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
+            if not scored:
+                logger.info("KB keyword fallback: no match for tokens=%s", tokens[:20])
                 return ""
-            parts = [f"{r.title}\n\n{r.content}" for r in rows]
+            matched = [row for _, _, row in scored[:limit]]
+            logger.info(
+                "KB keyword fallback: matched ids=%s tokens=%s",
+                [row.id for row in matched],
+                tokens[:20],
+            )
+            parts = [f"{r.title}\n\n{r.content}" for r in matched]
             return "\n\n---\n\n".join(parts)
     except Exception as e:
         logger.error(f"KB keyword fallback failed: {e}")
