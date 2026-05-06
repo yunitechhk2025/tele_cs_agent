@@ -86,7 +86,22 @@ const CONTRACT_OUTPUT_LANG_OPTIONS = [
   { value: 'pt', label: 'Português' },
 ];
 
-function customerDisplayName(c: Pick<Conversation, 'first_name' | 'last_name' | 'username'>) {
+const SIMULATED_NAME_POOL = [
+  '张三', '李四', '王五', '赵六', '钱七', '孙八', '周九', '吴十',
+  '郑明', '冯华', '陈晓', '楚云', '林峰', '黄磊', '徐波', '高远',
+];
+
+function simulatedDisplayName(id?: number | null) {
+  const idx = typeof id === 'number' && id >= 0 ? id % SIMULATED_NAME_POOL.length : 0;
+  return SIMULATED_NAME_POOL[idx];
+}
+
+function customerDisplayName(
+  c: Pick<Conversation, 'id' | 'first_name' | 'last_name' | 'username' | 'telegram_chat_id'>,
+) {
+  if (isSimulatorConversation(c)) {
+    return `${simulatedDisplayName(c.id)}（模拟对话）`;
+  }
   const parts = [c.first_name, c.last_name].filter(Boolean);
   if (parts.length) return parts.join(' ');
   if (c.username) return `@${c.username}`;
@@ -505,6 +520,33 @@ function OutboundEventBubble({
           </div>
         ) : null}
       </div>
+    </div>
+  );
+}
+
+function TurnMetricBadge({ metric }: { metric: ConversationDetail['latest_turn_metric'] }) {
+  if (!metric) return null;
+  const ic = intentConfig(metric);
+  return (
+    <div
+      style={{
+        display: 'flex',
+        justifyContent: 'flex-end',
+        gap: 4,
+        marginBottom: 4,
+        flexWrap: 'wrap',
+      }}
+    >
+      <Tooltip title={ic.tooltip}>
+        <Tag color={ic.color} style={{ fontSize: 11, margin: 0 }}>
+          意图 {ic.label}
+        </Tag>
+      </Tooltip>
+      <Tooltip title="首响时间">
+        <Tag color="purple" style={{ fontSize: 11, margin: 0 }}>
+          {formatLatency(metric.first_response_ms)}
+        </Tag>
+      </Tooltip>
     </div>
   );
 }
@@ -1170,6 +1212,18 @@ export default function Conversations() {
     return undefined;
   }, [timeline, translationEnabled, translations, timelineKeyAndText, isLikelyChinese]);
 
+  // 找到第一条 AI 回复消息的 timeline 下标——即 latest_turn_metric.started_at 之后的首条 assistant 消息
+  const metricAnnotationIdx = useMemo(() => {
+    if (!detail?.latest_turn_metric) return -1;
+    const startedAt = new Date(detail.latest_turn_metric.started_at).getTime();
+    return timeline.findIndex(
+      (item) =>
+        item.kind === 'message' &&
+        item.message.role === 'assistant' &&
+        new Date(item.message.created_at).getTime() >= startedAt,
+    );
+  }, [detail?.latest_turn_metric, timeline]);
+
   const renderTimelineItem = useCallback(
     (item: ConversationTimelineItem, useTranslation: boolean) => {
       const src = useTranslation ? timelineKeyAndText(item) : null;
@@ -1377,9 +1431,47 @@ export default function Conversations() {
                           border: selected ? '1px solid #1890ff' : '1px solid #f0f0f0',
                           background: selected ? '#e6f7ff' : '#fff',
                           transition: 'all 0.2s ease',
+                          position: 'relative',
                         }}
                         styles={{ body: { padding: '12px 14px' } }}
                       >
+                        {isSimulator && (
+                          <div
+                            style={{
+                              position: 'absolute',
+                              top: 6,
+                              right: 6,
+                              display: 'flex',
+                              gap: 2,
+                              zIndex: 1,
+                            }}
+                          >
+                            <Tooltip title="打开模拟器">
+                              <Button
+                                type="text"
+                                size="small"
+                                shape="circle"
+                                icon={<SwapOutlined style={{ color: '#333' }} />}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleOpenSimulator(item.id);
+                                }}
+                              />
+                            </Tooltip>
+                            <Tooltip title="删除模拟对话">
+                              <Button
+                                type="text"
+                                size="small"
+                                shape="circle"
+                                icon={<DeleteOutlined style={{ color: '#333' }} />}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleDeleteSimulatorConversation(item);
+                                }}
+                              />
+                            </Tooltip>
+                          </div>
+                        )}
                         <Space direction="vertical" size={6} style={{ width: '100%' }}>
                           <div
                             style={{
@@ -1394,39 +1486,6 @@ export default function Conversations() {
                             </Text>
                             {showDot ? <Badge status="processing" /> : null}
                           </div>
-                          <Space size={[6, 6]} wrap>
-                            <Tag color="default">ID #{item.id}</Tag>
-                            <Tooltip title={languageLabel(item.language)}>
-                              <Tag>{item.language?.toUpperCase() || '—'}</Tag>
-                            </Tooltip>
-                            <Tag color={st.color}>{st.label}</Tag>
-                            {isSimulator ? <Tag color="geekblue">模拟对话</Tag> : null}
-                          </Space>
-                          {isSimulator ? (
-                            <Space size={8} wrap>
-                              <Button
-                                size="small"
-                                icon={<SwapOutlined />}
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleOpenSimulator(item.id);
-                                }}
-                              >
-                                打开模拟器
-                              </Button>
-                              <Button
-                                size="small"
-                                danger
-                                icon={<DeleteOutlined />}
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleDeleteSimulatorConversation(item);
-                                }}
-                              >
-                                删除
-                              </Button>
-                            </Space>
-                          ) : null}
                           <Text type="secondary" style={{ fontSize: 12 }}>
                             更新于 {dayjs(item.updated_at).fromNow()}
                           </Text>
@@ -1530,6 +1589,7 @@ export default function Conversations() {
                 justifyContent: 'space-between',
                 gap: 16,
                 flexWrap: 'wrap',
+                position: 'relative',
               }}
             >
               <Space align="center" size="middle" style={{ minWidth: 0 }}>
@@ -1538,8 +1598,6 @@ export default function Conversations() {
                 </Title>
                 {detail ? (
                   <>
-                    <Tag color="default">ID #{detail.id}</Tag>
-                    <Tag color={statusConfig(detail.status).color}>{statusConfig(detail.status).label}</Tag>
                     <Tooltip title="切换全局客服应答模式（影响所有对话）">
                       <Segmented
                         size="small"
@@ -1560,39 +1618,12 @@ export default function Conversations() {
                         {detail.processing_state?.stage_label || '空闲'}
                       </Tag>
                     </Tooltip>
-                    <Tooltip title={intentConfig(detail.latest_turn_metric).tooltip}>
-                      <Tag color={intentConfig(detail.latest_turn_metric).color}>
-                        意图 {intentConfig(detail.latest_turn_metric).label}
-                      </Tag>
-                    </Tooltip>
-                    <Tooltip title="最近一轮：首个可展示响应耗时 / 完整响应耗时">
-                      <Tag color="purple">
-                        首响 {formatLatency(detail.latest_turn_metric?.first_response_ms)} · 总耗时 {formatLatency(detail.latest_turn_metric?.total_ms)}
-                      </Tag>
-                    </Tooltip>
                   </>
                 ) : (
                   <Tag>…</Tag>
                 )}
               </Space>
-              <Space wrap>
-                {detail && isSimulatorConversation(detail) ? (
-                  <>
-                    <Button
-                      icon={<SwapOutlined />}
-                      onClick={() => handleOpenSimulator(detail.id)}
-                    >
-                      打开模拟器
-                    </Button>
-                    <Button
-                      danger
-                      icon={<DeleteOutlined />}
-                      onClick={() => handleDeleteSimulatorConversation(detail)}
-                    >
-                      删除模拟对话
-                    </Button>
-                  </>
-                ) : null}
+              <Space wrap style={{ marginRight: 36 }}>
                 <Tooltip title="点击生成合同；右侧箭头可发送已生成合同">
                   <Dropdown.Button
                     loading={contractLoading}
@@ -1618,15 +1649,6 @@ export default function Conversations() {
                     <FileTextOutlined /> 合同
                   </Dropdown.Button>
                 </Tooltip>
-                <Button
-                  danger
-                  icon={<CloseCircleOutlined />}
-                  loading={closeLoading}
-                  disabled={detail?.status === 'closed'}
-                  onClick={handleCloseConversation}
-                >
-                  关闭对话
-                </Button>
                 <Tooltip title="开启后左侧实时同步翻译为简体中文">
                   <Space size={6} align="center">
                     <TranslationOutlined style={{ color: translationEnabled ? '#1677ff' : '#bfbfbf' }} />
@@ -1644,6 +1666,17 @@ export default function Conversations() {
                   </Space>
                 </Tooltip>
               </Space>
+              <Tooltip title="关闭对话">
+                <Button
+                  type="text"
+                  shape="circle"
+                  icon={<CloseCircleOutlined style={{ color: '#333', fontSize: 16 }} />}
+                  loading={closeLoading}
+                  disabled={detail?.status === 'closed'}
+                  onClick={handleCloseConversation}
+                  style={{ position: 'absolute', top: 8, right: 8 }}
+                />
+              </Tooltip>
             </div>
 
             {detail?.ai_draft ? (
@@ -1761,7 +1794,12 @@ export default function Conversations() {
                       {detail && !detailLoading && timeline.length === 0 ? (
                         <Empty description="暂无消息" />
                       ) : timeline.length ? (
-                        timeline.map((item) => renderTimelineItem(item, true))
+                        timeline.flatMap((item, idx) => [
+                          ...(idx === metricAnnotationIdx
+                            ? [<TurnMetricBadge key="metric-badge-tr" metric={detail?.latest_turn_metric} />]
+                            : []),
+                          renderTimelineItem(item, true),
+                        ])
                       ) : null}
                     </Spin>
                   </div>
@@ -1798,7 +1836,12 @@ export default function Conversations() {
                       {detail && !detailLoading && timeline.length === 0 ? (
                         <Empty description="暂无消息" />
                       ) : timeline.length ? (
-                        timeline.map((item) => renderTimelineItem(item, false))
+                        timeline.flatMap((item, idx) => [
+                          ...(idx === metricAnnotationIdx
+                            ? [<TurnMetricBadge key="metric-badge-raw" metric={detail?.latest_turn_metric} />]
+                            : []),
+                          renderTimelineItem(item, false),
+                        ])
                       ) : null}
                     </Spin>
                   </div>
@@ -1823,7 +1866,12 @@ export default function Conversations() {
                   {detail && !detailLoading && timeline.length === 0 ? (
                     <Empty description="暂无消息" />
                   ) : timeline.length ? (
-                    timeline.map((item) => renderTimelineItem(item, false))
+                    timeline.flatMap((item, idx) => [
+                      ...(idx === metricAnnotationIdx
+                        ? [<TurnMetricBadge key="metric-badge" metric={detail?.latest_turn_metric} />]
+                        : []),
+                      renderTimelineItem(item, false),
+                    ])
                   ) : null}
                 </Spin>
               </div>
