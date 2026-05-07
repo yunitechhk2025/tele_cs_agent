@@ -1208,19 +1208,21 @@ export default function Conversations() {
     translateApi
       .batch(missing.map((m) => m.text), targetLang)
       .then((res) => {
-        // eslint-disable-next-line no-console
-        console.log('[translate] got', res.data?.translations?.length, 'translations:', res.data?.translations);
         setTranslations((prev) => {
           const next = { ...prev };
           missing.forEach((m, i) => {
-            next[m.key] = res.data.translations?.[i] ?? m.text;
+            const tr = res.data.translations?.[i];
+            // 只缓存"真正翻译过的"结果：译文与原文不同才写入；
+            // 若后端返回原文（翻译失败兜底），不写入缓存，下次轮询时继续重试。
+            if (tr != null && tr.trim() !== '' && tr.trim() !== m.text.trim()) {
+              next[m.key] = tr;
+            }
           });
           return next;
         });
       })
-      .catch((err) => {
-        // eslint-disable-next-line no-console
-        console.error('[translate] request failed:', err?.message || err, err?.response?.data);
+      .catch(() => {
+        // 请求失败不缓存，下次轮询继续重试
       })
       .finally(() => {
         missing.forEach((m) => translateInflight.current.delete(m.key));

@@ -458,54 +458,38 @@ async def translate_batch(
     req: TranslateBatchRequest,
     _: str = Depends(get_current_user),
 ):
-    """Translate a batch of texts to the target language.
+    """Translate a batch of texts using MyMemory (free, no API key required).
 
-    Strategy: try the free MyMemory public API first (no API key required),
-    and only fall back to the configured LLM if MyMemory fails. Empty
-    inputs are returned as-is. If both providers fail we return the
-    original text so the client can still display something."""
+    Texts are translated concurrently to keep latency low. Empty inputs
+    are returned as-is. If MyMemory fails for any item, None is returned
+    for that item so the client can handle it (not cache it)."""
     import httpx
 
     from app.services.translation_service import translate_simple
 
-    from app.services.translation_service import translate_batch_via_llm
-
     target = (req.target_lang or "zh").strip() or "zh"
 
-    async def _do() -> list[str]:
-        # 1) 优先：单次 LLM 调用整批翻译，避开并发限流和 MyMemory 配额
-        try:
-            llm_batch = await translate_batch_via_llm(list(req.texts), target)
-        except Exception:
-            llm_batch = None
-        if llm_batch is not None and len(llm_batch) == len(req.texts):
-            # LLM 偶尔会对极短/无内容项返回 "(empty)"，这种情况退回原文
-            return [
-                tr if tr and tr.strip() and tr.strip() != "(empty)" else (orig or "")
-                for tr, orig in zip(llm_batch, req.texts)
-            ]
-
-        # 2) 失败时降级：MyMemory 逐条并发翻译
-        async with httpx.AsyncClient(timeout=6.0) as client:
-            async def _one(text: str) -> str:
+    async def _do() -> list[str | None]:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            async def _one(text: str) -> str | None:
                 if not text or not text.strip():
                     return text or ""
                 try:
-                    translated = await translate_simple(
+                    return await translate_simple(
                         text, target, client=client, llm_fallback=False
                     )
                 except Exception:
-                    translated = None
-                return translated or text
+                    return None
 
             return list(await asyncio.gather(*[_one(t) for t in req.texts]))
 
     try:
-        # 整个批次最多 30s，无论 LLM/MyMemory 是否挂掉，前端都不会被吊死
-        translations = await asyncio.wait_for(_do(), timeout=30.0)
+        results = await asyncio.wait_for(_do(), timeout=20.0)
     except asyncio.TimeoutError:
-        translations = list(req.texts)
-    return TranslateBatchResponse(translations=translations)
+        results = [None] * len(req.texts)
+
+    # None 表示翻译失败，返回 None 让前端不缓存、下次继续重试
+    return TranslateBatchResponse(translations=[r for r in results])
 
 
 @router.post("/conversations/{conversation_id}/close")

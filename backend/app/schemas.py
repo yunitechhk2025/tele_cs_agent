@@ -228,7 +228,7 @@ class TranslateBatchRequest(BaseModel):
 
 
 class TranslateBatchResponse(BaseModel):
-    translations: list[str]
+    translations: list[str | None]
 
 
 class TelegramSimulatorSessionCreate(BaseModel):
