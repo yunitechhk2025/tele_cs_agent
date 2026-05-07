@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime';
@@ -9,11 +9,13 @@ import {
   Button,
   Card,
   Divider,
+  Dropdown,
   Empty,
   Input,
   List,
   Modal,
   Radio,
+  Segmented,
   Select,
   Space,
   Spin,
@@ -30,6 +32,8 @@ import {
   EditOutlined,
   ExportOutlined,
   FileTextOutlined,
+  MenuFoldOutlined,
+  MenuUnfoldOutlined,
   RobotOutlined,
   SearchOutlined,
   SendOutlined,
@@ -78,7 +82,22 @@ const CONTRACT_OUTPUT_LANG_OPTIONS = [
   { value: 'pt', label: 'Português' },
 ];
 
-function customerDisplayName(c: Pick<Conversation, 'first_name' | 'last_name' | 'username'>) {
+const SIMULATED_NAME_POOL = [
+  '张三', '李四', '王五', '赵六', '钱七', '孙八', '周九', '吴十',
+  '郑明', '冯华', '陈晓', '楚云', '林峰', '黄磊', '徐波', '高远',
+];
+
+function simulatedDisplayName(id?: number | null) {
+  const idx = typeof id === 'number' && id >= 0 ? id % SIMULATED_NAME_POOL.length : 0;
+  return SIMULATED_NAME_POOL[idx];
+}
+
+function customerDisplayName(
+  c: Pick<Conversation, 'id' | 'first_name' | 'last_name' | 'username' | 'telegram_chat_id'>,
+) {
+  if (isSimulatorConversation(c)) {
+    return `${simulatedDisplayName(c.id)}（模拟对话）`;
+  }
   const parts = [c.first_name, c.last_name].filter(Boolean);
   if (parts.length) return parts.join(' ');
   if (c.username) return `@${c.username}`;
@@ -160,18 +179,6 @@ function parseServerUtc(value?: string | null) {
   return parsed.isValid() ? parsed : null;
 }
 
-function modeConfig(mode?: CustomerServiceSettings['mode']) {
-  switch (mode) {
-    case 'ai_auto':
-      return { text: 'mode1: ai_auto', color: 'blue' as const, label: '模式1：全AI客服答复' };
-    case 'ai_assist':
-      return { text: 'mode2: ai_assist', color: 'gold' as const, label: '模式2：人工确认AI生成内容后答复' };
-    case 'human_only':
-      return { text: 'mode3: human_only', color: 'volcano' as const, label: '模式3：无AI，完全人工客服答复' };
-    default:
-      return { text: 'mode?: unknown', color: 'default' as const, label: '未知模式' };
-  }
-}
 
 function draftAutoSendLabel(detail: ConversationDetail | null, draftCountdownSeconds: number | null) {
   if (!detail?.ai_draft) return '—';
@@ -494,6 +501,33 @@ function OutboundEventBubble({ event }: { event: SimulatorOutgoingEvent }) {
   );
 }
 
+function TurnMetricBadge({ metric }: { metric: ConversationDetail['latest_turn_metric'] }) {
+  if (!metric) return null;
+  const ic = intentConfig(metric);
+  return (
+    <div
+      style={{
+        display: 'flex',
+        justifyContent: 'flex-end',
+        gap: 4,
+        marginBottom: 4,
+        flexWrap: 'wrap',
+      }}
+    >
+      <Tooltip title={ic.tooltip}>
+        <Tag color={ic.color} style={{ fontSize: 11, margin: 0 }}>
+          意图 {ic.label}
+        </Tag>
+      </Tooltip>
+      <Tooltip title="首响时间">
+        <Tag color="purple" style={{ fontSize: 11, margin: 0 }}>
+          {formatLatency(metric.first_response_ms)}
+        </Tag>
+      </Tooltip>
+    </div>
+  );
+}
+
 function MessageBubble({ msg }: { msg: Message }) {
   const isUser = msg.role === 'user';
   const isAssistant = msg.role === 'assistant';
@@ -603,6 +637,70 @@ export default function Conversations() {
   const [genOutputLang, setGenOutputLang] = useState<string>('en');
   const [templatesLoading, setTemplatesLoading] = useState(false);
 
+  const [listWidth, setListWidth] = useState<number>(() => {
+    try {
+      const v = parseInt(localStorage.getItem('conv:listWidth') || '', 10);
+      if (Number.isFinite(v) && v >= 220 && v <= 720) return v;
+    } catch {
+      /* ignore */
+    }
+    return 350;
+  });
+  const [listCollapsed, setListCollapsed] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('conv:listCollapsed') === '1';
+    } catch {
+      return false;
+    }
+  });
+  const resizingRef = useRef(false);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('conv:listWidth', String(listWidth));
+    } catch {
+      /* ignore */
+    }
+  }, [listWidth]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('conv:listCollapsed', listCollapsed ? '1' : '0');
+    } catch {
+      /* ignore */
+    }
+  }, [listCollapsed]);
+
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      if (!resizingRef.current) return;
+      const box = containerRef.current?.getBoundingClientRect();
+      if (!box) return;
+      const next = Math.min(720, Math.max(220, e.clientX - box.left));
+      setListWidth(next);
+    };
+    const onUp = () => {
+      if (!resizingRef.current) return;
+      resizingRef.current = false;
+      document.body.style.userSelect = '';
+      document.body.style.cursor = '';
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    return () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+  }, []);
+
+  const startResizing = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    resizingRef.current = true;
+    document.body.style.userSelect = 'none';
+    document.body.style.cursor = 'col-resize';
+  }, []);
+
   const [sendModalOpen, setSendModalOpen] = useState(false);
   const [convContracts, setConvContracts] = useState<Contract[]>([]);
   const [sendContractId, setSendContractId] = useState<number | null>(null);
@@ -639,6 +737,32 @@ export default function Conversations() {
     }
   }, []);
 
+  const [modeUpdating, setModeUpdating] = useState(false);
+  const handleChangeMode = useCallback(
+    async (mode: CustomerServiceSettings['mode']) => {
+      if (!customerServiceSettings || customerServiceSettings.mode === mode) return;
+      setModeUpdating(true);
+      const previous = customerServiceSettings;
+      // 乐观更新，让 Segmented 切换感官即时
+      setCustomerServiceSettings({ ...customerServiceSettings, mode });
+      try {
+        const { data } = await settingsApi.updateCustomerService({ mode });
+        setCustomerServiceSettings(data);
+        const labelMap: Record<CustomerServiceSettings['mode'], string> = {
+          ai_auto: '已切换到「全 AI 自动应答」',
+          ai_assist: '已切换到「人机协同（人工确认 AI 草稿）」',
+          human_only: '已切换到「纯人工应答」',
+        };
+        message.success(labelMap[mode]);
+      } catch {
+        setCustomerServiceSettings(previous);
+        message.error('切换应答模式失败，请稍后重试');
+      } finally {
+        setModeUpdating(false);
+      }
+    },
+    [customerServiceSettings],
+  );
   const loadStats = useCallback(async () => {
     try {
       const { data } = await dashboardApi.getStats();
@@ -938,7 +1062,6 @@ export default function Conversations() {
   };
 
   const activeTabKey = filter;
-  const currentMode = modeConfig(customerServiceSettings?.mode);
   const timeline = useMemo<ConversationTimelineItem[]>(() => {
     if (!detail) return [];
     const messageItems = (detail.messages || []).map((msg) => ({
@@ -963,6 +1086,24 @@ export default function Conversations() {
     });
   }, [detail]);
 
+  // 找到第一条 AI 回复消息的 timeline 下标——即 latest_turn_metric.started_at 之后的首条 assistant 消息
+  const metricAnnotationIdx = useMemo(() => {
+    if (!detail?.latest_turn_metric) return -1;
+    const startedAt = new Date(detail.latest_turn_metric.started_at).getTime();
+    return timeline.findIndex(
+      (item) =>
+        item.kind === 'message' &&
+        item.message.role === 'assistant' &&
+        new Date(item.message.created_at).getTime() >= startedAt,
+    );
+  }, [detail?.latest_turn_metric, timeline]);
+
+  const renderTimelineItem = useCallback((item: ConversationTimelineItem) => {
+    if (item.kind === 'message') {
+      return <MessageBubble key={item.id} msg={item.message} />;
+    }
+    return <OutboundEventBubble key={item.id} event={item.event} />;
+  }, []);
   const pendingCount = stats?.pending_human ?? 0;
   const renderStatItem = (
     label: string,
@@ -1035,6 +1176,7 @@ export default function Conversations() {
         </Text>
       </div>
       <div
+        ref={containerRef}
         style={{
           display: 'flex',
           gap: 0,
@@ -1046,31 +1188,41 @@ export default function Conversations() {
           overflow: 'hidden',
           boxShadow: '0 2px 12px rgba(0,0,0,0.06)',
           border: '1px solid #f0f0f0',
+          position: 'relative',
         }}
       >
       {/* 左侧：对话列表（minHeight:0 让内部列表在任意会话下都能出现滚动条） */}
       <div
         style={{
-          width: 350,
+          width: listCollapsed ? 0 : listWidth,
           flexShrink: 0,
           alignSelf: 'stretch',
           minHeight: 0,
-          display: 'flex',
+          display: listCollapsed ? 'none' : 'flex',
           flexDirection: 'column',
           overflow: 'hidden',
           borderRight: '1px solid #f0f0f0',
           background: '#fafafa',
         }}
       >
-        <div style={{ padding: 16, paddingBottom: 8 }}>
+        <div style={{ padding: '12px 12px 6px', display: 'flex', alignItems: 'center', gap: 6 }}>
           <Input
             allowClear
-            size="large"
+            size="small"
             placeholder="搜索对话…"
             prefix={<SearchOutlined style={{ color: '#bfbfbf' }} />}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
+            style={{ flex: 1 }}
           />
+          <Tooltip title="收起对话列表" placement="left">
+            <Button
+              size="small"
+              type="text"
+              icon={<MenuFoldOutlined />}
+              onClick={() => setListCollapsed(true)}
+            />
+          </Tooltip>
         </div>
         <Tabs
           size="small"
@@ -1120,9 +1272,47 @@ export default function Conversations() {
                           border: selected ? '1px solid #1890ff' : '1px solid #f0f0f0',
                           background: selected ? '#e6f7ff' : '#fff',
                           transition: 'all 0.2s ease',
+                          position: 'relative',
                         }}
                         styles={{ body: { padding: '12px 14px' } }}
                       >
+                        {isSimulator && (
+                          <div
+                            style={{
+                              position: 'absolute',
+                              top: 6,
+                              right: 6,
+                              display: 'flex',
+                              gap: 2,
+                              zIndex: 1,
+                            }}
+                          >
+                            <Tooltip title="打开模拟器">
+                              <Button
+                                type="text"
+                                size="small"
+                                shape="circle"
+                                icon={<SwapOutlined style={{ color: '#333' }} />}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleOpenSimulator(item.id);
+                                }}
+                              />
+                            </Tooltip>
+                            <Tooltip title="删除模拟对话">
+                              <Button
+                                type="text"
+                                size="small"
+                                shape="circle"
+                                icon={<DeleteOutlined style={{ color: '#333' }} />}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleDeleteSimulatorConversation(item);
+                                }}
+                              />
+                            </Tooltip>
+                          </div>
+                        )}
                         <Space direction="vertical" size={6} style={{ width: '100%' }}>
                           <div
                             style={{
@@ -1137,39 +1327,6 @@ export default function Conversations() {
                             </Text>
                             {showDot ? <Badge status="processing" /> : null}
                           </div>
-                          <Space size={[6, 6]} wrap>
-                            <Tag color="default">ID #{item.id}</Tag>
-                            <Tooltip title={languageLabel(item.language)}>
-                              <Tag>{item.language?.toUpperCase() || '—'}</Tag>
-                            </Tooltip>
-                            <Tag color={st.color}>{st.label}</Tag>
-                            {isSimulator ? <Tag color="geekblue">模拟对话</Tag> : null}
-                          </Space>
-                          {isSimulator ? (
-                            <Space size={8} wrap>
-                              <Button
-                                size="small"
-                                icon={<SwapOutlined />}
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleOpenSimulator(item.id);
-                                }}
-                              >
-                                打开模拟器
-                              </Button>
-                              <Button
-                                size="small"
-                                danger
-                                icon={<DeleteOutlined />}
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleDeleteSimulatorConversation(item);
-                                }}
-                              >
-                                删除
-                              </Button>
-                            </Space>
-                          ) : null}
                           <Text type="secondary" style={{ fontSize: 12 }}>
                             更新于 {dayjs(item.updated_at).fromNow()}
                           </Text>
@@ -1183,6 +1340,59 @@ export default function Conversations() {
           </Spin>
         </div>
       </div>
+
+      {/* 拖动分隔条 */}
+      {!listCollapsed && (
+        <div
+          onMouseDown={startResizing}
+          title="拖动调整宽度"
+          style={{
+            width: 6,
+            cursor: 'col-resize',
+            background: 'transparent',
+            position: 'relative',
+            flexShrink: 0,
+            zIndex: 2,
+          }}
+          onMouseEnter={(e) => {
+            (e.currentTarget as HTMLDivElement).style.background = 'rgba(24,144,255,0.12)';
+          }}
+          onMouseLeave={(e) => {
+            (e.currentTarget as HTMLDivElement).style.background = 'transparent';
+          }}
+        >
+          <div
+            style={{
+              position: 'absolute',
+              top: 0,
+              bottom: 0,
+              left: 2,
+              width: 2,
+              background: '#f0f0f0',
+            }}
+          />
+        </div>
+      )}
+
+      {/* 折叠时显示的展开浮动按钮 */}
+      {listCollapsed && (
+        <Tooltip title="展开对话列表" placement="right">
+          <Button
+            size="small"
+            type="default"
+            icon={<MenuUnfoldOutlined />}
+            onClick={() => setListCollapsed(false)}
+            style={{
+              position: 'absolute',
+              top: 10,
+              left: 8,
+              zIndex: 5,
+              boxShadow: '0 2px 6px rgba(0,0,0,0.08)',
+              background: '#fff',
+            }}
+          />
+        </Tooltip>
+      )}
 
       {/* 右侧：对话详情 */}
       <div
@@ -1220,6 +1430,7 @@ export default function Conversations() {
                 justifyContent: 'space-between',
                 gap: 16,
                 flexWrap: 'wrap',
+                position: 'relative',
               }}
             >
               <Space align="center" size="middle" style={{ minWidth: 0 }}>
@@ -1228,24 +1439,24 @@ export default function Conversations() {
                 </Title>
                 {detail ? (
                   <>
-                    <Tag color="default">ID #{detail.id}</Tag>
-                    <Tag color={statusConfig(detail.status).color}>{statusConfig(detail.status).label}</Tag>
-                    <Tooltip title={currentMode.label}>
-                      <Tag color={currentMode.color}>{currentMode.text}</Tag>
+                    <Tooltip title="切换全局客服应答模式（影响所有对话）">
+                      <Segmented
+                        size="small"
+                        value={customerServiceSettings?.mode ?? 'ai_auto'}
+                        onChange={(val) =>
+                          void handleChangeMode(val as CustomerServiceSettings['mode'])
+                        }
+                        disabled={!customerServiceSettings || modeUpdating}
+                        options={[
+                          { label: '全 AI', value: 'ai_auto' },
+                          { label: '人机协同', value: 'ai_assist' },
+                          { label: '纯人工', value: 'human_only' },
+                        ]}
+                      />
                     </Tooltip>
                     <Tooltip title={detail.processing_state?.stage_detail || '当前处理阶段'}>
                       <Tag color={processingStageColor(detail)}>
                         {detail.processing_state?.stage_label || '空闲'}
-                      </Tag>
-                    </Tooltip>
-                    <Tooltip title={intentConfig(detail.latest_turn_metric).tooltip}>
-                      <Tag color={intentConfig(detail.latest_turn_metric).color}>
-                        意图 {intentConfig(detail.latest_turn_metric).label}
-                      </Tag>
-                    </Tooltip>
-                    <Tooltip title="最近一轮：首个可展示响应耗时 / 完整响应耗时">
-                      <Tag color="purple">
-                        首响 {formatLatency(detail.latest_turn_metric?.first_response_ms)} · 总耗时 {formatLatency(detail.latest_turn_metric?.total_ms)}
                       </Tag>
                     </Tooltip>
                   </>
@@ -1253,52 +1464,44 @@ export default function Conversations() {
                   <Tag>…</Tag>
                 )}
               </Space>
-              <Space wrap>
-                {detail && isSimulatorConversation(detail) ? (
-                  <>
-                    <Button
-                      icon={<SwapOutlined />}
-                      onClick={() => handleOpenSimulator(detail.id)}
-                    >
-                      打开模拟器
-                    </Button>
-                    <Button
-                      danger
-                      icon={<DeleteOutlined />}
-                      onClick={() => handleDeleteSimulatorConversation(detail)}
-                    >
-                      删除模拟对话
-                    </Button>
-                  </>
-                ) : null}
-                <Tooltip title="选择模板后根据聊天记录生成合同">
-                  <Button
-                    icon={<FileTextOutlined />}
+              <Space wrap style={{ marginRight: 36 }}>
+                <Tooltip title="点击生成合同；右侧箭头可发送已生成合同">
+                  <Dropdown.Button
                     loading={contractLoading}
                     onClick={() => void openGenerateModal()}
+                    menu={{
+                      items: [
+                        {
+                          key: 'generate',
+                          icon: <FileTextOutlined />,
+                          label: '生成合同',
+                          onClick: () => void openGenerateModal(),
+                        },
+                        {
+                          key: 'send',
+                          icon: <ExportOutlined />,
+                          label: '发送合同给客户',
+                          disabled: detail?.status === 'closed',
+                          onClick: () => void openSendContractModal(),
+                        },
+                      ],
+                    }}
                   >
-                    生成合同
-                  </Button>
+                    <FileTextOutlined /> 合同
+                  </Dropdown.Button>
                 </Tooltip>
-                <Tooltip title="将已生成的合同以消息形式发送给客户">
-                  <Button
-                    icon={<ExportOutlined />}
-                    onClick={() => void openSendContractModal()}
-                    disabled={detail?.status === 'closed'}
-                  >
-                    发送合同
-                  </Button>
-                </Tooltip>
+              </Space>
+              <Tooltip title="关闭对话">
                 <Button
-                  danger
-                  icon={<CloseCircleOutlined />}
+                  type="text"
+                  shape="circle"
+                  icon={<CloseCircleOutlined style={{ color: '#333', fontSize: 16 }} />}
                   loading={closeLoading}
                   disabled={detail?.status === 'closed'}
                   onClick={handleCloseConversation}
-                >
-                  关闭对话
-                </Button>
-              </Space>
+                  style={{ position: 'absolute', top: 8, right: 8 }}
+                />
+              </Tooltip>
             </div>
 
             {detail?.ai_draft ? (
@@ -1386,13 +1589,12 @@ export default function Conversations() {
                 {detail && !detailLoading && timeline.length === 0 ? (
                   <Empty description="暂无消息" />
                 ) : timeline.length ? (
-                  timeline.map((item) =>
-                    item.kind === 'message' ? (
-                      <MessageBubble key={item.id} msg={item.message} />
-                    ) : (
-                      <OutboundEventBubble key={item.id} event={item.event} />
-                    ),
-                  )
+                  timeline.flatMap((item, idx) => [
+                    ...(idx === metricAnnotationIdx
+                      ? [<TurnMetricBadge key="metric-badge" metric={detail?.latest_turn_metric} />]
+                      : []),
+                    renderTimelineItem(item),
+                  ])
                 ) : null}
               </Spin>
             </div>
