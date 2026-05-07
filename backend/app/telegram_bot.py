@@ -666,6 +666,12 @@ def resolve_recommended_product_reference_locally(
         "１": "1",
         "２": "2",
         "３": "3",
+        "４": "4",
+        "５": "5",
+        "６": "6",
+        "７": "7",
+        "８": "8",
+        "９": "9",
         "＃": "#",
         "﹟": "#",
     }))
@@ -676,11 +682,11 @@ def resolve_recommended_product_reference_locally(
             return None
         return recommended_product_ids[index - 1]
 
-    if re.fullmatch(r"#?[1-3]", compact):
+    if re.fullmatch(r"#?[1-9]", compact):
         return pick(int(compact.replace("#", "")))
 
     explicit_match = re.search(
-        r"(?:#|编号|商品|产品|第|no\.?|number|num|nº)\s*([1-3])",
+        r"(?:#|编号|商品|产品|第|no\.?|number|num|nº)\s*([1-9])",
         normalized,
         flags=re.IGNORECASE,
     )
@@ -697,6 +703,10 @@ def resolve_recommended_product_reference_locally(
         "primero": 1, "primera": 1,
         "segundo": 2, "segunda": 2,
         "tercero": 3, "tercera": 3,
+        "premier": 1, "premiere": 1,
+        "deuxieme": 2, "troisieme": 3,
+        "一番目": 1, "二番目": 2, "三番目": 3,
+        "첫번째": 1, "두번째": 2, "세번째": 3,
     }
     for word, index in ordinal_words.items():
         if word in compact:

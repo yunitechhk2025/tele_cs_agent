@@ -243,6 +243,19 @@ def _fast_intent_from_rules(text: str, *, has_pending_scene_confirmation: bool =
     normalized = (text or "").strip().lower()
     if not normalized:
         return None
+    compact = re.sub(r"\s+", "", normalized).translate(str.maketrans({
+        "１": "1",
+        "２": "2",
+        "３": "3",
+        "４": "4",
+        "５": "5",
+        "６": "6",
+        "７": "7",
+        "８": "8",
+        "９": "9",
+        "＃": "#",
+        "﹟": "#",
+    }))
 
     def has_any(patterns: list[str]) -> bool:
         return any(re.search(pattern, normalized, flags=re.IGNORECASE) for pattern in patterns)
@@ -274,6 +287,21 @@ def _fast_intent_from_rules(text: str, *, has_pending_scene_confirmation: bool =
         r"prix", r"devis", r"combien", r"coût", r"budget",
     ]):
         return _intent_result("quote_handoff", 0.95, source="rules", needs_human=True, reason="pricing or quotation keyword")
+
+    if has_pending_scene_confirmation and (
+        re.fullmatch(r"#?[1-9]", compact)
+        or re.fullmatch(r"第?#?[1-9](?:个|款|件|号)?", compact)
+        or re.fullmatch(r"第?[一二三四五六七八九](?:个|款|件|号)?", compact)
+        or re.fullmatch(r"(?:no\.?|number|num|nº)[1-9]", compact)
+        or compact in {
+            "first", "1st", "second", "2nd", "third", "3rd",
+            "primero", "primera", "segundo", "segunda", "tercero", "tercera",
+            "premier", "premiere", "deuxieme", "troisieme",
+            "첫번째", "두번째", "세번째",
+            "一番目", "二番目", "三番目",
+        }
+    ):
+        return _intent_result("scene_image_confirmation", 0.9, source="rules", reason="product selection after recommendation")
 
     if has_pending_scene_confirmation and has_any([
         r"^好$", r"^可以$", r"^要$", r"^是$", r"^yes$", r"^ok$", r"^sure$",
