@@ -548,6 +548,15 @@ async def delete_conversation(
     await db.execute(delete(ConversationOutboundEvent).where(ConversationOutboundEvent.conversation_id == conversation_id))
     await db.execute(delete(PendingAIReply).where(PendingAIReply.conversation_id == conversation_id))
     await db.execute(delete(ConversationSceneState).where(ConversationSceneState.conversation_id == conversation_id))
+    await db.execute(delete(ConversationProcessingState).where(ConversationProcessingState.conversation_id == conversation_id))
+    # 先删 step metrics，再删 turn metrics（有外键 user_message_id -> messages），最后删 messages
+    turn_metric_ids_result = await db.execute(
+        select(ConversationTurnMetric.id).where(ConversationTurnMetric.conversation_id == conversation_id)
+    )
+    turn_metric_ids = [row[0] for row in turn_metric_ids_result.all()]
+    if turn_metric_ids:
+        await db.execute(delete(ConversationTurnStepMetric).where(ConversationTurnStepMetric.turn_metric_id.in_(turn_metric_ids)))
+    await db.execute(delete(ConversationTurnMetric).where(ConversationTurnMetric.conversation_id == conversation_id))
     await db.execute(delete(Contract).where(Contract.conversation_id == conversation_id))
     await db.execute(delete(Message).where(Message.conversation_id == conversation_id))
     await db.delete(conversation)
