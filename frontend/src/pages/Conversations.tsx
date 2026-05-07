@@ -679,6 +679,13 @@ export default function Conversations() {
       return false;
     }
   });
+  const [targetLang, setTargetLang] = useState<string>(() => {
+    try {
+      return localStorage.getItem('conv:targetLang') || 'zh';
+    } catch {
+      return 'zh';
+    }
+  });
   const [translations, setTranslations] = useState<Record<string, string>>({});
   const [translating, setTranslating] = useState(false);
   const translateInflight = useRef<Set<string>>(new Set());
@@ -690,6 +697,17 @@ export default function Conversations() {
       /* ignore */
     }
   }, [translationEnabled]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('conv:targetLang', targetLang);
+    } catch {
+      /* ignore */
+    }
+    // 切换目标语言时清空翻译缓存，触发重新翻译
+    setTranslations({});
+    translateInflight.current.clear();
+  }, [targetLang]);
 
   const [listWidth, setListWidth] = useState<number>(() => {
     try {
@@ -1188,7 +1206,7 @@ export default function Conversations() {
     // eslint-disable-next-line no-console
     console.log('[translate] sending batch', missing.length, 'items', missing.map((m) => m.text.slice(0, 40)));
     translateApi
-      .batch(missing.map((m) => m.text), 'zh')
+      .batch(missing.map((m) => m.text), targetLang)
       .then((res) => {
         // eslint-disable-next-line no-console
         console.log('[translate] got', res.data?.translations?.length, 'translations:', res.data?.translations);
@@ -1210,7 +1228,7 @@ export default function Conversations() {
       });
 
     return undefined;
-  }, [timeline, translationEnabled, translations, timelineKeyAndText, isLikelyChinese]);
+  }, [timeline, translationEnabled, targetLang, translations, timelineKeyAndText, isLikelyChinese]);
 
   // 找到第一条 AI 回复消息的 timeline 下标——即 latest_turn_metric.started_at 之后的首条 assistant 消息
   const metricAnnotationIdx = useMemo(() => {
@@ -1649,22 +1667,30 @@ export default function Conversations() {
                     <FileTextOutlined /> 合同
                   </Dropdown.Button>
                 </Tooltip>
-                <Tooltip title="开启后左侧实时同步翻译为简体中文">
-                  <Space size={6} align="center">
-                    <TranslationOutlined style={{ color: translationEnabled ? '#1677ff' : '#bfbfbf' }} />
-                    <Text type="secondary" style={{ fontSize: 12 }}>
-                      实时翻译
-                    </Text>
-                    <Switch
+                <Space size={6} align="center">
+                  <TranslationOutlined style={{ color: translationEnabled ? '#1677ff' : '#bfbfbf' }} />
+                  <Text type="secondary" style={{ fontSize: 12 }}>实时翻译</Text>
+                  <Switch
+                    size="small"
+                    checked={translationEnabled}
+                    onChange={setTranslationEnabled}
+                  />
+                  {translationEnabled && (
+                    <Select
                       size="small"
-                      checked={translationEnabled}
-                      onChange={setTranslationEnabled}
+                      value={targetLang}
+                      onChange={(v) => setTargetLang(v)}
+                      style={{ width: 92 }}
+                      options={[
+                        { value: 'zh', label: '简体中文' },
+                        { value: 'zh-TW', label: '繁體中文' },
+                      ]}
                     />
-                    {translationEnabled && translating ? (
-                      <LoadingOutlined style={{ color: '#1677ff', fontSize: 12 }} />
-                    ) : null}
-                  </Space>
-                </Tooltip>
+                  )}
+                  {translationEnabled && translating ? (
+                    <LoadingOutlined style={{ color: '#1677ff', fontSize: 12 }} />
+                  ) : null}
+                </Space>
               </Space>
               <Tooltip title="关闭对话">
                 <Button
@@ -1784,7 +1810,7 @@ export default function Conversations() {
                       gap: 6,
                     }}
                   >
-                    <TranslationOutlined /> 简体中文译文
+                    <TranslationOutlined /> {targetLang === 'zh-TW' ? '繁體中文譯文' : '简体中文译文'}
                     {translating ? (
                       <LoadingOutlined style={{ marginLeft: 'auto' }} />
                     ) : null}

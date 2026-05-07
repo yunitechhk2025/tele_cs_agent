@@ -27,6 +27,15 @@ const TG_SECONDARY = '#6d7f8e';
 const TG_ACCENT = '#5ca5db';
 const SIMULATOR_STORAGE_KEY = 'telegram-simulator-session';
 
+const SIMULATED_NAME_POOL = [
+  '张三', '李四', '王五', '赵六', '钱七', '孙八', '周九', '吴十',
+  '郑明', '冯华', '陈晓', '楚云', '林峰', '黄磊', '徐波', '高远',
+];
+function simulatedDisplayName(id: number | null) {
+  if (id == null) return '模拟用户';
+  return SIMULATED_NAME_POOL[id % SIMULATED_NAME_POOL.length];
+}
+
 type TimelineItem =
   | {
       id: string;
@@ -93,12 +102,12 @@ function mapMessages(messages: Message[]): TimelineItem[] {
   }));
 }
 
-function Bubble({ item }: { item: TimelineItem }) {
+function Bubble({ item, userName }: { item: TimelineItem; userName: string }) {
   const isUser = item.role === 'user';
   const isHuman = item.role === 'human_agent';
   const animate = item.role === 'assistant';
   const bg = isUser ? TG_USER_BUBBLE : isHuman ? TG_HUMAN_BUBBLE : TG_ASSISTANT_BUBBLE;
-  const name = isUser ? '模拟用户' : isHuman ? '人工客服' : 'AI 助手';
+  const name = isUser ? userName : isHuman ? '人工客服' : 'AI 助手';
   const icon = isUser ? <UserOutlined /> : <RobotOutlined />;
 
   return (
@@ -459,7 +468,7 @@ export default function TelegramSimulator() {
                   border: '1px solid rgba(92,165,219,0.32)',
                 }}
               >
-                ID #{conversationId}
+                {simulatedDisplayName(conversationId)}
               </Text>
             ) : null}
           </Space>
@@ -534,7 +543,9 @@ export default function TelegramSimulator() {
                   image={Empty.PRESENTED_IMAGE_SIMPLE}
                 />
               ) : (
-                timeline.map((item) => <Bubble key={item.id} item={item} />)
+                timeline.map((item) => (
+                  <Bubble key={item.id} item={item} userName={simulatedDisplayName(conversationId)} />
+                ))
               )}
               {sending && (
                 <div style={{ display: 'flex', justifyContent: 'flex-start', padding: '0 12px' }}>

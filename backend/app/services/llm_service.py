@@ -1,6 +1,7 @@
 import json
 import logging
 import re
+import os
 from typing import Any
 
 from openai import AsyncOpenAI
@@ -116,6 +117,8 @@ def _resolve_embedding_model(base_url: str, model: str | None) -> str:
 async def _chat_completion(messages: list[dict], max_tokens: int | None = None, temperature: float | None = None) -> str:
     """Unified chat completion that routes to the correct provider."""
     cfg = await get_llm_settings()
+    if _llm_disabled(cfg):
+        return _mock_chat_completion(messages)
     provider = cfg.get("llm_provider", "openai").lower()
     model = cfg.get("llm_model", "gpt-4o")
     temp = temperature if temperature is not None else float(cfg.get("llm_temperature", "0.7"))
@@ -158,6 +161,8 @@ async def _anthropic_chat(cfg: dict, messages: list[dict], model: str, max_token
 async def get_embedding(text: str) -> list[float]:
     """Get embedding vector for text using the configured embedding provider."""
     cfg = await get_llm_settings()
+    if _llm_disabled(cfg):
+        return _mock_embedding(text)
     client = _build_embedding_client(cfg)
     base_url = cfg.get("embedding_base_url") or cfg.get("llm_base_url", "https://api.openai.com/v1")
     model = _resolve_embedding_model(base_url, cfg.get("embedding_model"))
@@ -192,6 +197,82 @@ def _heuristic_language(text: str) -> str | None:
     if re.search(r'[\u0400-\u04ff]', text):
         return "ru"
     return None
+
+
+def _llm_disabled(cfg: dict[str, str]) -> bool:
+    """When no API key is configured, run in mock mode so local dev can start."""
+    flag = (os.getenv("LLM_DISABLED") or "").strip().lower()
+    if flag in {"1", "true", "yes", "on"}:
+        return True
+    # Auto-disable if no key configured
+    return not (cfg.get("llm_api_key") or "").strip()
+
+
+def _mock_embedding(text: str, dim: int = 64) -> list[float]:
+    """Deterministic cheap embedding for local dev (no network / no keys)."""
+    import hashlib
+
+    raw = (text or "").encode("utf-8", errors="ignore")
+    digest = hashlib.sha256(raw).digest()
+    out: list[float] = []
+    # Expand digest deterministically to dim floats in [-1, 1]
+    while len(out) < dim:
+        for b in digest:
+            out.append((b / 127.5) - 1.0)
+            if len(out) >= dim:
+                break
+        digest = hashlib.sha256(digest).digest()
+    return out
+
+
+def _mock_chat_completion(messages: list[dict]) -> str:
+    """Return minimal well-formed outputs for common internal prompts."""
+    system = "\n".join(str(m.get("content") or "") for m in messages if m.get("role") == "system")
+    user = "\n".join(str(m.get("content") or "") for m in messages if m.get("role") == "user")
+    s = (system or "").lower()
+    u = (user or "").strip()
+
+    # JSON boolean classifiers
+    if 'return json: {"is_quote": true}' in s:
+        return '{"is_quote": false}'
+    if 'return json: {"is_product_rec": true}' in s:
+        return '{"is_product_rec": false}'
+    if 'return json: {"is_confirmed": true}' in s:
+        return '{"is_confirmed": false}'
+
+    # File matcher expects JSON array
+    if "return only the json array" in s and "file catalog" in s:
+        return "[]"
+
+    # Intent router expects compact JSON object
+    if "intent router" in s and "primary_intent" in s and "secondary_intents" in s:
+        return (
+            '{"primary_intent":"general_question","secondary_intents":[],"confidence":0.2,'
+            '"slots":{"target_product_id":null,"scene_name":"","style_hint":"","file_ids":[]},'
+            '"needs_human":false,"clarification_question":"","reason":"mock-llm-disabled"}'
+        )
+
+    # Batch translation: expects JSON array aligned to numbered input
+    if "return only a json array of strings" in s and "translate each numbered item" in s:
+        items: list[str] = []
+        for line in u.splitlines():
+            m = re.match(r"^\[(\d+)\]\s*(.*)$", line.strip())
+            if not m:
+                continue
+            text = m.group(2)
+            items.append("" if text == "(empty)" else text)
+        return json.dumps(items, ensure_ascii=False)
+
+    # Language detector: return a code
+    if "you are a language detector" in s and "iso 639-1" in s:
+        return "en"
+
+    # Contract generator: return TITLE/---/body
+    if "output format (mandatory" in s and "title:" in s:
+        return "TITLE: Service Agreement\n---\nThis is a mock contract generated in local dev (LLM disabled)."
+
+    # Generic: echo a short helpful reply without pretending it's AI-generated knowledge
+    return "（本地开发模式：LLM 未配置，已返回占位回复。请在环境变量中配置 LLM Key 后启用真实模型。）"
 
 
 INTENT_VALUES = {
