@@ -196,6 +196,22 @@ class ConversationSceneState(Base):
     active_product = relationship("ProductEntry", foreign_keys=[active_product_id])
 
 
+class ConversationMemory(Base):
+    __tablename__ = "conversation_memories"
+
+    id = Column(Integer, primary_key=True, index=True)
+    conversation_id = Column(Integer, ForeignKey("conversations.id"), unique=True, index=True, nullable=False)
+    active_product_id = Column(Integer, ForeignKey("product_entries.id"), nullable=True)
+    recent_product_ids_json = Column(Text, default="[]")
+    active_topic = Column(String(100), default="")
+    preferences_json = Column(Text, default="{}")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    conversation = relationship("Conversation")
+    active_product = relationship("ProductEntry", foreign_keys=[active_product_id])
+
+
 class ConversationProcessingState(Base):
     __tablename__ = "conversation_processing_states"
 

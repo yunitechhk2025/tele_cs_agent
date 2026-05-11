@@ -17,7 +17,7 @@ from app.config import get_settings
 from app.database import AsyncSessionLocal
 from app.models import (
     Conversation, Message, FileEntry, TelegramBot, ConversationStatus, MessageRole,
-    ProductEntry, ConversationSceneState,
+    ProductEntry, ConversationSceneState, ConversationMemory,
 )
 from app.services.llm_service import (
     detect_language, check_file_request, generate_response,
@@ -583,6 +583,102 @@ async def get_scene_state(conversation_id: int) -> ConversationSceneState | None
         return result.scalar_one_or_none()
 
 
+def parse_memory_product_ids(raw: str | None) -> list[int]:
+    try:
+        return [int(x) for x in json.loads(raw or "[]") if str(x).isdigit()]
+    except Exception:
+        return []
+
+
+def parse_memory_preferences(raw: str | None) -> dict[str, list[str]]:
+    try:
+        data = json.loads(raw or "{}")
+    except Exception:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    out: dict[str, list[str]] = {}
+    for key, value in data.items():
+        if isinstance(value, list):
+            out[str(key)] = [str(x) for x in value if str(x).strip()][:8]
+    return out
+
+
+def merge_memory_product_ids(existing: list[int], incoming: list[int], limit: int = 12) -> list[int]:
+    merged: list[int] = []
+    for item in [*existing, *incoming]:
+        if not item or item in merged:
+            continue
+        merged.append(int(item))
+    return merged[-limit:]
+
+
+def merge_memory_preferences(
+    existing: dict[str, list[str]],
+    incoming: dict[str, list[str]] | None,
+) -> dict[str, list[str]]:
+    if not incoming:
+        return existing
+    merged = {key: list(values) for key, values in existing.items()}
+    for key, values in incoming.items():
+        if not isinstance(values, list):
+            continue
+        bucket = merged.setdefault(key, [])
+        for value in values:
+            clean = (value or "").strip()
+            if clean and clean not in bucket:
+                bucket.append(clean)
+        merged[key] = bucket[-8:]
+    return merged
+
+
+async def get_conversation_memory(conversation_id: int) -> ConversationMemory | None:
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(ConversationMemory).where(ConversationMemory.conversation_id == conversation_id)
+        )
+        return result.scalar_one_or_none()
+
+
+async def save_conversation_memory(
+    conversation_id: int,
+    *,
+    active_product_id: int | None = None,
+    recent_product_ids: list[int] | None = None,
+    active_topic: str = "",
+    preferences: dict[str, list[str]] | None = None,
+):
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(ConversationMemory).where(ConversationMemory.conversation_id == conversation_id)
+        )
+        memory = result.scalar_one_or_none()
+        if not memory:
+            memory = ConversationMemory(conversation_id=conversation_id)
+            db.add(memory)
+
+        existing_ids = parse_memory_product_ids(memory.recent_product_ids_json)
+        incoming_ids = list(recent_product_ids or [])
+        if active_product_id:
+            incoming_ids.append(active_product_id)
+        memory.recent_product_ids_json = json.dumps(
+            merge_memory_product_ids(existing_ids, incoming_ids),
+            ensure_ascii=False,
+        )
+        if active_product_id:
+            memory.active_product_id = active_product_id
+        if active_topic:
+            memory.active_topic = active_topic
+        memory.preferences_json = json.dumps(
+            merge_memory_preferences(
+                parse_memory_preferences(memory.preferences_json),
+                preferences,
+            ),
+            ensure_ascii=False,
+        )
+        await db.commit()
+
+
 async def save_scene_state(
     conversation_id: int,
     primary_product_id: int | None,
@@ -596,53 +692,7 @@ async def save_scene_state(
     active_product_id: int | None = None,
     preferences: dict[str, list[str]] | None = None,
 ):
-    import json
-
-    def load_json_list(raw: str | None) -> list[int]:
-        try:
-            return [int(x) for x in json.loads(raw or "[]") if str(x).isdigit()]
-        except Exception:
-            return []
-
-    def load_preferences(raw: str | None) -> dict[str, list[str]]:
-        try:
-            data = json.loads(raw or "{}")
-        except Exception:
-            return {}
-        if not isinstance(data, dict):
-            return {}
-        out: dict[str, list[str]] = {}
-        for key, value in data.items():
-            if isinstance(value, list):
-                out[str(key)] = [str(x) for x in value if str(x).strip()][:8]
-        return out
-
-    def merge_unique(existing: list[int], incoming: list[int], limit: int = 12) -> list[int]:
-        merged: list[int] = []
-        for item in [*existing, *incoming]:
-            if not item or item in merged:
-                continue
-            merged.append(int(item))
-        return merged[-limit:]
-
-    def merge_preferences(
-        existing: dict[str, list[str]],
-        incoming: dict[str, list[str]] | None,
-    ) -> dict[str, list[str]]:
-        if not incoming:
-            return existing
-        merged = {key: list(values) for key, values in existing.items()}
-        for key, values in incoming.items():
-            if not isinstance(values, list):
-                continue
-            bucket = merged.setdefault(key, [])
-            for value in values:
-                clean = (value or "").strip()
-                if clean and clean not in bucket:
-                    bucket.append(clean)
-            merged[key] = bucket[-8:]
-        return merged
-
+    active_id = active_product_id or primary_product_id
     async with AsyncSessionLocal() as db:
         result = await db.execute(
             select(ConversationSceneState).where(ConversationSceneState.conversation_id == conversation_id)
@@ -651,17 +701,16 @@ async def save_scene_state(
         if not state:
             state = ConversationSceneState(conversation_id=conversation_id)
             db.add(state)
-        existing_recent_ids = merge_unique(
-            load_json_list(state.recent_product_ids_json),
-            load_json_list(state.recommended_product_ids_json),
+        existing_recent_ids = merge_memory_product_ids(
+            parse_memory_product_ids(state.recent_product_ids_json),
+            parse_memory_product_ids(state.recommended_product_ids_json),
         )
-        active_id = active_product_id or primary_product_id
-        recent_ids = merge_unique(
+        recent_ids = merge_memory_product_ids(
             existing_recent_ids,
             [*recommended_product_ids, *([active_id] if active_id else [])],
         )
-        merged_preferences = merge_preferences(
-            load_preferences(state.preferences_json),
+        merged_preferences = merge_memory_preferences(
+            parse_memory_preferences(state.preferences_json),
             preferences,
         )
         state.primary_product_id = primary_product_id
@@ -676,6 +725,13 @@ async def save_scene_state(
         state.reply_language = reply_language or "en"
         state.last_customer_request = last_customer_request or ""
         await db.commit()
+    await save_conversation_memory(
+        conversation_id,
+        active_product_id=active_id,
+        recent_product_ids=recommended_product_ids,
+        active_topic=active_topic or ("scene_image_confirmation" if pending_confirmation else "product_context" if active_id else ""),
+        preferences=preferences,
+    )
 
 
 async def clear_scene_state(conversation_id: int, active_topic: str = ""):
@@ -955,6 +1011,63 @@ def build_product_detail_message(product: ProductEntry, language: str) -> str:
     link = (product.buy_url or product.detail_url or "").strip()
     if link:
         lines.append(f"{labels['link']}: {link}")
+    return "\n".join(lines)
+
+
+def build_conversation_memory_info(
+    memory: ConversationMemory | None,
+    scene_state: ConversationSceneState | None = None,
+    products_by_id: dict[int, dict[str, Any]] | None = None,
+) -> str:
+    recent_ids = parse_memory_product_ids(memory.recent_product_ids_json if memory else None)
+    if not recent_ids and scene_state:
+        recent_ids = parse_memory_product_ids(
+            scene_state.recent_product_ids_json or scene_state.recommended_product_ids_json
+        )
+    active_product_id = (
+        memory.active_product_id if memory and memory.active_product_id
+        else scene_state.active_product_id if scene_state and scene_state.active_product_id
+        else scene_state.primary_product_id if scene_state else None
+    )
+    preferences = parse_memory_preferences(memory.preferences_json if memory else None)
+    if not preferences and scene_state:
+        preferences = parse_memory_preferences(scene_state.preferences_json)
+    active_topic = (
+        memory.active_topic if memory and memory.active_topic
+        else scene_state.active_topic if scene_state else ""
+    )
+
+    lines: list[str] = []
+    if active_topic:
+        lines.append(f"active_topic: {active_topic}")
+    if active_product_id:
+        product = products_by_id.get(int(active_product_id)) if products_by_id else None
+        if product:
+            lines.append(
+                "active_product: "
+                f"ID:{product.get('id')} | {product.get('name', '')} | "
+                f"space:{product.get('space', '')} | style:{product.get('style', '')} | "
+                f"material:{product.get('material', '')} | color:{product.get('color', '')}"
+            )
+        else:
+            lines.append(f"active_product_id: {active_product_id}")
+    if recent_ids:
+        recent_lines: list[str] = []
+        for idx, product_id in enumerate(recent_ids[-6:], start=1):
+            product = products_by_id.get(int(product_id)) if products_by_id else None
+            if product:
+                recent_lines.append(f"#{idx}=ID:{product_id} {product.get('name', '')}")
+            else:
+                recent_lines.append(f"#{idx}=ID:{product_id}")
+        lines.append("recent_products: " + "; ".join(recent_lines))
+    if preferences:
+        prefs = []
+        for key in ["spaces", "styles", "materials", "colors"]:
+            values = preferences.get(key) or []
+            if values:
+                prefs.append(f"{key}={', '.join(values[:6])}")
+        if prefs:
+            lines.append("explicit_preferences: " + "; ".join(prefs))
     return "\n".join(lines)
 
 
@@ -1350,24 +1463,31 @@ async def process_customer_text_message(
 
         await stage("loading_scene_state")
         scene_state = await get_scene_state(conversation_id)
+        conversation_memory = await get_conversation_memory(conversation_id)
         recent_scene_product_ids: list[int] = []
+        if conversation_memory:
+            recent_scene_product_ids = parse_memory_product_ids(conversation_memory.recent_product_ids_json)
         if scene_state:
             try:
-                recent_scene_product_ids = [
-                    int(x) for x in json.loads(
-                        scene_state.recent_product_ids_json
-                        or scene_state.recommended_product_ids_json
-                        or "[]"
-                    )
-                ]
+                if not recent_scene_product_ids:
+                    recent_scene_product_ids = [
+                        int(x) for x in json.loads(
+                            scene_state.recent_product_ids_json
+                            or scene_state.recommended_product_ids_json
+                            or "[]"
+                        )
+                    ]
             except Exception:
                 recent_scene_product_ids = []
         active_product_id = (
-            scene_state.active_product_id
+            conversation_memory.active_product_id
+            if conversation_memory and conversation_memory.active_product_id
+            else scene_state.active_product_id
             if scene_state and scene_state.active_product_id
             else scene_state.primary_product_id if scene_state else None
         )
         turn_preferences = extract_explicit_product_preferences(user_message)
+        conversation_memory_info = build_conversation_memory_info(conversation_memory, scene_state)
 
         await stage("classifying_intent_fast")
         has_pending_scene_confirmation = bool(scene_state and scene_state.pending_confirmation)
@@ -1542,6 +1662,13 @@ async def process_customer_text_message(
             all_products = await get_products_for_bot()
         if all_products is None:
             all_products = []
+        products_by_id_for_memory = {int(p["id"]): p for p in all_products if p.get("id") is not None}
+        if products_by_id_for_memory:
+            conversation_memory_info = build_conversation_memory_info(
+                conversation_memory,
+                scene_state,
+                products_by_id_for_memory,
+            )
         if not context_product_id:
             target_slot = intent_slots.get("target_product_id")
             if target_slot is not None and str(target_slot).strip().isdigit():
@@ -1897,7 +2024,11 @@ async def process_customer_text_message(
         logger.info(f"[Bot {bot_id}] Product recommendation: {is_product_rec}")
         if is_product_rec:
             await stage("product_matching")
-            selected_ids = await ai_select_products(user_message, all_products) if all_products else []
+            selected_ids = await ai_select_products(
+                user_message,
+                all_products,
+                conversation_memory=conversation_memory_info,
+            ) if all_products else []
             products_by_id = {p["id"]: p for p in all_products}
             selected_products = [products_by_id[pid] for pid in selected_ids if pid in products_by_id]
             intro = PRODUCT_REC_INTRO.get(language, PRODUCT_REC_INTRO["en"])
@@ -2031,17 +2162,11 @@ async def process_customer_text_message(
             file_info = f"{file_info}\n\nConversation handling notes:\n{notes}".strip()
 
         if turn_preferences:
-            await save_scene_state(
-                conversation_id=conversation_id,
-                primary_product_id=active_product_id,
-                recommended_product_ids=recent_scene_product_ids,
-                suggested_scene=scene_state.suggested_scene if scene_state else "",
-                suggested_style=scene_state.suggested_style if scene_state else "",
-                pending_confirmation=False,
-                reply_language=language,
-                last_customer_request=user_message,
-                active_topic=intent_name,
+            await save_conversation_memory(
+                conversation_id,
                 active_product_id=active_product_id,
+                recent_product_ids=recent_scene_product_ids,
+                active_topic=intent_name,
                 preferences=turn_preferences,
             )
 
@@ -2053,6 +2178,7 @@ async def process_customer_text_message(
             language=language,
             chat_history=chat_history,
             file_info=file_info,
+            conversation_memory=conversation_memory_info,
         )
         prefix = ""
         if topic_switch:

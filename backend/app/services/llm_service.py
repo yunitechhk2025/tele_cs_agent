@@ -791,14 +791,24 @@ async def select_scene_bundle_products(
         return []
 
 
-async def ai_select_products(user_message: str, products: list[dict]) -> list[int]:
+async def ai_select_products(
+    user_message: str,
+    products: list[dict],
+    conversation_memory: str = "",
+) -> list[int]:
     """Use AI to select up to 3 best-matching product IDs from the catalog."""
     import re
     if not products:
         return []
+    memory_section = ""
+    if conversation_memory.strip():
+        memory_section = (
+            "Same-conversation memory to respect when relevant:\n"
+            f"{conversation_memory.strip()}\n\n"
+        )
     catalog = "\n".join(
         f"ID:{p['id']} | 品牌:{p.get('brand', '')} | {p['name']} | 系列:{p['series']} | 空间:{p['space']} "
-        f"| 风格:{p['style']} | 颜色:{p['color']}"
+        f"| 风格:{p['style']} | 颜色:{p['color']} | 材质:{p.get('material', '')}"
         for p in products
     )
     try:
@@ -811,9 +821,12 @@ async def ai_select_products(user_message: str, products: list[dict]) -> list[in
                         "Given the catalog below, pick up to 3 product IDs that BEST match the request.\n"
                         "RULES:\n"
                         "- Match by brand, style, space, color, series, or name.\n"
+                        "- If same-conversation memory includes explicit preferences, use them when the latest request is underspecified.\n"
+                        "- If the latest request clearly overrides previous preferences, follow the latest request.\n"
                         "- Return a JSON array of numeric IDs, e.g. [12, 45, 78]\n"
                         "- If nothing matches, return []\n"
                         "- Output ONLY the JSON array, no explanation.\n\n"
+                        f"{memory_section}"
                         f"CATALOG:\n{catalog}"
                     ),
                 },
@@ -860,6 +873,7 @@ async def generate_response(
     language: str,
     chat_history: list[dict] | None = None,
     file_info: str = "",
+    conversation_memory: str = "",
 ) -> str:
     lang_name = LANGUAGE_NAMES.get(language, "English")
 
@@ -869,6 +883,13 @@ async def generate_response(
             f"\n\nAvailable files that may be relevant:\n{file_info}\n"
             f"If a file is relevant to the customer's question, mention it in your response "
             f"and let them know you will send it."
+        )
+    memory_section = ""
+    if conversation_memory.strip():
+        memory_section = (
+            f"\n\nSame-conversation memory (use only when relevant to the current question):\n"
+            f"{conversation_memory.strip()}\n"
+            f"If the latest user message contradicts this memory, prefer the latest user message."
         )
 
     has_kb = bool(context and context.strip())
@@ -883,6 +904,7 @@ async def generate_response(
             f"do not substitute different facts or generic guesses. "
             f"If the excerpts do not cover the question, say so briefly and offer human support.\n\n"
             f"Knowledge Base Context:\n{context}\n"
+            f"{memory_section}"
             f"{file_section}\n\n"
             f"Rules:\n"
             f"1. Always respond in {lang_name}\n"
@@ -897,6 +919,7 @@ async def generate_response(
             f"You MUST respond in {lang_name} ({language}). "
             f"No knowledge base snippets were retrieved for this question; answer helpfully from "
             f"general customer-service practice, and suggest contacting a human agent for specifics.\n"
+            f"{memory_section}"
             f"{file_section}\n\n"
             f"Rules:\n"
             f"1. Always respond in {lang_name}\n"
