@@ -1071,7 +1071,7 @@ export default function Conversations() {
       message: msg,
     }));
     const eventItems = (detail.outbound_events || [])
-      .filter((event) => event.type === 'photo' || event.type === 'document')
+      .filter((event) => event.type === 'text' || event.type === 'photo' || event.type === 'document')
       .map((event) => ({
         id: event.id,
         created_at: event.created_at,

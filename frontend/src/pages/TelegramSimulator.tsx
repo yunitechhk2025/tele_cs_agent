@@ -304,8 +304,22 @@ export default function TelegramSimulator() {
 
   const timeline = useMemo(() => {
     const textItems = mapMessages(messages);
+    const persistedTextKeys = new Set<string>();
+    textItems.forEach((item) => {
+      if (item.kind === 'text') {
+        persistedTextKeys.add(`${item.role}\n${item.content.trim()}`);
+      }
+    });
+    persistedEvents.forEach((item) => {
+      if (item.kind === 'text') {
+        persistedTextKeys.add(`${item.role}\n${item.content.trim()}`);
+      }
+    });
     const dedupedEphemeral = ephemeralEvents.filter((item) => {
-      if (item.kind === 'text') return true;
+      if (item.kind === 'text') {
+        const key = `${item.role}\n${item.content.trim()}`;
+        return !persistedTextKeys.has(key);
+      }
       return !persistedEvents.some(
         (persisted) =>
           persisted.kind === item.kind &&

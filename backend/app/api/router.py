@@ -127,6 +127,129 @@ def _pending_draft_schema(draft: PendingAIReply | None) -> PendingAIReplySchema 
     )
 
 
+def _simulator_event_created_at(event: dict[str, Any]) -> datetime:
+    raw = event.get("created_at")
+    if not raw:
+        return datetime.utcnow()
+    try:
+        return datetime.fromisoformat(str(raw).replace("Z", "+00:00")).replace(tzinfo=None)
+    except Exception:
+        return datetime.utcnow()
+
+
+async def _persist_simulator_outbound_events(
+    db: AsyncSession,
+    conversation_id: int,
+    events: list[dict[str, Any]],
+    language: str,
+) -> None:
+    for event in events:
+        event_type = event.get("type") or "text"
+        created_at = _simulator_event_created_at(event)
+        caption = (event.get("caption") or "").strip()
+        url = (event.get("url") or "").strip()
+        is_product_card = caption.startswith("[#") or url.startswith("/api/products/")
+        if event_type == "photo" and is_product_card:
+            db.add(ConversationOutboundEvent(
+                conversation_id=conversation_id,
+                role=event.get("role") or MessageRole.ASSISTANT.value,
+                event_type=event_type,
+                text=event.get("text") or "",
+                caption=caption,
+                url=url,
+                filename=event.get("filename") or "",
+                parse_mode=event.get("parse_mode") or None,
+                created_at=created_at,
+            ))
+            continue
+
+        if event_type == "document":
+            db.add(ConversationOutboundEvent(
+                conversation_id=conversation_id,
+                role=event.get("role") or MessageRole.ASSISTANT.value,
+                event_type=event_type,
+                text=event.get("text") or "",
+                caption=caption,
+                url=url,
+                filename=event.get("filename") or "",
+                parse_mode=event.get("parse_mode") or None,
+                created_at=created_at,
+            ))
+            continue
+
+        text = (event.get("text") or "").strip()
+        if event_type == "text" and text.startswith("[#"):
+            db.add(Message(
+                conversation_id=conversation_id,
+                role=MessageRole.ASSISTANT,
+                content=text,
+                language=language,
+                created_at=created_at,
+            ))
+    await db.commit()
+
+
+def _simulator_timeline_event_key(event: TelegramSimulatorEventSchema) -> tuple[str, str, str] | None:
+    event_type = event.type or ""
+    role = event.role or MessageRole.ASSISTANT.value
+    if event_type in {"photo", "document"} and event.url:
+        return (event_type, role, event.url)
+    if event_type == "text" and event.text:
+        return (event_type, role, event.text.strip())
+    return None
+
+
+def _simulator_message_text_keys(messages: list[Message]) -> set[tuple[str, str, str]]:
+    keys: set[tuple[str, str, str]] = set()
+    for msg in messages:
+        content = (msg.content or "").strip()
+        if content:
+            keys.add(("text", msg.role.value if hasattr(msg.role, "value") else str(msg.role), content))
+    return keys
+
+
+def _merge_simulator_timeline_events(
+    outbound_events: list[TelegramSimulatorEventSchema],
+    scene_events: list[TelegramSimulatorEventSchema],
+    messages: list[Message],
+) -> list[TelegramSimulatorEventSchema]:
+    message_text_keys = _simulator_message_text_keys(messages)
+    seen_event_keys = {
+        key
+        for key in (_simulator_timeline_event_key(event) for event in outbound_events)
+        if key
+    }
+    merged = list(outbound_events)
+    for event in scene_events:
+        key = _simulator_timeline_event_key(event)
+        if key and (key in seen_event_keys or key in message_text_keys):
+            continue
+        if key:
+            seen_event_keys.add(key)
+        merged.append(event)
+    return merged
+
+
+async def _load_scene_generation_events(
+    db: AsyncSession,
+    conversation_id: int,
+    conversation_language: str,
+) -> list[TelegramSimulatorEventSchema]:
+    result = await db.execute(
+        select(SceneGenerationRecord)
+        .where(
+            SceneGenerationRecord.conversation_id == conversation_id,
+            SceneGenerationRecord.status.in_(["completed", "failed"]),
+            SceneGenerationRecord.deferred_delivery == False,
+        )
+        .order_by(SceneGenerationRecord.created_at)
+    )
+    events: list[TelegramSimulatorEventSchema] = []
+    for record in result.scalars().all():
+        events.extend(await _build_simulator_scene_events(record, conversation_language, db))
+    return events
+
+
 # ─── Auth ────────────────────────────────────────────────────────────────────
 
 def create_token(username: str) -> str:
@@ -246,7 +369,7 @@ async def get_conversation(
         .where(ConversationOutboundEvent.conversation_id == conversation_id)
         .order_by(ConversationOutboundEvent.created_at)
     )
-    detail.outbound_events = [
+    outbound_events = [
         TelegramSimulatorEventSchema(
             id=f"outbound-{event.id}",
             role=event.role,
@@ -260,6 +383,20 @@ async def get_conversation(
         )
         for event in outbound_result.scalars().all()
     ]
+    if (conversation.telegram_chat_id or "").startswith(SIM_CHAT_PREFIX):
+        await cleanup_stale_pending_scene_generations()
+        scene_events = await _load_scene_generation_events(
+            db,
+            conversation_id,
+            conversation.language or "en",
+        )
+        detail.outbound_events = _merge_simulator_timeline_events(
+            outbound_events,
+            scene_events,
+            list(conversation.messages or []),
+        )
+    else:
+        detail.outbound_events = outbound_events
     state_result = await db.execute(
         select(ConversationProcessingState).where(ConversationProcessingState.conversation_id == conversation_id)
     )
@@ -720,6 +857,7 @@ async def simulator_send_message(
         typing_task=typing_task,
         metric_id=metric_id,
     )
+    await _persist_simulator_outbound_events(db, conversation_id, outbound.events, language)
 
     return TelegramSimulatorSendResponse(
         conversation_id=conversation_id,
@@ -780,21 +918,17 @@ async def simulator_get_events(
         for event in outbound_result.scalars().all()
     ]
 
-    result = await db.execute(
-        select(SceneGenerationRecord)
-        .where(
-            SceneGenerationRecord.conversation_id == conversation_id,
-            SceneGenerationRecord.status.in_(["completed", "failed"]),
-            SceneGenerationRecord.deferred_delivery == False,
-        )
-        .order_by(SceneGenerationRecord.created_at)
+    scene_events = await _load_scene_generation_events(db, conversation_id, conversation.language or "en")
+    message_result = await db.execute(
+        select(Message)
+        .where(Message.conversation_id == conversation_id)
+        .order_by(Message.created_at)
     )
-    records = result.scalars().all()
-
-    events: list[TelegramSimulatorEventSchema] = list(outbound_events)
-    for record in records:
-        events.extend(await _build_simulator_scene_events(record, conversation.language or "en", db))
-    return events
+    return _merge_simulator_timeline_events(
+        outbound_events,
+        scene_events,
+        list(message_result.scalars().all()),
+    )
 
 
 # ─── Knowledge Base ──────────────────────────────────────────────────────────
