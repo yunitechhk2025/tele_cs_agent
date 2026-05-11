@@ -179,6 +179,10 @@ class ConversationSceneState(Base):
     conversation_id = Column(Integer, ForeignKey("conversations.id"), unique=True, index=True, nullable=False)
     primary_product_id = Column(Integer, ForeignKey("product_entries.id"), nullable=True)
     recommended_product_ids_json = Column(Text, default="[]")
+    active_product_id = Column(Integer, ForeignKey("product_entries.id"), nullable=True)
+    recent_product_ids_json = Column(Text, default="[]")
+    active_topic = Column(String(100), default="")
+    preferences_json = Column(Text, default="{}")
     suggested_scene = Column(String(200), default="")
     suggested_style = Column(String(200), default="")
     pending_confirmation = Column(Boolean, default=False)
@@ -188,7 +192,8 @@ class ConversationSceneState(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     conversation = relationship("Conversation")
-    primary_product = relationship("ProductEntry")
+    primary_product = relationship("ProductEntry", foreign_keys=[primary_product_id])
+    active_product = relationship("ProductEntry", foreign_keys=[active_product_id])
 
 
 class ConversationProcessingState(Base):

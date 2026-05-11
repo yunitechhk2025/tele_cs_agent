@@ -168,6 +168,9 @@ async def _send_product_recommendation_payload(
             pending_confirmation=bool(scene_state.get("pending_confirmation")),
             reply_language=scene_state.get("reply_language") or draft.language,
             last_customer_request=scene_state.get("last_customer_request") or "",
+            active_topic=scene_state.get("active_topic") or "",
+            active_product_id=scene_state.get("active_product_id"),
+            preferences=scene_state.get("preferences") or None,
         )
     return draft.draft_text
 
@@ -265,6 +268,9 @@ async def _send_scene_result_payload(
             pending_confirmation=bool(state_payload.get("pending_confirmation")),
             reply_language=state_payload.get("reply_language") or draft.language,
             last_customer_request=state_payload.get("last_customer_request") or "",
+            active_topic=state_payload.get("active_topic") or "",
+            active_product_id=state_payload.get("active_product_id"),
+            preferences=state_payload.get("preferences") or None,
         )
     return draft.draft_text
 

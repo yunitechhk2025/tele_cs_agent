@@ -189,6 +189,45 @@ PRODUCT_CARD_LABELS = {
     "fr": {"series": "Série", "space": "Espace", "style": "Style", "color": "Couleur", "material": "Matériau", "view": "Voir les détails"},
 }
 
+PRODUCT_DETAIL_LABELS = {
+    "zh": {
+        "intro": "您刚才提到的这款产品信息如下：",
+        "name": "产品", "brand": "品牌", "series": "系列", "space": "适用空间",
+        "style": "风格", "color": "颜色", "material": "材质", "size": "尺寸",
+        "model": "型号", "description": "介绍", "link": "详情链接",
+    },
+    "en": {
+        "intro": "Here are the details for the product you just referred to:",
+        "name": "Product", "brand": "Brand", "series": "Series", "space": "Space",
+        "style": "Style", "color": "Color", "material": "Material", "size": "Size",
+        "model": "Model", "description": "Description", "link": "Details link",
+    },
+    "ja": {
+        "intro": "先ほどの商品情報はこちらです：",
+        "name": "商品", "brand": "ブランド", "series": "シリーズ", "space": "空間",
+        "style": "スタイル", "color": "色", "material": "素材", "size": "サイズ",
+        "model": "型番", "description": "紹介", "link": "詳細リンク",
+    },
+    "ko": {
+        "intro": "방금 말씀하신 제품 정보입니다:",
+        "name": "제품", "brand": "브랜드", "series": "시리즈", "space": "공간",
+        "style": "스타일", "color": "색상", "material": "소재", "size": "크기",
+        "model": "모델", "description": "소개", "link": "상세 링크",
+    },
+    "es": {
+        "intro": "Estos son los detalles del producto al que se refiere:",
+        "name": "Producto", "brand": "Marca", "series": "Serie", "space": "Espacio",
+        "style": "Estilo", "color": "Color", "material": "Material", "size": "Tamaño",
+        "model": "Modelo", "description": "Descripción", "link": "Enlace de detalles",
+    },
+    "fr": {
+        "intro": "Voici les détails du produit mentionné :",
+        "name": "Produit", "brand": "Marque", "series": "Série", "space": "Espace",
+        "style": "Style", "color": "Couleur", "material": "Matériau", "size": "Dimensions",
+        "model": "Modèle", "description": "Description", "link": "Lien détail",
+    },
+}
+
 SCENE_RESULT_MESSAGES = {
     "zh": "这是为您生成的这款产品在{scene}中的搭配效果图：",
     "en": "Here is the styled scene image for this product in the {scene}:",
@@ -553,8 +592,56 @@ async def save_scene_state(
     pending_confirmation: bool,
     reply_language: str,
     last_customer_request: str = "",
+    active_topic: str = "",
+    active_product_id: int | None = None,
+    preferences: dict[str, list[str]] | None = None,
 ):
     import json
+
+    def load_json_list(raw: str | None) -> list[int]:
+        try:
+            return [int(x) for x in json.loads(raw or "[]") if str(x).isdigit()]
+        except Exception:
+            return []
+
+    def load_preferences(raw: str | None) -> dict[str, list[str]]:
+        try:
+            data = json.loads(raw or "{}")
+        except Exception:
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        out: dict[str, list[str]] = {}
+        for key, value in data.items():
+            if isinstance(value, list):
+                out[str(key)] = [str(x) for x in value if str(x).strip()][:8]
+        return out
+
+    def merge_unique(existing: list[int], incoming: list[int], limit: int = 12) -> list[int]:
+        merged: list[int] = []
+        for item in [*existing, *incoming]:
+            if not item or item in merged:
+                continue
+            merged.append(int(item))
+        return merged[-limit:]
+
+    def merge_preferences(
+        existing: dict[str, list[str]],
+        incoming: dict[str, list[str]] | None,
+    ) -> dict[str, list[str]]:
+        if not incoming:
+            return existing
+        merged = {key: list(values) for key, values in existing.items()}
+        for key, values in incoming.items():
+            if not isinstance(values, list):
+                continue
+            bucket = merged.setdefault(key, [])
+            for value in values:
+                clean = (value or "").strip()
+                if clean and clean not in bucket:
+                    bucket.append(clean)
+            merged[key] = bucket[-8:]
+        return merged
 
     async with AsyncSessionLocal() as db:
         result = await db.execute(
@@ -564,8 +651,25 @@ async def save_scene_state(
         if not state:
             state = ConversationSceneState(conversation_id=conversation_id)
             db.add(state)
+        existing_recent_ids = merge_unique(
+            load_json_list(state.recent_product_ids_json),
+            load_json_list(state.recommended_product_ids_json),
+        )
+        active_id = active_product_id or primary_product_id
+        recent_ids = merge_unique(
+            existing_recent_ids,
+            [*recommended_product_ids, *([active_id] if active_id else [])],
+        )
+        merged_preferences = merge_preferences(
+            load_preferences(state.preferences_json),
+            preferences,
+        )
         state.primary_product_id = primary_product_id
         state.recommended_product_ids_json = json.dumps(recommended_product_ids, ensure_ascii=False)
+        state.active_product_id = active_id
+        state.recent_product_ids_json = json.dumps(recent_ids, ensure_ascii=False)
+        state.active_topic = active_topic or ("scene_image_confirmation" if pending_confirmation else "product_context" if active_id else "")
+        state.preferences_json = json.dumps(merged_preferences, ensure_ascii=False)
         state.suggested_scene = suggested_scene or ""
         state.suggested_style = suggested_style or ""
         state.pending_confirmation = pending_confirmation
@@ -574,7 +678,7 @@ async def save_scene_state(
         await db.commit()
 
 
-async def clear_scene_state(conversation_id: int):
+async def clear_scene_state(conversation_id: int, active_topic: str = ""):
     async with AsyncSessionLocal() as db:
         result = await db.execute(
             select(ConversationSceneState).where(ConversationSceneState.conversation_id == conversation_id)
@@ -583,6 +687,8 @@ async def clear_scene_state(conversation_id: int):
         if state:
             state.pending_confirmation = False
             state.last_customer_request = ""
+            if active_topic:
+                state.active_topic = active_topic
             await db.commit()
 
 
@@ -693,10 +799,18 @@ def resolve_recommended_product_reference_locally(
     if explicit_match:
         return pick(int(explicit_match.group(1)))
 
+    single_ordinal_words = {
+        "一": 1, "壹": 1,
+        "二": 2, "两": 2, "贰": 2,
+        "三": 3, "叁": 3,
+    }
+    if compact in single_ordinal_words:
+        return pick(single_ordinal_words[compact])
+
     ordinal_words = {
-        "一": 1, "壹": 1, "第一": 1, "第一个": 1, "第一款": 1,
-        "二": 2, "两": 2, "贰": 2, "第二": 2, "第二个": 2, "第二款": 2,
-        "三": 3, "叁": 3, "第三": 3, "第三个": 3, "第三款": 3,
+        "第一": 1, "第一个": 1, "第一款": 1,
+        "第二": 2, "第二个": 2, "第二款": 2,
+        "第三": 3, "第三个": 3, "第三款": 3,
         "first": 1, "1st": 1,
         "second": 2, "2nd": 2,
         "third": 3, "3rd": 3,
@@ -712,6 +826,173 @@ def resolve_recommended_product_reference_locally(
         if word in compact:
             return pick(index)
     return None
+
+
+def _context_text(user_message: str) -> str:
+    return (user_message or "").strip().lower().translate(str.maketrans({
+        "１": "1",
+        "２": "2",
+        "３": "3",
+        "４": "4",
+        "５": "5",
+        "６": "6",
+        "７": "7",
+        "８": "8",
+        "９": "9",
+        "＃": "#",
+        "﹟": "#",
+    }))
+
+
+def is_recent_product_followup(user_message: str) -> bool:
+    """Detect likely references to products shown earlier in the same conversation."""
+    normalized = _context_text(user_message)
+    compact = re.sub(r"\s+", "", normalized)
+    if not compact:
+        return False
+    if re.fullmatch(r"#?[1-9]", compact):
+        return True
+    if re.fullmatch(r"第?#?[1-9](?:个|款|件|号)?", compact):
+        return True
+    if re.fullmatch(r"第?[一二三四五六七八九](?:个|款|件|号)?", compact):
+        return True
+
+    reference_terms = [
+        "刚才", "刚刚", "上面", "前面", "推荐", "这款", "那款", "这个", "那个", "它",
+        "this one", "that one", "previous", "recommended", "the product", "it",
+        "先ほど", "さっき", "この商品", "その商品",
+        "방금", "추천", "이 제품", "그 제품",
+        "este producto", "ese producto", "recomendado",
+        "ce produit", "celui", "recommande",
+    ]
+    product_question_terms = [
+        "产品", "商品", "款", "材质", "尺寸", "大小", "颜色", "风格", "系列", "型号", "链接", "详情", "介绍", "图片", "搭配",
+        "product", "item", "material", "size", "color", "style", "series", "model", "link", "details", "tell me",
+        "商品", "素材", "サイズ", "色", "スタイル", "詳細",
+        "제품", "소재", "크기", "색상", "스타일", "상세",
+        "producto", "material", "tamano", "color", "estilo", "detalle",
+        "produit", "materiau", "dimensions", "couleur", "style", "detail",
+    ]
+    has_reference = any(term in compact for term in reference_terms)
+    has_product_question = any(term in compact for term in product_question_terms)
+    if has_reference and has_product_question:
+        return True
+
+    return bool(
+        has_product_question
+        and (
+            re.search(r"(?:第|#)?[1-9](?:个|款|件|号)?(?:产品|商品|款)", compact)
+            or re.search(r"第[一二三四五六七八九](?:个|款|件|号)?(?:产品|商品|款)?", compact)
+        )
+    )
+
+
+def is_product_selection_only(user_message: str) -> bool:
+    normalized = _context_text(user_message)
+    compact = re.sub(r"\s+", "", normalized)
+    if not compact:
+        return False
+    return bool(
+        re.fullmatch(r"#?[1-9]", compact)
+        or re.fullmatch(r"第?#?[1-9](?:个|款|件|号)?", compact)
+        or re.fullmatch(r"第?[一二三四五六七八九](?:个|款|件|号)?", compact)
+        or compact in {
+            "first", "1st", "second", "2nd", "third", "3rd",
+            "primero", "primera", "segundo", "segunda", "tercero", "tercera",
+            "premier", "premiere", "deuxieme", "troisieme",
+            "첫번째", "두번째", "세번째",
+            "一番目", "二番目", "三番目",
+        }
+    )
+
+
+def resolve_context_product_reference_locally(
+    user_message: str,
+    recommended_product_ids: list[int],
+    primary_product_id: int | None = None,
+) -> int | None:
+    """Resolve same-session product references for product detail follow-ups."""
+    if not recommended_product_ids and not primary_product_id:
+        return None
+    normalized = _context_text(user_message)
+    compact = re.sub(r"\s+", "", normalized)
+
+    direct = resolve_recommended_product_reference_locally(user_message, recommended_product_ids)
+    if direct is not None and (is_product_selection_only(user_message) or is_recent_product_followup(user_message)):
+        return direct
+
+    if not is_recent_product_followup(user_message):
+        return None
+    if primary_product_id and any(term in compact for term in ["这款", "这件", "这个", "它", "thisone", "it", "この商品", "이제품", "esteproducto", "ceproduit"]):
+        return primary_product_id
+    if primary_product_id and not re.search(r"(?:第|#)?[1-9]|[一二三四五六七八九]", compact):
+        return primary_product_id
+    return None
+
+
+def build_product_detail_message(product: ProductEntry, language: str) -> str:
+    ui_lang = ui_scene_language(language)
+    labels = PRODUCT_DETAIL_LABELS.get(ui_lang, PRODUCT_DETAIL_LABELS["en"])
+    lines = [labels["intro"]]
+    fields = [
+        ("name", product.product_name),
+        ("brand", product.brand),
+        ("series", product.series_name),
+        ("space", localize_scene_name(product.space, ui_lang) if product.space else ""),
+        ("style", product.style),
+        ("color", product.color),
+        ("material", product.material),
+        ("size", product.size),
+        ("model", product.serial_number),
+    ]
+    for key, value in fields:
+        value = (value or "").strip()
+        if value:
+            lines.append(f"{labels[key]}: {value}")
+    description = (product.description_text or product.detail_content_text or "").strip()
+    if description:
+        lines.append(f"{labels['description']}: {description[:500]}")
+    link = (product.buy_url or product.detail_url or "").strip()
+    if link:
+        lines.append(f"{labels['link']}: {link}")
+    return "\n".join(lines)
+
+
+def extract_explicit_product_preferences(user_message: str) -> dict[str, list[str]]:
+    """Extract explicit same-session product preferences without inferring a user profile."""
+    normalized = _context_text(user_message)
+    compact = re.sub(r"\s+", "", normalized)
+    if not compact:
+        return {}
+
+    vocab = {
+        "spaces": [
+            "客厅", "餐厅", "卧室", "书房", "儿童房", "玄关",
+            "living room", "dining room", "bedroom", "study", "entryway",
+        ],
+        "styles": [
+            "现代", "简约", "现代简约", "中式", "新中式", "轻奢", "北欧", "奶油", "日式", "美式", "欧式", "意式", "极简",
+            "modern", "minimalist", "chinese", "nordic", "japanese", "luxury",
+        ],
+        "materials": [
+            "白蜡木", "实木", "木质", "真皮", "皮质", "布艺", "大理石", "岩板", "金属", "玻璃", "藤编",
+            "wood", "solid wood", "ash wood", "leather", "fabric", "marble", "metal", "glass",
+        ],
+        "colors": [
+            "白色", "黑色", "灰色", "浅色", "深色", "原木色", "米色", "棕色", "咖色", "绿色", "蓝色",
+            "white", "black", "gray", "grey", "light color", "dark color", "beige", "brown", "green", "blue",
+        ],
+    }
+    preferences: dict[str, list[str]] = {}
+    for key, terms in vocab.items():
+        matches: list[str] = []
+        for term in terms:
+            probe = re.sub(r"\s+", "", term.lower())
+            if probe and probe in compact and term not in matches:
+                matches.append(term)
+        if matches:
+            preferences[key] = matches[:5]
+    return preferences
 
 
 def build_scene_followup_message(language: str, products: list[dict]) -> str:
@@ -1073,10 +1354,20 @@ async def process_customer_text_message(
         if scene_state:
             try:
                 recent_scene_product_ids = [
-                    int(x) for x in json.loads(scene_state.recommended_product_ids_json or "[]")
+                    int(x) for x in json.loads(
+                        scene_state.recent_product_ids_json
+                        or scene_state.recommended_product_ids_json
+                        or "[]"
+                    )
                 ]
             except Exception:
                 recent_scene_product_ids = []
+        active_product_id = (
+            scene_state.active_product_id
+            if scene_state and scene_state.active_product_id
+            else scene_state.primary_product_id if scene_state else None
+        )
+        turn_preferences = extract_explicit_product_preferences(user_message)
 
         await stage("classifying_intent_fast")
         has_pending_scene_confirmation = bool(scene_state and scene_state.pending_confirmation)
@@ -1099,6 +1390,23 @@ async def process_customer_text_message(
         intent_confidence = float(intent.get("confidence") or 0.0)
         intent_slots = intent.get("slots") if isinstance(intent.get("slots"), dict) else {}
         secondary_intents = intent.get("secondary_intents") if isinstance(intent.get("secondary_intents"), list) else []
+        context_product_id = resolve_context_product_reference_locally(
+            user_message,
+            recent_scene_product_ids,
+            active_product_id,
+        )
+        if (
+            context_product_id
+            and intent_name == "general_question"
+            and intent_confidence < 0.65
+            and is_recent_product_followup(user_message)
+        ):
+            intent_name = "product_intro"
+            intent_confidence = max(intent_confidence, 0.72)
+            intent["primary_intent"] = intent_name
+            intent["confidence"] = intent_confidence
+            intent["source"] = f"{intent.get('source') or 'router'}+context"
+            intent["reason"] = "same-session product reference resolved from conversation memory"
         logger.info(
             "[Bot %s] Intent routed: intent=%s confidence=%.2f source=%s reason=%s",
             bot_id,
@@ -1216,15 +1524,17 @@ async def process_customer_text_message(
             and intent_confidence >= 0.55
         )
         if topic_switch:
-            await clear_scene_state(conversation_id)
+            await clear_scene_state(conversation_id, active_topic="topic_switched")
             if scene_state:
                 scene_state.pending_confirmation = False
                 scene_state.last_customer_request = ""
 
         needs_product_context = (
             bool(scene_state and scene_state.pending_confirmation)
-            or intent_name in {"product_recommendation", "scene_image_request", "scene_image_confirmation"}
+            or bool(context_product_id)
+            or intent_name in {"product_recommendation", "product_intro", "scene_image_request", "scene_image_confirmation"}
             or "product_recommendation" in secondary_intents
+            or "product_intro" in secondary_intents
             or "scene_image_request" in secondary_intents
         )
         if all_products is None and needs_product_context:
@@ -1232,6 +1542,27 @@ async def process_customer_text_message(
             all_products = await get_products_for_bot()
         if all_products is None:
             all_products = []
+        if not context_product_id:
+            target_slot = intent_slots.get("target_product_id")
+            if target_slot is not None and str(target_slot).strip().isdigit():
+                context_product_id = int(target_slot)
+        if (
+            not context_product_id
+            and recent_scene_product_ids
+            and all_products
+            and (
+                intent_name in {"product_intro", "general_question"}
+                or "product_intro" in secondary_intents
+                or is_recent_product_followup(user_message)
+            )
+        ):
+            await stage("resolving_product_reference")
+            resolved_ref = await resolve_recent_product_reference(
+                user_message,
+                all_products,
+                recent_scene_product_ids,
+            )
+            context_product_id = resolved_ref.get("target_product_id")
 
         scene_req = {
             "is_scene_request": (
@@ -1255,14 +1586,24 @@ async def process_customer_text_message(
                 recent_scene_product_ids,
             )
             referenced_id = local_referenced_id or resolved_ref.get("target_product_id")
+            selection_only = is_product_selection_only(user_message)
+            product_detail_followup = (
+                referenced_id is not None
+                and not selection_only
+                and (
+                    intent_name == "product_intro"
+                    or "product_intro" in secondary_intents
+                    or is_recent_product_followup(user_message)
+                )
+            )
             wants_scene = (
                 scene_req.get("is_scene_request")
-                or referenced_id is not None
+                or (referenced_id is not None and selection_only)
                 or (
                     intent_name == "scene_image_confirmation"
                     and intent_confidence >= 0.55
                 )
-            )
+            ) and not product_detail_followup
             if wants_scene:
                 await stage("resolving_product_reference")
                 primary_id = (
@@ -1373,6 +1714,62 @@ async def process_customer_text_message(
                     await finish("scene_result", "场景图已发送")
                     return
 
+        product_detail_request = (
+            bool(context_product_id)
+            and not scene_req.get("is_scene_request")
+            and intent_confidence >= 0.55
+            and (
+                intent_name == "product_intro"
+                or "product_intro" in secondary_intents
+                or (
+                    is_recent_product_followup(user_message)
+                    and not bool(scene_state and scene_state.pending_confirmation)
+                )
+            )
+        )
+        if product_detail_request:
+            await stage("loading_product_detail")
+            async with AsyncSessionLocal() as db:
+                context_product = await db.get(ProductEntry, int(context_product_id))
+            if context_product:
+                response_text = build_product_detail_message(context_product, language)
+                await save_scene_state(
+                    conversation_id=conversation_id,
+                    primary_product_id=context_product.id,
+                    recommended_product_ids=recent_scene_product_ids or [context_product.id],
+                    suggested_scene=context_product.space,
+                    suggested_style=context_product.style,
+                    pending_confirmation=False,
+                    reply_language=language,
+                    last_customer_request=user_message,
+                    active_topic="product_intro",
+                    active_product_id=context_product.id,
+                    preferences=turn_preferences,
+                )
+                stop_typing.set()
+                await typing_task
+                if service_mode == "ai_assist":
+                    await stage("creating_ai_draft", "商品详情待确认")
+                    await first_response("product_detail_draft")
+                    await create_pending_ai_reply(conversation_id, response_text, language)
+                    if run_notify_admin and notify_bot and conversation:
+                        await notify_admin(
+                            bot_id,
+                            conversation,
+                            user_message,
+                            notify_bot,
+                            is_followup=(current_status in {ConversationStatus.PENDING_HUMAN, ConversationStatus.HUMAN_HANDLING}),
+                        )
+                    await finish("product_detail_draft", "商品详情已生成，等待人工确认")
+                    return
+
+                await first_response("product_detail")
+                await stage("sending_response", "发送商品详情")
+                await save_message(conversation_id, MessageRole.ASSISTANT, response_text, language)
+                await outbound.reply_text(response_text)
+                await finish("product_detail", "商品详情已发送")
+                return
+
         if scene_req.get("is_scene_request"):
             await stage("resolving_product_reference")
             resolved_ref = await resolve_recent_product_reference(
@@ -1449,6 +1846,9 @@ async def process_customer_text_message(
                             "pending_confirmation": False,
                             "reply_language": language,
                             "last_customer_request": user_message,
+                            "active_topic": "scene_image_request",
+                            "active_product_id": primary_product.id,
+                            "preferences": turn_preferences,
                         }
                         preview_text = f"{scene_delivery.get('intro_text', '')}\n\n{scene_delivery.get('preview_line', '')}".strip()
                         await stage("creating_ai_draft", "场景图待确认")
@@ -1482,6 +1882,9 @@ async def process_customer_text_message(
                         pending_confirmation=False,
                         reply_language=language,
                         last_customer_request=user_message,
+                        active_topic="scene_image_request",
+                        active_product_id=primary_product.id,
+                        preferences=turn_preferences,
                     )
                     await finish("scene_result", "场景图已发送")
                     return
@@ -1517,6 +1920,9 @@ async def process_customer_text_message(
                         "pending_confirmation": True,
                         "reply_language": language,
                         "last_customer_request": user_message,
+                        "active_topic": "product_recommendation",
+                        "active_product_id": primary_product["id"],
+                        "preferences": turn_preferences,
                     }
                     preview_text = "\n".join([intro, *delivery.get("preview_lines", []), "", followup]).strip()
                     await stage("creating_ai_draft", "商品推荐待确认")
@@ -1558,6 +1964,9 @@ async def process_customer_text_message(
                     pending_confirmation=True,
                     reply_language=language,
                     last_customer_request=user_message,
+                    active_topic="product_recommendation",
+                    active_product_id=primary_product["id"],
+                    preferences=turn_preferences,
                 )
                 logger.info(f"[Bot {bot_id}] Sent {len(selected_products)} product recommendations")
                 await finish("product_recommendation", "商品推荐已发送")
@@ -1620,6 +2029,21 @@ async def process_customer_text_message(
         if edge_notes:
             notes = "\n".join(f"- {note}" for note in edge_notes)
             file_info = f"{file_info}\n\nConversation handling notes:\n{notes}".strip()
+
+        if turn_preferences:
+            await save_scene_state(
+                conversation_id=conversation_id,
+                primary_product_id=active_product_id,
+                recommended_product_ids=recent_scene_product_ids,
+                suggested_scene=scene_state.suggested_scene if scene_state else "",
+                suggested_style=scene_state.suggested_style if scene_state else "",
+                pending_confirmation=False,
+                reply_language=language,
+                last_customer_request=user_message,
+                active_topic=intent_name,
+                active_product_id=active_product_id,
+                preferences=turn_preferences,
+            )
 
         logger.info(f"[Bot {bot_id}] Generating AI response...")
         await stage("llm_generating_answer")

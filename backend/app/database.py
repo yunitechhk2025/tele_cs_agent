@@ -80,6 +80,22 @@ def _run_migrations(conn):
             "conversation_turn_metrics", "intent_reason",
             "ALTER TABLE conversation_turn_metrics ADD COLUMN intent_reason TEXT DEFAULT ''"
         ),
+        (
+            "conversation_scene_states", "active_product_id",
+            "ALTER TABLE conversation_scene_states ADD COLUMN active_product_id INTEGER REFERENCES product_entries(id)"
+        ),
+        (
+            "conversation_scene_states", "recent_product_ids_json",
+            "ALTER TABLE conversation_scene_states ADD COLUMN recent_product_ids_json TEXT DEFAULT '[]'"
+        ),
+        (
+            "conversation_scene_states", "active_topic",
+            "ALTER TABLE conversation_scene_states ADD COLUMN active_topic VARCHAR(100) DEFAULT ''"
+        ),
+        (
+            "conversation_scene_states", "preferences_json",
+            "ALTER TABLE conversation_scene_states ADD COLUMN preferences_json TEXT DEFAULT '{}'"
+        ),
     ]
     for table, column, ddl in migrations:
         result = conn.execute(text(

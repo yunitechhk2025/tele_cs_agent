@@ -18,6 +18,7 @@ STAGE_LABELS = {
     "checking_quote_intent": "判断是否报价/人工转接中",
     "loading_scene_state": "读取场景上下文中",
     "loading_products": "加载产品库中",
+    "loading_product_detail": "读取商品详情中",
     "analyzing_scene_request": "解析场景图需求中",
     "resolving_product_reference": "解析商品指代中",
     "scene_bundle_selection": "选择场景搭配商品中",
