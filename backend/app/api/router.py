@@ -23,7 +23,6 @@ from app.models import (
     ConversationStatus, MessageRole, ProductEntry, ProductImage, SceneGenerationImage, SceneGenerationRecord,
     ConversationSceneState, ConversationOutboundEvent, PendingAIReply,
     ConversationProcessingState, ConversationTurnMetric, ConversationTurnStepMetric,
-    MessageTranslation,
 )
 from app.schemas import (
     LoginRequest, TokenResponse, ConversationSchema, ConversationDetailSchema,
@@ -39,8 +38,6 @@ from app.schemas import (
     ContractTemplateSchema,
     ProductEntrySchema, ProductEntryListSchema, ProductImageSchema, SceneGenerationRequest, SceneGenerationRecordSchema,
     SceneLibraryItemSchema, SceneGeneratorRequest, SceneBatchActionRequest, SceneBatchActionResponse,
-    TranslateBatchRequest, TranslateBatchResponse,
-    TranslateCachedRequest, TranslateCachedResponse,
 )
 from app.services.rag_service import (
     add_to_knowledge_base, remove_from_knowledge_base,
@@ -453,173 +450,6 @@ async def send_contract_to_customer(
     await db.commit()
 
     return {"status": "sent", "contract_id": contract.id}
-
-
-@router.post("/translate", response_model=TranslateBatchResponse)
-async def translate_batch(
-    req: TranslateBatchRequest,
-    _: str = Depends(get_current_user),
-):
-    """Translate a batch of texts using MyMemory (free, no API key required).
-
-    Texts are translated concurrently to keep latency low. Empty inputs
-    are returned as-is. If MyMemory fails for any item, None is returned
-    for that item so the client can handle it (not cache it)."""
-    import httpx
-
-    from app.services.translation_service import translate_simple
-
-    target = (req.target_lang or "zh").strip() or "zh"
-
-    async def _do() -> list[str | None]:
-        async with httpx.AsyncClient(timeout=8.0) as client:
-            async def _one(text: str) -> str | None:
-                if not text or not text.strip():
-                    return text or ""
-                try:
-                    return await translate_simple(
-                        text, target, client=client, llm_fallback=False
-                    )
-                except Exception:
-                    return None
-
-            return list(await asyncio.gather(*[_one(t) for t in req.texts]))
-
-    try:
-        results = await asyncio.wait_for(_do(), timeout=20.0)
-    except asyncio.TimeoutError:
-        results = [None] * len(req.texts)
-
-    # None 表示翻译失败，返回 None 让前端不缓存、下次继续重试
-    return TranslateBatchResponse(translations=[r for r in results])
-
-
-def _parse_translate_key(key: str) -> tuple[str, int] | None:
-    """前端 key 形如 "msg-123" / "evt-45"，拆成 (kind, id)。无法识别返回 None。"""
-    if not key or "-" not in key:
-        return None
-    prefix, _, rest = key.partition("-")
-    if prefix not in ("msg", "evt"):
-        return None
-    try:
-        return prefix, int(rest)
-    except ValueError:
-        return None
-
-
-@router.post("/translate/cached", response_model=TranslateCachedResponse)
-async def translate_cached(
-    req: TranslateCachedRequest,
-    db: AsyncSession = Depends(get_db),
-    _: str = Depends(get_current_user),
-):
-    """带 DB 缓存的批量翻译。
-
-    流程：
-    1. 按 (source_kind, source_id, target_lang) 查 message_translations 表，命中直接返回；
-    2. 未命中的条目并发调 MyMemory（不再走 LLM 兜底，保持轻量）；
-    3. 翻译成功的写回 DB，下次切会话/刷新页面就是命中缓存的瞬时返回。
-
-    返回 dict[key, translated_text]——只包含**成功翻译过**的条目；
-    没翻成功的不返回，让前端继续显示 pending 提示并下次重试。"""
-    import httpx
-
-    from app.services.translation_service import translate_simple
-
-    target = (req.target_lang or "zh").strip() or "zh"
-    if not req.items:
-        return TranslateCachedResponse(translations={})
-
-    # 解析 key → (kind, id)；同时记录每个 key 的原始文本，跳过空文本
-    parsed: dict[str, tuple[str, int]] = {}
-    text_by_key: dict[str, str] = {}
-    for it in req.items:
-        if not it.text or not it.text.strip():
-            continue
-        pk = _parse_translate_key(it.key)
-        if pk is None:
-            continue
-        parsed[it.key] = pk
-        text_by_key[it.key] = it.text
-
-    if not parsed:
-        return TranslateCachedResponse(translations={})
-
-    # 1) 批量命中缓存
-    src_pairs = list({pk for pk in parsed.values()})
-    out: dict[str, str] = {}
-    if src_pairs:
-        kinds = {p[0] for p in src_pairs}
-        ids = [p[1] for p in src_pairs]
-        stmt = select(MessageTranslation).where(
-            MessageTranslation.target_lang == target,
-            MessageTranslation.source_kind.in_(kinds),
-            MessageTranslation.source_id.in_(ids),
-        )
-        rows = (await db.execute(stmt)).scalars().all()
-        cached: dict[tuple[str, int], str] = {
-            (r.source_kind, r.source_id): r.text for r in rows if r.text
-        }
-        for key, pk in parsed.items():
-            if pk in cached:
-                out[key] = cached[pk]
-
-    # 2) 找出未命中的 key 并并发翻译
-    missing_keys = [k for k in parsed.keys() if k not in out]
-    if missing_keys:
-        async def _do() -> list[str | None]:
-            async with httpx.AsyncClient(timeout=8.0) as client:
-                async def _one(text: str) -> str | None:
-                    try:
-                        return await translate_simple(
-                            text, target, client=client, llm_fallback=False
-                        )
-                    except Exception:
-                        return None
-
-                return list(await asyncio.gather(*[_one(text_by_key[k]) for k in missing_keys]))
-
-        try:
-            results = await asyncio.wait_for(_do(), timeout=20.0)
-        except asyncio.TimeoutError:
-            results = [None] * len(missing_keys)
-
-        # 3) 把成功的写回 DB；只保留**与原文不同的**译文，避免把"翻译失败兜底返回原文"也缓存。
-        to_persist: list[MessageTranslation] = []
-        for key, tr in zip(missing_keys, results):
-            if not tr:
-                continue
-            tr_str = str(tr).strip()
-            if not tr_str or tr_str == text_by_key[key].strip():
-                continue
-            out[key] = tr_str
-            kind, sid = parsed[key]
-            to_persist.append(MessageTranslation(
-                source_kind=kind,
-                source_id=sid,
-                target_lang=target,
-                text=tr_str,
-            ))
-
-        if to_persist:
-            # 使用 add_all + commit；唯一约束保证重复时报错——失败也无所谓，
-            # 因为下次请求会先走缓存读路径。为稳妥起见单条 try。
-            for row in to_persist:
-                try:
-                    db.add(row)
-                    await db.flush()
-                except Exception as exc:  # 可能是并发竞争触发的唯一约束冲突
-                    await db.rollback()
-                    logger.debug(
-                        "skip persisting translation (likely race): %s/%s/%s: %s",
-                        row.source_kind, row.source_id, row.target_lang, exc,
-                    )
-            try:
-                await db.commit()
-            except Exception:
-                await db.rollback()
-
-    return TranslateCachedResponse(translations=out)
 
 
 @router.post("/conversations/{conversation_id}/close")

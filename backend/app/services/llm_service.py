@@ -260,17 +260,6 @@ def _mock_chat_completion(messages: list[dict]) -> str:
             '"needs_human":false,"clarification_question":"","reason":"mock-llm-disabled"}'
         )
 
-    # Batch translation: expects JSON array aligned to numbered input
-    if "return only a json array of strings" in s and "translate each numbered item" in s:
-        items: list[str] = []
-        for line in u.splitlines():
-            m = re.match(r"^\[(\d+)\]\s*(.*)$", line.strip())
-            if not m:
-                continue
-            text = m.group(2)
-            items.append("" if text == "(empty)" else text)
-        return json.dumps(items, ensure_ascii=False)
-
     # Language detector: return a code
     if "you are a language detector" in s and "iso 639-1" in s:
         return "en"

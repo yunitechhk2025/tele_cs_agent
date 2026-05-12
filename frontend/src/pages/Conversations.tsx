@@ -19,7 +19,6 @@ import {
   Select,
   Space,
   Spin,
-  Switch,
   Tabs,
   Tag,
   Tooltip,
@@ -33,17 +32,15 @@ import {
   EditOutlined,
   ExportOutlined,
   FileTextOutlined,
-  LoadingOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
   RobotOutlined,
   SearchOutlined,
   SendOutlined,
   SwapOutlined,
-  TranslationOutlined,
   UserOutlined,
 } from '@ant-design/icons';
-import { conversationApi, contractApi, contractTemplateApi, dashboardApi, settingsApi, translateApi } from '../api';
+import { conversationApi, contractApi, contractTemplateApi, dashboardApi, settingsApi } from '../api';
 import { TypewriterText, RichText } from '../components/TypewriterText';
 import type {
   Contract,
@@ -672,91 +669,6 @@ export default function Conversations() {
   const [genOutputLang, setGenOutputLang] = useState<string>('en');
   const [templatesLoading, setTemplatesLoading] = useState(false);
 
-  const [translationEnabled, setTranslationEnabled] = useState<boolean>(() => {
-    try {
-      return localStorage.getItem('conv:translation') === '1';
-    } catch {
-      return false;
-    }
-  });
-  const [targetLang, setTargetLang] = useState<string>(() => {
-    try {
-      return localStorage.getItem('conv:targetLang') || 'zh';
-    } catch {
-      return 'zh';
-    }
-  });
-  const [translations, setTranslations] = useState<Record<string, string>>({});
-  const [translating, setTranslating] = useState(false);
-  const translateInflight = useRef<Set<string>>(new Set());
-
-  // 译文 localStorage 持久化：以 (会话id, 目标语言) 分桶。
-  // 仅作为前端预热缓存，权威源仍是后端 message_translations 表。
-  // 每个桶最多保留 500 条，避免 LS 容量被无限撑大。
-  const translationsCacheKey = useCallback(
-    (convId: number | null, lang: string) =>
-      convId == null ? null : `conv:tr:${convId}:${lang}`,
-    [],
-  );
-  const loadTranslationsFromLS = useCallback(
-    (convId: number | null, lang: string): Record<string, string> => {
-      const k = translationsCacheKey(convId, lang);
-      if (!k) return {};
-      try {
-        const raw = localStorage.getItem(k);
-        if (!raw) return {};
-        const parsed = JSON.parse(raw);
-        return parsed && typeof parsed === 'object' ? (parsed as Record<string, string>) : {};
-      } catch {
-        return {};
-      }
-    },
-    [translationsCacheKey],
-  );
-  const saveTranslationsToLS = useCallback(
-    (convId: number | null, lang: string, map: Record<string, string>) => {
-      const k = translationsCacheKey(convId, lang);
-      if (!k) return;
-      try {
-        const entries = Object.entries(map);
-        const trimmed = entries.length > 500 ? entries.slice(-500) : entries;
-        localStorage.setItem(k, JSON.stringify(Object.fromEntries(trimmed)));
-      } catch {
-        /* LS 满了就忽略，后端缓存仍然生效 */
-      }
-    },
-    [translationsCacheKey],
-  );
-
-  useEffect(() => {
-    try {
-      localStorage.setItem('conv:translation', translationEnabled ? '1' : '0');
-    } catch {
-      /* ignore */
-    }
-  }, [translationEnabled]);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem('conv:targetLang', targetLang);
-    } catch {
-      /* ignore */
-    }
-    // 切换目标语言时清空内存缓存与 inflight；
-    // 真正的译文从下面 hydrate effect 里按新 lang 从 LS 重新加载。
-    setTranslations({});
-    translateInflight.current.clear();
-  }, [targetLang]);
-
-  // 切换会话或目标语言时，从 LS 预热译文 map，避免一进会话又出现"AI 实时翻译中…"
-  useEffect(() => {
-    if (selectedId == null) {
-      setTranslations({});
-      return;
-    }
-    setTranslations(loadTranslationsFromLS(selectedId, targetLang));
-  }, [selectedId, targetLang, loadTranslationsFromLS]);
-
   const [listWidth, setListWidth] = useState<number>(() => {
     try {
       const v = parseInt(localStorage.getItem('conv:listWidth') || '', 10);
@@ -1206,86 +1118,6 @@ export default function Conversations() {
     });
   }, [detail]);
 
-  const timelineKeyAndText = useCallback((item: ConversationTimelineItem): { key: string; text: string } | null => {
-    if (item.kind === 'message') {
-      const text = item.message.content;
-      if (!text || !text.trim()) return null;
-      return { key: `msg-${item.message.id}`, text };
-    }
-    const ev = item.event;
-    const text = ev.type === 'text' ? ev.text || '' : ev.type === 'photo' ? ev.caption || '' : '';
-    if (!text.trim()) return null;
-    return { key: `evt-${ev.id}`, text };
-  }, []);
-
-  const isLikelyChinese = useCallback((text: string) => {
-    if (!text) return true;
-    const matches = text.match(/[\u4e00-\u9fff]/g);
-    return !!matches && matches.length / text.length > 0.5;
-  }, []);
-
-  // 切换翻译开关 / 切换对话时，清空 inflight 集合，避免上一次失败/挂死的请求
-  // 在 ref 里残留导致后续请求被误判为"已在请求中"。
-  useEffect(() => {
-    translateInflight.current.clear();
-    setTranslating(false);
-  }, [translationEnabled, selectedId]);
-
-  useEffect(() => {
-    if (!translationEnabled) return undefined;
-    const missing: { key: string; text: string }[] = [];
-    for (const item of timeline) {
-      const src = timelineKeyAndText(item);
-      if (!src) continue;
-      if (translations[src.key] != null) continue;
-      if (translateInflight.current.has(src.key)) continue;
-      // 不再判断"已经是中文就跳过"——按用户要求强制把所有消息送去翻译，
-      // 让 MyMemory / LLM 自己处理中→中或混合语言情况。
-      missing.push(src);
-    }
-    if (missing.length === 0) return undefined;
-
-    // 注意：这里**不**用 cancel 标记。translations 是按消息 key 写入的纯 cache，
-    // 即使 effect 在请求未完成前因 timeline 轮询重建而再次运行，把延迟到达的
-    // 译文写入也是安全且必要的——之前用 cancelled 反而会把好不容易到手的
-    // 译文丢掉，导致页面永远卡在"AI 实时翻译中…"。
-    missing.forEach((m) => translateInflight.current.add(m.key));
-    setTranslating(true);
-    // eslint-disable-next-line no-console
-    console.log('[translate] sending batch', missing.length, 'items', missing.map((m) => m.text.slice(0, 40)));
-    const convIdAtRequest = selectedId;
-    const langAtRequest = targetLang;
-    translateApi
-      .cached(missing, targetLang)
-      .then((res) => {
-        const trMap = res.data.translations || {};
-        setTranslations((prev) => {
-          const next = { ...prev };
-          for (const m of missing) {
-            const tr = trMap[m.key];
-            // 后端只返回成功翻译过的条目；这里再保险地剔除空串/与原文相同的兜底返回
-            if (tr != null && tr.trim() !== '' && tr.trim() !== m.text.trim()) {
-              next[m.key] = tr;
-            }
-          }
-          // 仅当请求期间没有切换会话/语言时，把结果回写 LS 作为下次预热
-          if (convIdAtRequest === selectedId && langAtRequest === targetLang) {
-            saveTranslationsToLS(convIdAtRequest, langAtRequest, next);
-          }
-          return next;
-        });
-      })
-      .catch(() => {
-        // 请求失败不缓存，下次轮询继续重试
-      })
-      .finally(() => {
-        missing.forEach((m) => translateInflight.current.delete(m.key));
-        setTranslating(false);
-      });
-
-    return undefined;
-  }, [timeline, translationEnabled, targetLang, translations, timelineKeyAndText, isLikelyChinese, selectedId, saveTranslationsToLS]);
-
   // 找到第一条 AI 回复消息的 timeline 下标——即 latest_turn_metric.started_at 之后的首条 assistant 消息
   const metricAnnotationIdx = useMemo(() => {
     if (!detail?.latest_turn_metric) return -1;
@@ -1299,43 +1131,16 @@ export default function Conversations() {
   }, [detail?.latest_turn_metric, timeline]);
 
   const renderTimelineItem = useCallback(
-    (item: ConversationTimelineItem, useTranslation: boolean) => {
-      const src = useTranslation ? timelineKeyAndText(item) : null;
-      const tr = src ? translations[src.key] : undefined;
-      // 译文未到位时（非中文且尚未缓存），在左侧气泡里显示占位提示。
-      const pending =
-        useTranslation && !!src && tr == null ? 'AI 实时翻译中…' : undefined;
-      const override = tr ?? pending;
-      // 译文已成功生成时，对译文气泡使用打字机效果（占位文本不动画）。
-      const translationAnimKey =
-        useTranslation && tr != null ? `tr-${item.id}` : undefined;
+    (item: ConversationTimelineItem) => {
       if (item.kind === 'message') {
-        // 原文气泡：仅 AI 回复使用打字机效果。
-        const originalAnimKey =
-          !useTranslation && item.message.role === 'assistant' ? `msg-${item.id}` : undefined;
-        return (
-          <MessageBubble
-            key={item.id}
-            msg={item.message}
-            contentOverride={useTranslation ? override : undefined}
-            animateKey={translationAnimKey ?? originalAnimKey}
-          />
-        );
+        const animKey = item.message.role === 'assistant' ? `msg-${item.id}` : undefined;
+        return <MessageBubble key={item.id} msg={item.message} animateKey={animKey} />;
       }
       const ev = item.event;
-      const originalAnimKey =
-        !useTranslation && ev.role !== 'human_agent' ? `evt-${item.id}` : undefined;
-      return (
-        <OutboundEventBubble
-          key={item.id}
-          event={ev}
-          textOverride={useTranslation && ev.type === 'text' ? override : undefined}
-          captionOverride={useTranslation && ev.type === 'photo' ? override : undefined}
-          animateKey={translationAnimKey ?? originalAnimKey}
-        />
-      );
+      const animKey = ev.role !== 'human_agent' ? `evt-${item.id}` : undefined;
+      return <OutboundEventBubble key={item.id} event={ev} animateKey={animKey} />;
     },
-    [timelineKeyAndText, translations, isLikelyChinese],
+    [],
   );
   const pendingCount = stats?.pending_human ?? 0;
   const renderStatItem = (
@@ -1723,30 +1528,6 @@ export default function Conversations() {
                     <FileTextOutlined /> 合同
                   </Dropdown.Button>
                 </Tooltip>
-                <Space size={6} align="center">
-                  <TranslationOutlined style={{ color: translationEnabled ? '#1677ff' : '#bfbfbf' }} />
-                  <Text type="secondary" style={{ fontSize: 12 }}>实时翻译</Text>
-                  <Switch
-                    size="small"
-                    checked={translationEnabled}
-                    onChange={setTranslationEnabled}
-                  />
-                  {translationEnabled && (
-                    <Select
-                      size="small"
-                      value={targetLang}
-                      onChange={(v) => setTargetLang(v)}
-                      style={{ width: 92 }}
-                      options={[
-                        { value: 'zh', label: '简体中文' },
-                        { value: 'zh-TW', label: '繁體中文' },
-                      ]}
-                    />
-                  )}
-                  {translationEnabled && translating ? (
-                    <LoadingOutlined style={{ color: '#1677ff', fontSize: 12 }} />
-                  ) : null}
-                </Space>
               </Space>
               <Tooltip title="关闭对话">
                 <Button
@@ -1828,136 +1609,33 @@ export default function Conversations() {
               </div>
             ) : null}
 
-            {translationEnabled ? (
-              <div
-                style={{
-                  flex: 1,
-                  display: 'flex',
-                  minHeight: 0,
-                  overflow: 'hidden',
-                }}
-              >
-                <div
-                  style={{
-                    flex: 1,
-                    minWidth: 0,
-                    minHeight: 0,
-                    overflowY: 'scroll',
-                    overflowX: 'hidden',
-                    overscrollBehavior: 'contain',
-                    scrollbarGutter: 'stable',
-                    background: 'linear-gradient(180deg, #f0f7ff 0%, #f8fbff 100%)',
-                    borderRight: '1px solid #e8e8e8',
-                    position: 'relative',
-                  }}
-                >
-                  <div
-                    style={{
-                      position: 'sticky',
-                      top: 0,
-                      zIndex: 2,
-                      padding: '8px 16px',
-                      background: '#e6f4ff',
-                      borderBottom: '1px solid #bae0ff',
-                      fontSize: 12,
-                      color: '#1677ff',
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 6,
-                    }}
-                  >
-                    <TranslationOutlined /> {targetLang === 'zh-TW' ? '繁體中文譯文' : '简体中文译文'}
-                    {translating ? (
-                      <LoadingOutlined style={{ marginLeft: 'auto' }} />
-                    ) : null}
-                  </div>
-                  <div style={{ padding: '20px 20px 20px 24px' }}>
-                    <Spin spinning={detailLoading}>
-                      {detail && !detailLoading && timeline.length === 0 ? (
-                        <Empty description="暂无消息" />
-                      ) : timeline.length ? (
-                        timeline.flatMap((item, idx) => [
-                          ...(idx === metricAnnotationIdx
-                            ? [<TurnMetricBadge key="metric-badge-tr" metric={detail?.latest_turn_metric} />]
-                            : []),
-                          renderTimelineItem(item, true),
-                        ])
-                      ) : null}
-                    </Spin>
-                  </div>
-                </div>
-                <div
-                  style={{
-                    flex: 1,
-                    minWidth: 0,
-                    minHeight: 0,
-                    overflowY: 'scroll',
-                    overflowX: 'hidden',
-                    overscrollBehavior: 'contain',
-                    scrollbarGutter: 'stable',
-                    background: 'linear-gradient(180deg, #f0f2f5 0%, #f5f5f5 100%)',
-                    position: 'relative',
-                  }}
-                >
-                  <div
-                    style={{
-                      position: 'sticky',
-                      top: 0,
-                      zIndex: 2,
-                      padding: '8px 16px',
-                      background: '#fafafa',
-                      borderBottom: '1px solid #e8e8e8',
-                      fontSize: 12,
-                      color: '#666',
-                    }}
-                  >
-                    原始消息
-                  </div>
-                  <div style={{ padding: '20px 20px 20px 24px' }}>
-                    <Spin spinning={detailLoading}>
-                      {detail && !detailLoading && timeline.length === 0 ? (
-                        <Empty description="暂无消息" />
-                      ) : timeline.length ? (
-                        timeline.flatMap((item, idx) => [
-                          ...(idx === metricAnnotationIdx
-                            ? [<TurnMetricBadge key="metric-badge-raw" metric={detail?.latest_turn_metric} />]
-                            : []),
-                          renderTimelineItem(item, false),
-                        ])
-                      ) : null}
-                    </Spin>
-                  </div>
-                </div>
-              </div>
-            ) : (
-              <div
-                style={{
-                  flex: 1,
-                  minHeight: 0,
-                  overflowY: 'scroll',
-                  overflowX: 'hidden',
-                  overscrollBehavior: 'contain',
-                  scrollbarGutter: 'stable',
-                  WebkitOverflowScrolling: 'touch',
-                  padding: '20px 20px 20px 24px',
-                  background: 'linear-gradient(180deg, #f0f2f5 0%, #f5f5f5 100%)',
-                  position: 'relative',
-                }}
-              >
-                <Spin spinning={detailLoading}>
-                  {detail && !detailLoading && timeline.length === 0 ? (
-                    <Empty description="暂无消息" />
-                  ) : timeline.length ? (
-                    timeline.flatMap((item, idx) => [
-                      ...(idx === metricAnnotationIdx
-                        ? [<TurnMetricBadge key="metric-badge" metric={detail?.latest_turn_metric} />]
-                        : []),
-                      renderTimelineItem(item, false),
-                    ])
-                  ) : null}
-                </Spin>
-              </div>
-            )}
+            <div
+              style={{
+                flex: 1,
+                minHeight: 0,
+                overflowY: 'scroll',
+                overflowX: 'hidden',
+                overscrollBehavior: 'contain',
+                scrollbarGutter: 'stable',
+                WebkitOverflowScrolling: 'touch',
+                padding: '20px 20px 20px 24px',
+                background: 'linear-gradient(180deg, #f0f2f5 0%, #f5f5f5 100%)',
+                position: 'relative',
+              }}
+            >
+              <Spin spinning={detailLoading}>
+                {detail && !detailLoading && timeline.length === 0 ? (
+                  <Empty description="暂无消息" />
+                ) : timeline.length ? (
+                  timeline.flatMap((item, idx) => [
+                    ...(idx === metricAnnotationIdx
+                      ? [<TurnMetricBadge key="metric-badge" metric={detail?.latest_turn_metric} />]
+                      : []),
+                    renderTimelineItem(item),
+                  ])
+                ) : null}
+              </Spin>
+            </div>
 
             <div
               style={{

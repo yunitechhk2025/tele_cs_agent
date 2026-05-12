@@ -36,25 +36,6 @@ export const dashboardApi = {
   getStats: () => api.get<DashboardStats>('/dashboard/stats'),
 };
 
-export const translateApi = {
-  batch: (texts: string[], targetLang = 'zh') =>
-    api.post<{ translations: string[] }>('/translate', {
-      texts,
-      target_lang: targetLang,
-    }),
-  // 带 DB 缓存的批量翻译：传 [{key, text}]，返回 { key: translatedText } 字典；
-  // 服务端会按 key 解析出 message/event 身份并落 message_translations 表，
-  // 下次切换会话/刷新页面命中缓存，瞬时返回，不再请求外网。
-  cached: (
-    items: { key: string; text: string }[],
-    targetLang = 'zh',
-  ) =>
-    api.post<{ translations: Record<string, string> }>('/translate/cached', {
-      items,
-      target_lang: targetLang,
-    }),
-};
-
 export const conversationApi = {
   list: (params?: { status?: string; search?: string }) =>
     api.get<Conversation[]>('/conversations', { params }),
