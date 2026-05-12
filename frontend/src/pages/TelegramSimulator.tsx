@@ -11,8 +11,8 @@ import {
 import dayjs from 'dayjs';
 import { Link, useSearchParams } from 'react-router-dom';
 import { botApi, conversationApi, simulatorApi } from '../api';
-import type { Message, SimulatorOutgoingEvent, TelegramBot } from '../types';
-import { TypewriterText } from '../components/TypewriterText';
+import type { Message, TelegramBot } from '../types';
+import { TypewriterText, RichText } from '../components/TypewriterText';
 
 const { Text } = Typography;
 
@@ -88,10 +88,6 @@ function clearPersistedState() {
   window.localStorage.removeItem(SIMULATOR_STORAGE_KEY);
 }
 
-function isMediaEvent(event: SimulatorOutgoingEvent): event is SimulatorOutgoingEvent & { type: 'photo' | 'document' } {
-  return event.type === 'photo' || event.type === 'document';
-}
-
 function mapMessages(messages: Message[]): TimelineItem[] {
   return messages.map((msg) => ({
     id: `msg-${msg.id}`,
@@ -140,7 +136,7 @@ function Bubble({ item, userName }: { item: TimelineItem; userName: string }) {
             {animate ? (
               <TypewriterText id={`sim-${item.id}`} text={item.content} />
             ) : (
-              item.content
+              <RichText text={item.content} />
             )}
           </div>
         )}
@@ -168,7 +164,11 @@ function Bubble({ item, userName }: { item: TimelineItem; userName: string }) {
             >
               <LinkOutlined /> {item.filename || 'Document'}
             </a>
-            {item.caption ? <div style={{ marginTop: 6, whiteSpace: 'pre-wrap' }}>{item.caption}</div> : null}
+            {item.caption ? (
+              <div style={{ marginTop: 6, whiteSpace: 'pre-wrap' }}>
+                <RichText text={item.caption} />
+              </div>
+            ) : null}
           </div>
         )}
         <div style={{ textAlign: 'right', marginTop: 4 }}>
@@ -312,10 +312,23 @@ export default function TelegramSimulator() {
     });
   }, [conversationId, selectedBotId, language, ephemeralEvents]);
 
-  const scrollToBottom = useCallback(() => {
+  // 记录"用户是否处于贴底状态"。只有贴底时新消息才自动滚到底；
+  // 用户向上滚动离开底部后，新消息进来不再强行拉回，避免回看时被打断。
+  const stickToBottomRef = useRef<boolean>(true);
+
+  const handleScroll = useCallback(() => {
+    const node = scrollRef.current;
+    if (!node) return;
+    const distance = node.scrollHeight - node.scrollTop - node.clientHeight;
+    // 60px 容差：靠近底部就视作"想跟随"
+    stickToBottomRef.current = distance < 60;
+  }, []);
+
+  const scrollToBottom = useCallback((force = false) => {
     requestAnimationFrame(() => {
       const node = scrollRef.current;
       if (!node) return;
+      if (!force && !stickToBottomRef.current) return;
       node.scrollTo({ top: node.scrollHeight, behavior: 'smooth' });
     });
   }, []);
@@ -323,6 +336,12 @@ export default function TelegramSimulator() {
   useEffect(() => {
     scrollToBottom();
   }, [messages, ephemeralEvents, scrollToBottom]);
+
+  // 切换会话时强制贴底一次，避免上一会话的滚动状态污染。
+  useEffect(() => {
+    stickToBottomRef.current = true;
+    scrollToBottom(true);
+  }, [conversationId, scrollToBottom]);
 
   const timeline = useMemo(() => {
     const textItems = mapMessages(messages);
@@ -390,10 +409,21 @@ export default function TelegramSimulator() {
     });
     try {
       const { data } = await simulatorApi.sendMessage(conversationId, text);
-      await Promise.all([loadMessages(conversationId), loadEvents(conversationId)]);
-      const outgoingEvents = (data.outgoing || [])
-        .filter(isMediaEvent)
-        .map<TimelineItem>((event, index) => ({
+      // 立刻把后端返回的全部 outbound（文本 + 图片 + 文档）作为乐观气泡渲染，
+      // 这样"加载中" Spin 一消失，AI 回复就在同一帧出现，不再等下一次 loadMessages 网络往返。
+      // 真正的持久化数据稍后由轮询/后台 loadMessages 拉回；timeline useMemo 里已经
+      // 按 (role, content) / (kind, role, url) 做了去重，不会出现重复气泡。
+      const outgoingEvents = (data.outgoing || []).map<TimelineItem>((event, index) => {
+        if (event.type === 'text') {
+          return {
+            id: event.id || `evt-text-${Date.now()}-${index}`,
+            kind: 'text',
+            role: 'assistant' as const,
+            content: event.text || '',
+            created_at: event.created_at,
+          };
+        }
+        return {
           id: event.id || `evt-${Date.now()}-${index}`,
           kind: event.type,
           role: 'assistant' as const,
@@ -401,12 +431,20 @@ export default function TelegramSimulator() {
           caption: event.caption,
           filename: event.filename,
           created_at: event.created_at,
-        }));
-      setEphemeralEvents((prev) => [...prev.filter((it) => it.id !== optimisticId), ...outgoingEvents]);
+        };
+      });
+      // 同步刷新：保证 Spin 消失与 AI 气泡出现在同一次渲染提交里。
+      flushSync(() => {
+        setEphemeralEvents((prev) => [...prev.filter((it) => it.id !== optimisticId), ...outgoingEvents]);
+        setSending(false);
+      });
+      // 后台静默对齐 DB（不再 await，不阻塞 UI）；轮询每 4s 也会兜底。
+      void Promise.all([loadMessages(conversationId), loadEvents(conversationId)]).catch(() => {
+        /* 失败由轮询处理 */
+      });
     } catch {
       setEphemeralEvents((prev) => prev.filter((it) => it.id !== optimisticId));
       message.error('发送失败');
-    } finally {
       setSending(false);
     }
   };
@@ -529,6 +567,7 @@ export default function TelegramSimulator() {
           <>
             <div
               ref={scrollRef}
+              onScroll={handleScroll}
               style={{
                 flex: 1,
                 overflowY: 'auto',
@@ -554,12 +593,11 @@ export default function TelegramSimulator() {
                       padding: '10px 16px',
                       borderRadius: '12px 12px 12px 0',
                       background: TG_ASSISTANT_BUBBLE,
+                      display: 'inline-flex',
+                      alignItems: 'center',
                     }}
                   >
                     <Spin size="small" />
-                    <Text style={{ color: TG_SECONDARY, marginLeft: 8, fontSize: 13 }}>
-                      正在处理…
-                    </Text>
                   </div>
                 </div>
               )}

@@ -1,6 +1,6 @@
 import enum
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Text, DateTime, BigInteger, Boolean, ForeignKey, Enum as SQLEnum, LargeBinary, Float
+from sqlalchemy import Column, Integer, String, Text, DateTime, BigInteger, Boolean, ForeignKey, Enum as SQLEnum, LargeBinary, Float, UniqueConstraint, Index
 from sqlalchemy.orm import relationship
 from app.database import Base
 
@@ -311,6 +311,38 @@ class SceneGenerationImage(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     record = relationship("SceneGenerationRecord", back_populates="images")
+
+
+class MessageTranslation(Base):
+    """缓存对话时间线条目的翻译结果。
+
+    source_kind: "msg" 表示 Message 表里的消息，"evt" 表示 ConversationOutboundEvent。
+    source_id:   对应表的主键 id。
+    target_lang: 译入语言（如 "zh"、"zh-TW"、"en"）。
+    text:        翻译后的文本。
+
+    通过 (source_kind, source_id, target_lang) 唯一索引，避免重复落库。
+    新消息只翻一次，之后切换会话/刷新页面直接命中缓存。"""
+
+    __tablename__ = "message_translations"
+    __table_args__ = (
+        UniqueConstraint(
+            "source_kind", "source_id", "target_lang",
+            name="uq_message_translations_src_lang",
+        ),
+        Index(
+            "ix_message_translations_src",
+            "source_kind", "source_id",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    source_kind = Column(String(8), nullable=False)
+    source_id = Column(Integer, nullable=False)
+    target_lang = Column(String(16), nullable=False)
+    text = Column(Text, default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 class ConversationOutboundEvent(Base):

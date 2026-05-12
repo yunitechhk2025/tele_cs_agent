@@ -44,7 +44,7 @@ import {
   UserOutlined,
 } from '@ant-design/icons';
 import { conversationApi, contractApi, contractTemplateApi, dashboardApi, settingsApi, translateApi } from '../api';
-import { TypewriterText } from '../components/TypewriterText';
+import { TypewriterText, RichText } from '../components/TypewriterText';
 import type {
   Contract,
   ContractTemplate,
@@ -499,7 +499,7 @@ function OutboundEventBubble({
                 {animateKey ? (
                   <TypewriterText id={animateKey} text={(captionOverride ?? event.caption) || ''} />
                 ) : (
-                  captionOverride ?? event.caption
+                  <RichText text={(captionOverride ?? event.caption) || ''} />
                 )}
               </div>
             ) : null}
@@ -515,7 +515,7 @@ function OutboundEventBubble({
             {animateKey ? (
               <TypewriterText id={animateKey} text={(textOverride ?? event.text) || ''} />
             ) : (
-              textOverride ?? event.text
+              <RichText text={(textOverride ?? event.text) || ''} />
             )}
           </div>
         ) : null}
@@ -617,7 +617,7 @@ function MessageBubble({
           {animateKey ? (
             <TypewriterText id={animateKey} text={(contentOverride ?? msg.content) || ''} />
           ) : (
-            contentOverride ?? msg.content
+            <RichText text={(contentOverride ?? msg.content) || ''} />
           )}
         </div>
         {msg.attachment_file_id != null && msg.attachment_file_id !== undefined && (
@@ -690,6 +690,44 @@ export default function Conversations() {
   const [translating, setTranslating] = useState(false);
   const translateInflight = useRef<Set<string>>(new Set());
 
+  // 译文 localStorage 持久化：以 (会话id, 目标语言) 分桶。
+  // 仅作为前端预热缓存，权威源仍是后端 message_translations 表。
+  // 每个桶最多保留 500 条，避免 LS 容量被无限撑大。
+  const translationsCacheKey = useCallback(
+    (convId: number | null, lang: string) =>
+      convId == null ? null : `conv:tr:${convId}:${lang}`,
+    [],
+  );
+  const loadTranslationsFromLS = useCallback(
+    (convId: number | null, lang: string): Record<string, string> => {
+      const k = translationsCacheKey(convId, lang);
+      if (!k) return {};
+      try {
+        const raw = localStorage.getItem(k);
+        if (!raw) return {};
+        const parsed = JSON.parse(raw);
+        return parsed && typeof parsed === 'object' ? (parsed as Record<string, string>) : {};
+      } catch {
+        return {};
+      }
+    },
+    [translationsCacheKey],
+  );
+  const saveTranslationsToLS = useCallback(
+    (convId: number | null, lang: string, map: Record<string, string>) => {
+      const k = translationsCacheKey(convId, lang);
+      if (!k) return;
+      try {
+        const entries = Object.entries(map);
+        const trimmed = entries.length > 500 ? entries.slice(-500) : entries;
+        localStorage.setItem(k, JSON.stringify(Object.fromEntries(trimmed)));
+      } catch {
+        /* LS 满了就忽略，后端缓存仍然生效 */
+      }
+    },
+    [translationsCacheKey],
+  );
+
   useEffect(() => {
     try {
       localStorage.setItem('conv:translation', translationEnabled ? '1' : '0');
@@ -704,10 +742,20 @@ export default function Conversations() {
     } catch {
       /* ignore */
     }
-    // 切换目标语言时清空翻译缓存，触发重新翻译
+    // 切换目标语言时清空内存缓存与 inflight；
+    // 真正的译文从下面 hydrate effect 里按新 lang 从 LS 重新加载。
     setTranslations({});
     translateInflight.current.clear();
   }, [targetLang]);
+
+  // 切换会话或目标语言时，从 LS 预热译文 map，避免一进会话又出现"AI 实时翻译中…"
+  useEffect(() => {
+    if (selectedId == null) {
+      setTranslations({});
+      return;
+    }
+    setTranslations(loadTranslationsFromLS(selectedId, targetLang));
+  }, [selectedId, targetLang, loadTranslationsFromLS]);
 
   const [listWidth, setListWidth] = useState<number>(() => {
     try {
@@ -1205,19 +1253,25 @@ export default function Conversations() {
     setTranslating(true);
     // eslint-disable-next-line no-console
     console.log('[translate] sending batch', missing.length, 'items', missing.map((m) => m.text.slice(0, 40)));
+    const convIdAtRequest = selectedId;
+    const langAtRequest = targetLang;
     translateApi
-      .batch(missing.map((m) => m.text), targetLang)
+      .cached(missing, targetLang)
       .then((res) => {
+        const trMap = res.data.translations || {};
         setTranslations((prev) => {
           const next = { ...prev };
-          missing.forEach((m, i) => {
-            const tr = res.data.translations?.[i];
-            // 只缓存"真正翻译过的"结果：译文与原文不同才写入；
-            // 若后端返回原文（翻译失败兜底），不写入缓存，下次轮询时继续重试。
+          for (const m of missing) {
+            const tr = trMap[m.key];
+            // 后端只返回成功翻译过的条目；这里再保险地剔除空串/与原文相同的兜底返回
             if (tr != null && tr.trim() !== '' && tr.trim() !== m.text.trim()) {
               next[m.key] = tr;
             }
-          });
+          }
+          // 仅当请求期间没有切换会话/语言时，把结果回写 LS 作为下次预热
+          if (convIdAtRequest === selectedId && langAtRequest === targetLang) {
+            saveTranslationsToLS(convIdAtRequest, langAtRequest, next);
+          }
           return next;
         });
       })
@@ -1230,7 +1284,7 @@ export default function Conversations() {
       });
 
     return undefined;
-  }, [timeline, translationEnabled, targetLang, translations, timelineKeyAndText, isLikelyChinese]);
+  }, [timeline, translationEnabled, targetLang, translations, timelineKeyAndText, isLikelyChinese, selectedId, saveTranslationsToLS]);
 
   // 找到第一条 AI 回复消息的 timeline 下标——即 latest_turn_metric.started_at 之后的首条 assistant 消息
   const metricAnnotationIdx = useMemo(() => {

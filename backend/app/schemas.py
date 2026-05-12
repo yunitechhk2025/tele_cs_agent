@@ -231,6 +231,25 @@ class TranslateBatchResponse(BaseModel):
     translations: list[str | None]
 
 
+class TranslateItem(BaseModel):
+    """带身份信息的待翻译条目。
+
+    key 形如 "msg-<id>" 或 "evt-<id>"，与前端 timelineKeyAndText 保持一致；
+    后端据此拆出 source_kind / source_id 写入 message_translations 缓存。"""
+
+    key: str
+    text: str
+
+
+class TranslateCachedRequest(BaseModel):
+    items: list[TranslateItem]
+    target_lang: str = "zh"
+
+
+class TranslateCachedResponse(BaseModel):
+    translations: dict[str, str]
+
+
 class TelegramSimulatorSessionCreate(BaseModel):
     bot_id: int
     language: Optional[str] = "zh"

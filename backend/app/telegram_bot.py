@@ -1068,6 +1068,14 @@ async def process_customer_text_message(
             except Exception:
                 recent_scene_product_ids = []
 
+        # 先把最近的对话历史读出来，后续意图分类、生成回复、判重都用同一份。
+        # 这是修复"AI 不联系上下文"的关键：原来历史只在最末段 generate_response 之前才加载，
+        # 意图路由 / 商品识别 / 场景请求识别等所有前置 LLM 调用都看不到历史，
+        # 导致"这个多少钱""再来一个""价格呢"等省略式追问被误判。
+        await stage("loading_chat_history")
+        chat_history = await get_chat_history(conversation_id)
+        repeated_question = _is_repeated_user_question(chat_history, user_message)
+
         await stage("classifying_intent_fast")
         has_pending_scene_confirmation = bool(scene_state and scene_state.pending_confirmation)
         intent = classify_customer_intent_fast(
@@ -1084,6 +1092,7 @@ async def process_customer_text_message(
                 products=all_products,
                 recent_product_ids=recent_scene_product_ids,
                 has_pending_scene_confirmation=has_pending_scene_confirmation,
+                chat_history=chat_history,
             )
         intent_name = intent.get("primary_intent") or "general_question"
         intent_confidence = float(intent.get("confidence") or 0.0)
@@ -1595,10 +1604,6 @@ async def process_customer_text_message(
         if matched_file_ids:
             matched_entries = [f for f in all_files if f["id"] in matched_file_ids]
             file_info = "\n".join(f"- {f['name']}: {f['description']}" for f in matched_entries)
-
-        await stage("loading_chat_history")
-        chat_history = await get_chat_history(conversation_id)
-        repeated_question = _is_repeated_user_question(chat_history, user_message)
 
         edge_notes: list[str] = []
         if repeated_question:

@@ -13,6 +13,7 @@ BCP-47（如 `zh-CN`, `en-US`），调用前会做最小判定避免给中文文
 from __future__ import annotations
 
 import logging
+import os
 import re
 from typing import Optional
 
@@ -49,6 +50,10 @@ _LANG_MAP = {
 
 _CHINESE_RE = re.compile(r"[\u4e00-\u9fff]")
 
+# MyMemory 匿名调用要求带一个真实邮箱（参数 de=）才肯放行额度，
+# 否则会返回 403 INVALID EMAIL PROVIDED。允许通过 env 覆盖。
+_MYMEMORY_EMAIL = os.getenv("MYMEMORY_EMAIL", "zhangivah@gmail.com").strip()
+
 
 def _normalize(code: str) -> str:
     return _LANG_MAP.get((code or "").lower().strip(), code or "")
@@ -81,8 +86,9 @@ async def _translate_via_mymemory(
     params = {
         "q": text,
         "langpair": f"{src}|{target}",
-        # de=邮箱用于提升匿名额度，留空也可工作。
-        "de": "",
+        # de=邮箱用于提升匿名额度。MyMemory 当前要求必须填一个**有效**邮箱，
+        # 否则会直接 403 INVALID EMAIL PROVIDED。
+        "de": _MYMEMORY_EMAIL,
     }
     url = "https://api.mymemory.translated.net/get"
 

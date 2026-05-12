@@ -184,14 +184,22 @@ def build_image_client(cfg: dict[str, str] | None = None) -> AsyncOpenAI:
 # ─── Public API (used by bot and other services) ─────────────────────────────
 
 def _heuristic_language(text: str) -> str | None:
-    """Fast character-based language detection as fallback."""
+    """Fast character-based language detection as fallback.
+
+    重要：日文句子里几乎一定包含 CJK 统一表意文字（汉字），例如「商品について
+    教えてください」。如果先判 `[\u4e00-\u9fff]` 会把所有日语都错判成 zh。
+    所以先看**只属于日语**的平假名 / 片假名（U+3040-U+30FF），命中即判 ja；
+    韩文谚文同理优先于汉字检测。剩下纯汉字才算中文。"""
     import re
-    if re.search(r'[\u4e00-\u9fff]', text):
-        return "zh"
-    if re.search(r'[\u3040-\u30ff]', text):
-        return "ja"
+    # 韩文专属字符 → ko
     if re.search(r'[\uac00-\ud7af]', text):
         return "ko"
+    # 平假名 / 片假名 / 半角片假名 → ja（即使句中混有汉字）
+    if re.search(r'[\u3040-\u30ff\uff66-\uff9f]', text):
+        return "ja"
+    # 走到这里说明既无谚文也无假名，剩下的 CJK 汉字归为中文
+    if re.search(r'[\u4e00-\u9fff]', text):
+        return "zh"
     if re.search(r'[\u0600-\u06ff]', text):
         return "ar"
     if re.search(r'[\u0400-\u04ff]', text):
@@ -465,6 +473,7 @@ async def classify_customer_intent(
     products: list[dict] | None = None,
     recent_product_ids: list[int] | None = None,
     has_pending_scene_confirmation: bool = False,
+    chat_history: list[dict] | None = None,
 ) -> dict[str, Any]:
     """Classify the next customer intent once, with a fast rules path before LLM routing."""
     fast = _fast_intent_from_rules(
@@ -507,12 +516,20 @@ async def classify_customer_intent(
         f"Pending scene confirmation: {has_pending_scene_confirmation}\n"
         f"{_product_router_context(products, recent_product_ids)}"
     )
+    # 把最近 6 轮历史拼进 prompt，让路由器能解析"这个/它/那款/价格呢"等省略式追问。
+    # 使用对话格式而非 system 上下文，便于模型用最自然的指代消解能力。
+    convo_messages: list[dict[str, Any]] = [{"role": "system", "content": prompt}]
+    if chat_history:
+        for msg in chat_history[-6:]:
+            role = msg.get("role")
+            content = msg.get("content") or ""
+            if role in {"user", "assistant"} and content:
+                convo_messages.append({"role": role, "content": content})
+    convo_messages.append({"role": "user", "content": user_message})
+
     try:
         raw = await _chat_completion(
-            messages=[
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": user_message},
-            ],
+            messages=convo_messages,
             max_tokens=220,
             temperature=0,
         )
@@ -552,7 +569,8 @@ async def detect_language(text: str) -> str:
                     "content": (
                         "You are a language detector. Return ONLY the ISO 639-1 language code "
                         "(e.g., 'en', 'zh', 'ja', 'ko', 'es', 'fr', 'de', 'ar', 'ru', 'pt'). "
-                        "Nothing else."
+                        "Treat any text containing hiragana or katakana as 'ja' even if it also "
+                        "contains Chinese kanji. Treat hangul as 'ko'. Nothing else."
                     ),
                 },
                 {"role": "user", "content": text},
