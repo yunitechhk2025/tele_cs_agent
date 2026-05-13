@@ -178,6 +178,21 @@ def build_image_client(cfg: dict[str, str] | None = None) -> AsyncOpenAI:
 
 # ─── Public API (used by bot and other services) ─────────────────────────────
 
+def _heuristic_language(text: str) -> str | None:
+    """Fast character-based language detection fallback."""
+    if re.search(r'[\uac00-\ud7af]', text):
+        return "ko"
+    if re.search(r'[\u3040-\u30ff\uff66-\uff9f]', text):
+        return "ja"
+    if re.search(r'[\u4e00-\u9fff]', text):
+        return "zh"
+    if re.search(r'[\u0600-\u06ff]', text):
+        return "ar"
+    if re.search(r'[\u0400-\u04ff]', text):
+        return "ru"
+    return None
+
+
 INTENT_VALUES = {
     "general_question",
     "quote_handoff",
@@ -396,6 +411,7 @@ async def classify_customer_intent(
     products: list[dict] | None = None,
     recent_product_ids: list[int] | None = None,
     has_pending_scene_confirmation: bool = False,
+    chat_history: list[dict] | None = None,
 ) -> dict[str, Any]:
     """Classify the next customer intent once, with a fast rules path before LLM routing."""
     fast = _fast_intent_from_rules(
@@ -438,12 +454,18 @@ async def classify_customer_intent(
         f"Pending scene confirmation: {has_pending_scene_confirmation}\n"
         f"{_product_router_context(products, recent_product_ids)}"
     )
+    convo_messages: list[dict[str, Any]] = [{"role": "system", "content": prompt}]
+    if chat_history:
+        for msg in chat_history[-6:]:
+            role = msg.get("role")
+            content = msg.get("content") or ""
+            if role in {"user", "assistant"} and content:
+                convo_messages.append({"role": role, "content": content})
+    convo_messages.append({"role": "user", "content": user_message})
+
     try:
         raw = await _chat_completion(
-            messages=[
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": user_message},
-            ],
+            messages=convo_messages,
             max_tokens=220,
             temperature=0,
         )
@@ -473,6 +495,9 @@ async def classify_customer_intent(
         return _intent_result("general_question", 0.0, reason="intent classifier failed")
 
 async def detect_language(text: str) -> str:
+    heuristic = _heuristic_language(text)
+    if heuristic:
+        return heuristic
     try:
         result = await _chat_completion(
             messages=[
@@ -481,7 +506,8 @@ async def detect_language(text: str) -> str:
                     "content": (
                         "You are a language detector. Return ONLY the ISO 639-1 language code "
                         "(e.g., 'en', 'zh', 'ja', 'ko', 'es', 'fr', 'de', 'ar', 'ru', 'pt'). "
-                        "Nothing else."
+                        "Treat any text containing hiragana or katakana as 'ja' even if it also "
+                        "contains Chinese kanji. Treat hangul as 'ko'. Nothing else."
                     ),
                 },
                 {"role": "user", "content": text},

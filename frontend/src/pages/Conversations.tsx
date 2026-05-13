@@ -41,6 +41,7 @@ import {
   UserOutlined,
 } from '@ant-design/icons';
 import { conversationApi, contractApi, contractTemplateApi, dashboardApi, settingsApi } from '../api';
+import { RichText } from '../components/RichText';
 import type {
   Contract,
   ContractTemplate,
@@ -481,7 +482,7 @@ function OutboundEventBubble({ event }: { event: SimulatorOutgoingEvent }) {
             />
             {event.caption ? (
               <div style={{ marginTop: 10, whiteSpace: 'pre-wrap', wordBreak: 'break-word', lineHeight: 1.55, fontSize: 14 }}>
-                {event.caption}
+                <RichText text={event.caption} />
               </div>
             ) : null}
           </div>
@@ -493,7 +494,7 @@ function OutboundEventBubble({ event }: { event: SimulatorOutgoingEvent }) {
         ) : null}
         {event.type === 'text' && event.text ? (
           <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', lineHeight: 1.55, fontSize: 14 }}>
-            {event.text}
+            <RichText text={event.text} />
           </div>
         ) : null}
       </div>
@@ -583,7 +584,7 @@ function MessageBubble({ msg }: { msg: Message }) {
           </Text>
         </Space>
         <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 14, lineHeight: 1.55 }}>
-          {msg.content}
+          <RichText text={msg.content} />
         </div>
         {msg.attachment_file_id != null && msg.attachment_file_id !== undefined && (
           <div style={{ marginTop: 10 }}>

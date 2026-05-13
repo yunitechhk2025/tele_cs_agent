@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { flushSync } from 'react-dom';
 import { Button, Empty, Input, Select, Space, Spin, Typography, message } from 'antd';
 import {
   LinkOutlined,
@@ -11,6 +12,7 @@ import dayjs from 'dayjs';
 import { Link, useSearchParams } from 'react-router-dom';
 import { botApi, conversationApi, simulatorApi } from '../api';
 import type { Message, SimulatorOutgoingEvent, TelegramBot } from '../types';
+import { RichText } from '../components/RichText';
 
 const { Text } = Typography;
 
@@ -124,7 +126,7 @@ function Bubble({ item }: { item: TimelineItem }) {
           <Text style={{ color: TG_ACCENT, fontSize: 12, fontWeight: 600 }}>{name}</Text>
         </div>
         {item.kind === 'text' && (
-          <div style={{ whiteSpace: 'pre-wrap' }}>{item.content}</div>
+          <div style={{ whiteSpace: 'pre-wrap' }}><RichText text={item.content} /></div>
         )}
         {item.kind === 'photo' && (
           <div>
@@ -133,7 +135,11 @@ function Bubble({ item }: { item: TimelineItem }) {
               alt={item.caption || 'scene'}
               style={{ width: '100%', borderRadius: 10, display: 'block' }}
             />
-            {item.caption && <div style={{ marginTop: 6, whiteSpace: 'pre-wrap' }}>{item.caption}</div>}
+            {item.caption && (
+              <div style={{ marginTop: 6, whiteSpace: 'pre-wrap' }}>
+                <RichText text={item.caption} />
+              </div>
+            )}
           </div>
         )}
         {item.kind === 'document' && (
@@ -146,7 +152,11 @@ function Bubble({ item }: { item: TimelineItem }) {
             >
               <LinkOutlined /> {item.filename || 'Document'}
             </a>
-            {item.caption && <div style={{ marginTop: 6, whiteSpace: 'pre-wrap' }}>{item.caption}</div>}
+            {item.caption && (
+              <div style={{ marginTop: 6, whiteSpace: 'pre-wrap' }}>
+                <RichText text={item.caption} />
+              </div>
+            )}
           </div>
         )}
         <div style={{ textAlign: 'right', marginTop: 4 }}>
@@ -290,10 +300,20 @@ export default function TelegramSimulator() {
     });
   }, [conversationId, selectedBotId, language, ephemeralEvents]);
 
-  const scrollToBottom = useCallback(() => {
+  const stickToBottomRef = useRef<boolean>(true);
+
+  const handleScroll = useCallback(() => {
+    const node = scrollRef.current;
+    if (!node) return;
+    const distance = node.scrollHeight - node.scrollTop - node.clientHeight;
+    stickToBottomRef.current = distance < 60;
+  }, []);
+
+  const scrollToBottom = useCallback((force = false) => {
     requestAnimationFrame(() => {
       const node = scrollRef.current;
       if (!node) return;
+      if (!force && !stickToBottomRef.current) return;
       node.scrollTo({ top: node.scrollHeight, behavior: 'smooth' });
     });
   }, []);
@@ -301,6 +321,11 @@ export default function TelegramSimulator() {
   useEffect(() => {
     scrollToBottom();
   }, [messages, ephemeralEvents, scrollToBottom]);
+
+  useEffect(() => {
+    stickToBottomRef.current = true;
+    scrollToBottom(true);
+  }, [conversationId, scrollToBottom]);
 
   const timeline = useMemo(() => {
     const textItems = mapMessages(messages);
@@ -358,7 +383,6 @@ export default function TelegramSimulator() {
     setInputText('');
     try {
       const { data } = await simulatorApi.sendMessage(conversationId, text);
-      await Promise.all([loadMessages(conversationId), loadEvents(conversationId)]);
       const outgoingEvents = (data.outgoing || [])
         .filter((event) => event.type === 'text' || isMediaEvent(event))
         .map<TimelineItem>((event, index) => ({
@@ -379,11 +403,18 @@ export default function TelegramSimulator() {
                 created_at: event.created_at,
               }),
         }));
-      setEphemeralEvents((prev) => [...prev, ...outgoingEvents]);
+      flushSync(() => {
+        setEphemeralEvents((prev) => [...prev, ...outgoingEvents]);
+        setSending(false);
+      });
+      void Promise.all([loadMessages(conversationId), loadEvents(conversationId)]).catch(() => {
+        /* polling will retry */
+      });
     } catch {
       message.error('发送失败');
-    } finally {
       setSending(false);
+    } finally {
+      // setSending is handled above so outgoing events can render in the same commit as spinner removal.
     }
   };
 
@@ -505,6 +536,7 @@ export default function TelegramSimulator() {
           <>
             <div
               ref={scrollRef}
+              onScroll={handleScroll}
               style={{
                 flex: 1,
                 overflowY: 'auto',
@@ -528,12 +560,11 @@ export default function TelegramSimulator() {
                       padding: '10px 16px',
                       borderRadius: '12px 12px 12px 0',
                       background: TG_ASSISTANT_BUBBLE,
+                      display: 'inline-flex',
+                      alignItems: 'center',
                     }}
                   >
                     <Spin size="small" />
-                    <Text style={{ color: TG_SECONDARY, marginLeft: 8, fontSize: 13 }}>
-                      正在处理…
-                    </Text>
                   </div>
                 </div>
               )}
