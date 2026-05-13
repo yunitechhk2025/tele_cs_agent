@@ -1,6 +1,8 @@
+import asyncio
 import json
 import logging
 import re
+import unicodedata
 from typing import Any
 
 from openai import AsyncOpenAI
@@ -113,7 +115,12 @@ def _resolve_embedding_model(base_url: str, model: str | None) -> str:
     return configured or "text-embedding-3-small"
 
 
-async def _chat_completion(messages: list[dict], max_tokens: int | None = None, temperature: float | None = None) -> str:
+async def _chat_completion(
+    messages: list[dict],
+    max_tokens: int | None = None,
+    temperature: float | None = None,
+    disable_thinking: bool = False,
+) -> str:
     """Unified chat completion that routes to the correct provider."""
     cfg = await get_llm_settings()
     provider = cfg.get("llm_provider", "openai").lower()
@@ -124,14 +131,28 @@ async def _chat_completion(messages: list[dict], max_tokens: int | None = None, 
     if provider == "anthropic":
         return await _anthropic_chat(cfg, messages, model, mt, temp)
     else:
-        return await _openai_chat(cfg, messages, model, mt, temp)
+        return await _openai_chat(cfg, messages, model, mt, temp, disable_thinking=disable_thinking)
 
 
-async def _openai_chat(cfg: dict, messages: list[dict], model: str, max_tokens: int, temperature: float) -> str:
+async def _openai_chat(
+    cfg: dict,
+    messages: list[dict],
+    model: str,
+    max_tokens: int,
+    temperature: float,
+    disable_thinking: bool = False,
+) -> str:
     client = _build_openai_client(cfg)
-    response = await client.chat.completions.create(
-        model=model, messages=messages, max_tokens=max_tokens, temperature=temperature,
-    )
+    kwargs: dict[str, Any] = {
+        "model": model,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+    }
+    base_url = (cfg.get("llm_base_url") or "").lower()
+    if disable_thinking and "dashscope" in base_url:
+        kwargs["extra_body"] = {"enable_thinking": False}
+    response = await client.chat.completions.create(**kwargs)
     return response.choices[0].message.content.strip()
 
 
@@ -468,6 +489,7 @@ async def classify_customer_intent(
             messages=convo_messages,
             max_tokens=220,
             temperature=0,
+            disable_thinking=True,
         )
         data = _extract_json_object(raw)
         slots = data.get("slots") if isinstance(data.get("slots"), dict) else {}
@@ -514,6 +536,7 @@ async def detect_language(text: str) -> str:
             ],
             max_tokens=5,
             temperature=0,
+            disable_thinking=True,
         )
         return result.strip().lower()[:2]
     except Exception as e:
@@ -537,6 +560,7 @@ async def check_is_quote_related(text: str) -> bool:
             ],
             max_tokens=20,
             temperature=0,
+            disable_thinking=True,
         )
         parsed = json.loads(result)
         return parsed.get("is_quote", False)
@@ -570,6 +594,7 @@ async def check_file_request(text: str, available_files: list[dict]) -> list[int
             ],
             max_tokens=50,
             temperature=0,
+            disable_thinking=True,
         )
         return json.loads(result)
     except Exception as e:
@@ -599,6 +624,7 @@ async def check_is_product_recommendation(text: str) -> bool:
             ],
             max_tokens=20,
             temperature=0,
+            disable_thinking=True,
         )
         return json.loads(result).get("is_product_rec", False)
     except Exception as e:
@@ -626,6 +652,7 @@ async def check_is_scene_image_confirmation(text: str) -> bool:
             ],
             max_tokens=20,
             temperature=0,
+            disable_thinking=True,
         )
         return json.loads(result).get("is_confirmed", False)
     except Exception as e:
@@ -673,6 +700,7 @@ async def resolve_recent_product_reference(
             ],
             max_tokens=120,
             temperature=0,
+            disable_thinking=True,
         )
         data = json.loads(raw)
         target_id = data.get("target_product_id")
@@ -736,6 +764,7 @@ async def analyze_scene_image_request(
             ],
             max_tokens=200,
             temperature=0,
+            disable_thinking=True,
         )
         data = json.loads(raw)
         target_id = data.get("target_product_id")
@@ -798,6 +827,7 @@ async def select_scene_bundle_products(
             ],
             max_tokens=120,
             temperature=0,
+            disable_thinking=True,
         )
         ids = json.loads(result)
         if not isinstance(ids, list):
@@ -817,15 +847,438 @@ async def select_scene_bundle_products(
         return []
 
 
+PRODUCT_MATCH_CANDIDATE_LIMIT = 30
+PRODUCT_MATCH_LLM_TIMEOUT_SECONDS = 8
+
+PRODUCT_CATEGORY_TERMS = {
+    "sofa": ["沙发", "沙發", "贵妃", "躺椅", "sofa", "couch", "sectional", "recliner", "loveseat", "ソファ", "ソファー", "カウチ", "소파", "쇼파", "sofa", "sofa", "canape", "divan"],
+    "dining_table": ["餐桌", "饭桌", "餐台", "dining table", "dining desk", "mesa de comedor", "table a manger", "table de salle a manger", "ダイニングテーブル", "食卓", "식탁"],
+    "dining_chair": ["餐椅", "饭椅", "dining chair", "silla de comedor", "chaise de salle a manger", "ダイニングチェア", "食卓椅", "식탁 의자"],
+    "bed": ["床", "双人床", "单人床", "bed", "cama", "lit", "ベッド", "침대"],
+    "nightstand": ["床头柜", "床頭櫃", "nightstand", "bedside table", "mesita de noche", "mesa de noche", "table de chevet", "ナイトテーブル", "ベッドサイド", "협탁"],
+    "coffee_table": ["茶几", "边几", "角几", "coffee table", "side table", "end table", "mesa de centro", "mesa auxiliar", "table basse", "table d'appoint", "ローテーブル", "サイドテーブル", "커피 테이블", "사이드 테이블"],
+    "tv_cabinet": ["电视柜", "電視櫃", "电视机柜", "tv cabinet", "tv stand", "media console", "mueble tv", "meuble tv", "テレビ台", "tvボード", "거실장", "tv장"],
+    "cabinet": ["柜", "储物柜", "收纳柜", "边柜", "斗柜", "cabinet", "storage cabinet", "commode", "dresser", "aparador", "armario", "buffet", "rangement", "キャビネット", "収納", "수납장", "서랍장"],
+    "wardrobe": ["衣柜", "衣櫃", "wardrobe", "closet", "armoire", "armario ropero", "クローゼット", "ワードローブ", "옷장"],
+    "desk": ["书桌", "办公桌", "茶台", "desk", "office desk", "bureau", "escritorio", "デスク", "机", "책상"],
+    "bookshelf": ["书柜", "书架", "书橱", "bookcase", "bookshelf", "bibliotheque", "estanteria", "本棚", "書棚", "책장", "책꽂이"],
+    "bar": ["吧台", "吧椅", "bar table", "bar stool", "barra", "taburete", "table de bar", "bar", "バーテーブル", "바 테이블", "바 의자"],
+    "chair": ["椅", "椅子", "休闲椅", "单椅", "chair", "armchair", "silla", "fauteuil", "chaise", "チェア", "椅子", "의자"],
+}
+
+PRODUCT_SPACE_TERMS = {
+    "living_room": ["客厅", "起居室", "living room", "sala", "sala de estar", "salon", "リビング", "居間", "거실"],
+    "dining_room": ["餐厅", "饭厅", "dining room", "comedor", "salle a manger", "ダイニング", "식당", "다이닝룸"],
+    "bedroom": ["卧室", "主卧", "bedroom", "dormitorio", "chambre", "寝室", "ベッドルーム", "침실"],
+    "study": ["书房", "办公室", "study", "office", "bureau", "estudio", "書斎", "オフィス", "서재", "사무실"],
+    "entryway": ["玄关", "门厅", "entryway", "foyer", "entree", "recibidor", "玄関", "현관"],
+}
+
+PRODUCT_STYLE_TERMS = {
+    "modern": ["现代", "现代简约", "modern", "contemporary", "moderno", "moderne", "モダン", "現代", "현대", "모던"],
+    "minimalist": ["极简", "简约", "minimalist", "minimal", "minimale", "minimalista", "ミニマル", "シンプル", "미니멀", "심플"],
+    "luxury": ["轻奢", "高端", "奢华", "luxury", "premium", "lujo", "lujoso", "luxe", "ラグジュアリー", "高級", "럭셔리", "고급"],
+    "nordic": ["北欧", "nordic", "scandinavian", "escandinavo", "scandinave", "北欧", "북유럽"],
+    "chinese": ["中式", "新中式", "chinese style", "oriental", "estilo chino", "style chinois", "中国風", "중식", "중국식"],
+    "japanese": ["日式", "原木风", "japanese", "japandi", "japones", "japonais", "和風", "日本風", "일본식"],
+    "vintage": ["复古", "中古", "retro", "vintage", "clasico", "classique", "レトロ", "ヴィンテージ", "복고", "빈티지"],
+    "french": ["法式", "french", "frances", "francais", "フレンチ", "프렌치"],
+    "italian": ["意式", "italian", "italiano", "italien", "イタリアン", "이탈리안"],
+}
+
+PRODUCT_COLOR_TERMS = {
+    "white": ["白", "白色", "米白", "奶油", "象牙", "ivory", "white", "cream", "blanco", "blanca", "blanc", "blanche", "白い", "ホワイト", "흰색", "하얀", "화이트"],
+    "black": ["黑", "黑色", "雅黑", "black", "negro", "noir", "黒", "ブラック", "검정", "검은색", "블랙"],
+    "gray": ["灰", "灰色", "银灰", "grey", "gray", "gris", "グレー", "灰色", "회색", "그레이"],
+    "brown": ["棕", "棕色", "咖啡", "褐色", "brown", "cafe", "marron", "brun", "ブラウン", "茶色", "갈색", "브라운"],
+    "wood": ["原木", "木色", "胡桃", "柚木", "樱桃木", "walnut", "teak", "cherry wood", "wood", "madera", "bois", "木目", "ウッド", "원목", "월넛"],
+    "red": ["红", "红色", "酒红", "red", "rojo", "rouge", "赤", "レッド", "빨간", "빨강", "레드"],
+    "blue": ["蓝", "蓝色", "blue", "azul", "bleu", "青", "ブルー", "파란", "파랑", "블루"],
+    "green": ["绿", "绿色", "green", "verde", "vert", "緑", "グリーン", "초록", "녹색", "그린"],
+    "purple": ["紫", "紫色", "purple", "violet", "morado", "morada", "violeta", "violet", "violette", "紫", "パープル", "보라", "보라색", "퍼플"],
+    "pink": ["粉", "粉色", "pink", "rosa", "rose", "ピンク", "분홍", "핑크"],
+    "yellow": ["黄", "黄色", "yellow", "amarillo", "jaune", "黄色", "イエロー", "노랑", "옐로우"],
+    "beige": ["米色", "杏色", "卡其", "beige", "khaki", "arena", "ベージュ", "베이지"],
+}
+
+PRODUCT_MATERIAL_TERMS = {
+    "leather": ["真皮", "牛皮", "皮", "leather", "piel", "cuero", "cuir", "革", "レザー", "가죽"],
+    "fabric": ["布艺", "布", "绒", "fabric", "cloth", "tela", "textil", "tissu", "ファブリック", "布", "패브릭", "원단"],
+    "solid_wood": ["实木", "原木", "solid wood", "madera maciza", "bois massif", "無垢材", "木製", "원목"],
+    "walnut": ["胡桃", "黑胡桃", "walnut", "nogal", "noyer", "ウォールナット", "월넛"],
+    "teak": ["柚木", "teak", "teca", "teck", "チーク", "티크"],
+    "stone": ["岩板", "大理石", "石", "slate", "marble", "stone", "piedra", "marbre", "セラミック", "大理石", "암판", "대리석"],
+    "metal": ["金属", "五金", "metal", "metalico", "metal", "メタル", "金属", "금속"],
+}
+
+PRODUCT_BRAND_TERMS = {
+    "landbond": ["联邦", "联邦家私", "landbond"],
+    "redapple": ["红苹果", "紅蘋果", "red apple", "redapple"],
+    "zuoyou": ["左右", "左右沙发", "左右家居", "zuoyou", "zuo you"],
+}
+
+PRODUCT_MATCH_TABLES = {
+    "categories": PRODUCT_CATEGORY_TERMS,
+    "spaces": PRODUCT_SPACE_TERMS,
+    "styles": PRODUCT_STYLE_TERMS,
+    "colors": PRODUCT_COLOR_TERMS,
+    "materials": PRODUCT_MATERIAL_TERMS,
+    "brands": PRODUCT_BRAND_TERMS,
+}
+
+PRODUCT_MATCH_WEIGHTS = {
+    "categories": 80,
+    "brands": 32,
+    "materials": 28,
+    "colors": 24,
+    "styles": 22,
+    "spaces": 18,
+}
+
+PRODUCT_MATCH_VALUE_LABELS = {
+    "categories": {
+        "sofa": {"zh": "沙发", "en": "sofa", "ja": "ソファ", "ko": "소파", "es": "sofá", "fr": "canapé"},
+        "dining_table": {"zh": "餐桌", "en": "dining table", "ja": "ダイニングテーブル", "ko": "식탁", "es": "mesa de comedor", "fr": "table à manger"},
+        "dining_chair": {"zh": "餐椅", "en": "dining chair", "ja": "ダイニングチェア", "ko": "식탁 의자", "es": "silla de comedor", "fr": "chaise de salle à manger"},
+        "bed": {"zh": "床", "en": "bed", "ja": "ベッド", "ko": "침대", "es": "cama", "fr": "lit"},
+        "nightstand": {"zh": "床头柜", "en": "nightstand", "ja": "ナイトテーブル", "ko": "협탁", "es": "mesita de noche", "fr": "table de chevet"},
+        "coffee_table": {"zh": "茶几", "en": "coffee table", "ja": "ローテーブル", "ko": "커피 테이블", "es": "mesa de centro", "fr": "table basse"},
+        "tv_cabinet": {"zh": "电视柜", "en": "TV cabinet", "ja": "テレビ台", "ko": "거실장", "es": "mueble TV", "fr": "meuble TV"},
+        "cabinet": {"zh": "柜类", "en": "cabinet", "ja": "キャビネット", "ko": "수납장", "es": "armario", "fr": "rangement"},
+        "wardrobe": {"zh": "衣柜", "en": "wardrobe", "ja": "ワードローブ", "ko": "옷장", "es": "armario ropero", "fr": "armoire"},
+        "desk": {"zh": "书桌", "en": "desk", "ja": "デスク", "ko": "책상", "es": "escritorio", "fr": "bureau"},
+        "bookshelf": {"zh": "书柜", "en": "bookcase", "ja": "本棚", "ko": "책장", "es": "estantería", "fr": "bibliothèque"},
+        "bar": {"zh": "吧台/吧椅", "en": "bar furniture", "ja": "バーファニチャー", "ko": "바 가구", "es": "mueble de bar", "fr": "meuble de bar"},
+        "chair": {"zh": "椅子", "en": "chair", "ja": "チェア", "ko": "의자", "es": "silla", "fr": "chaise"},
+    },
+    "spaces": {
+        "living_room": {"zh": "客厅", "en": "living-room", "ja": "リビング", "ko": "거실", "es": "sala de estar", "fr": "salon"},
+        "dining_room": {"zh": "餐厅", "en": "dining-room", "ja": "ダイニング", "ko": "식당", "es": "comedor", "fr": "salle à manger"},
+        "bedroom": {"zh": "卧室", "en": "bedroom", "ja": "寝室", "ko": "침실", "es": "dormitorio", "fr": "chambre"},
+        "study": {"zh": "书房", "en": "study", "ja": "書斎", "ko": "서재", "es": "estudio", "fr": "bureau"},
+        "entryway": {"zh": "玄关", "en": "entryway", "ja": "玄関", "ko": "현관", "es": "recibidor", "fr": "entrée"},
+    },
+    "styles": {
+        "modern": {"zh": "现代", "en": "modern", "ja": "モダン", "ko": "모던", "es": "moderno", "fr": "moderne"},
+        "minimalist": {"zh": "简约", "en": "minimalist", "ja": "ミニマル", "ko": "미니멀", "es": "minimalista", "fr": "minimaliste"},
+        "luxury": {"zh": "轻奢", "en": "luxury", "ja": "ラグジュアリー", "ko": "럭셔리", "es": "lujoso", "fr": "luxe"},
+        "nordic": {"zh": "北欧", "en": "Nordic", "ja": "北欧", "ko": "북유럽", "es": "escandinavo", "fr": "scandinave"},
+        "chinese": {"zh": "中式", "en": "Chinese-style", "ja": "中国風", "ko": "중국식", "es": "estilo chino", "fr": "style chinois"},
+        "japanese": {"zh": "日式", "en": "Japanese-style", "ja": "和風", "ko": "일본식", "es": "japonés", "fr": "japonais"},
+        "vintage": {"zh": "复古", "en": "vintage", "ja": "ヴィンテージ", "ko": "빈티지", "es": "vintage", "fr": "vintage"},
+        "french": {"zh": "法式", "en": "French-style", "ja": "フレンチ", "ko": "프렌치", "es": "francés", "fr": "français"},
+        "italian": {"zh": "意式", "en": "Italian-style", "ja": "イタリアン", "ko": "이탈리안", "es": "italiano", "fr": "italien"},
+    },
+    "colors": {
+        "white": {"zh": "白色", "en": "white", "ja": "白", "ko": "흰색", "es": "blanco", "fr": "blanc"},
+        "black": {"zh": "黑色", "en": "black", "ja": "黒", "ko": "검정", "es": "negro", "fr": "noir"},
+        "gray": {"zh": "灰色", "en": "gray", "ja": "グレー", "ko": "회색", "es": "gris", "fr": "gris"},
+        "brown": {"zh": "棕色", "en": "brown", "ja": "ブラウン", "ko": "갈색", "es": "marrón", "fr": "brun"},
+        "wood": {"zh": "木色", "en": "wood-tone", "ja": "木目", "ko": "원목색", "es": "madera", "fr": "bois"},
+        "red": {"zh": "红色", "en": "red", "ja": "赤", "ko": "빨강", "es": "rojo", "fr": "rouge"},
+        "blue": {"zh": "蓝色", "en": "blue", "ja": "青", "ko": "파랑", "es": "azul", "fr": "bleu"},
+        "green": {"zh": "绿色", "en": "green", "ja": "緑", "ko": "초록", "es": "verde", "fr": "vert"},
+        "purple": {"zh": "紫色", "en": "purple", "ja": "紫", "ko": "보라색", "es": "morado", "fr": "violet"},
+        "pink": {"zh": "粉色", "en": "pink", "ja": "ピンク", "ko": "핑크", "es": "rosa", "fr": "rose"},
+        "yellow": {"zh": "黄色", "en": "yellow", "ja": "黄色", "ko": "노랑", "es": "amarillo", "fr": "jaune"},
+        "beige": {"zh": "米色", "en": "beige", "ja": "ベージュ", "ko": "베이지", "es": "beige", "fr": "beige"},
+    },
+    "materials": {
+        "leather": {"zh": "皮质", "en": "leather", "ja": "レザー", "ko": "가죽", "es": "cuero", "fr": "cuir"},
+        "fabric": {"zh": "布艺", "en": "fabric", "ja": "ファブリック", "ko": "패브릭", "es": "tela", "fr": "tissu"},
+        "solid_wood": {"zh": "实木", "en": "solid wood", "ja": "無垢材", "ko": "원목", "es": "madera maciza", "fr": "bois massif"},
+        "walnut": {"zh": "胡桃木", "en": "walnut", "ja": "ウォールナット", "ko": "월넛", "es": "nogal", "fr": "noyer"},
+        "teak": {"zh": "柚木", "en": "teak", "ja": "チーク", "ko": "티크", "es": "teca", "fr": "teck"},
+        "stone": {"zh": "石材/岩板", "en": "stone", "ja": "石材", "ko": "석재", "es": "piedra", "fr": "pierre"},
+        "metal": {"zh": "金属", "en": "metal", "ja": "メタル", "ko": "금속", "es": "metal", "fr": "métal"},
+    },
+    "brands": {
+        "landbond": {"zh": "联邦家私", "en": "Landbond", "ja": "Landbond", "ko": "Landbond", "es": "Landbond", "fr": "Landbond"},
+        "redapple": {"zh": "红苹果", "en": "Red Apple", "ja": "Red Apple", "ko": "Red Apple", "es": "Red Apple", "fr": "Red Apple"},
+        "zuoyou": {"zh": "左右家居", "en": "Zuoyou", "ja": "Zuoyou", "ko": "Zuoyou", "es": "Zuoyou", "fr": "Zuoyou"},
+    },
+}
+
+PRODUCT_MATCH_STRICT_DIMENSIONS = ("colors", "styles", "materials", "brands", "spaces")
+PRODUCT_MATCH_SUPPORTED_LANGUAGES = {"zh", "en", "ja", "ko", "es", "fr"}
+
+
+def _normalize_match_text(value: Any) -> str:
+    raw = unicodedata.normalize("NFKC", str(value or "")).lower()
+    without_marks = "".join(ch for ch in unicodedata.normalize("NFD", raw) if unicodedata.category(ch) != "Mn")
+    spaced = re.sub(r"[\s\-_、，,./|:;；：()\[\]{}]+", " ", without_marks)
+    return re.sub(r"\s+", " ", spaced).strip()
+
+
+def _contains_any(text: str, terms: list[str]) -> bool:
+    return any(_normalize_match_text(term) in text for term in terms if term)
+
+
+def _extract_product_query_profile(user_message: str) -> dict[str, set[str]]:
+    text = _normalize_match_text(user_message)
+    profile: dict[str, set[str]] = {dimension: set() for dimension in PRODUCT_MATCH_TABLES}
+    for dimension, table in PRODUCT_MATCH_TABLES.items():
+        for key, terms in table.items():
+            if _contains_any(text, terms):
+                profile[dimension].add(key)
+    return profile
+
+
+def _product_match_text(product: dict[str, Any]) -> str:
+    values = [
+        product.get("brand", ""),
+        product.get("name", ""),
+        product.get("series", ""),
+        product.get("space", ""),
+        product.get("style", ""),
+        product.get("color", ""),
+        product.get("material", ""),
+        product.get("size", ""),
+        product.get("description", ""),
+    ]
+    return _normalize_match_text(" ".join(str(v or "") for v in values))
+
+
+def _matches_profile_value(product_text: str, dimension: str, value: str) -> bool:
+    return _contains_any(product_text, PRODUCT_MATCH_TABLES[dimension].get(value, []))
+
+
+def _match_language(language: str | None) -> str:
+    code = (language or "en").split("-")[0].lower()
+    return code if code in PRODUCT_MATCH_SUPPORTED_LANGUAGES else "en"
+
+
+def _match_label(dimension: str, value: str, language: str) -> str:
+    labels = PRODUCT_MATCH_VALUE_LABELS.get(dimension, {}).get(value, {})
+    return labels.get(language) or labels.get("en") or value
+
+
+def _join_match_labels(labels: list[str], language: str) -> str:
+    labels = [label for label in labels if label]
+    if not labels:
+        return ""
+    if language == "en":
+        return ", ".join(labels)
+    if language == "es":
+        return ", ".join(labels)
+    if language == "fr":
+        return ", ".join(labels)
+    if language in {"ja", "ko"}:
+        return "、".join(labels)
+    return "、".join(labels)
+
+
+def _constraint_phrase(profile: dict[str, set[str]], language: str, *, skip: tuple[str, str] | None = None) -> str:
+    ordered_dimensions = ("brands", "styles", "colors", "materials", "spaces", "categories")
+    labels: list[str] = []
+    for dimension in ordered_dimensions:
+        for value in sorted(profile.get(dimension) or []):
+            if skip and skip == (dimension, value):
+                continue
+            label = _match_label(dimension, value, language)
+            if label and label not in labels:
+                labels.append(label)
+    if language in {"en", "es", "fr"}:
+        return " ".join(labels)
+    return "".join(labels)
+
+
+def _alternative_phrases(
+    profile: dict[str, set[str]],
+    unsatisfied: list[dict[str, str]],
+    language: str,
+) -> list[str]:
+    phrases: list[str] = []
+    for item in unsatisfied[:2]:
+        dimension = item.get("dimension") or ""
+        value = item.get("value") or ""
+        phrase = _constraint_phrase(profile, language, skip=(dimension, value))
+        if phrase and phrase not in phrases:
+            phrases.append(phrase)
+        category_phrase = _constraint_phrase({"categories": profile.get("categories", set())}, language)
+        missing_label = _match_label(dimension, value, language)
+        missing_phrase = f"{missing_label} {category_phrase}".strip() if language in {"en", "es", "fr"} else f"{missing_label}{category_phrase}"
+        if missing_phrase and missing_phrase not in phrases:
+            phrases.append(missing_phrase)
+    return phrases[:2]
+
+
+PRODUCT_MATCH_CONSTRAINT_TEMPLATES = {
+    "zh": "暂时没有完全符合“{request}”的商品，我可以先为您推荐接近的{alternatives}。",
+    "en": "We do not currently have an exact match for \"{request}\". I can first recommend close alternatives such as {alternatives}.",
+    "ja": "「{request}」に完全一致する商品は現在見つかりません。まずは近い候補として{alternatives}をご提案します。",
+    "ko": "현재 \"{request}\" 조건에 완전히 맞는 상품은 없습니다. 우선 가까운 대안인 {alternatives} 상품을 추천드릴 수 있습니다.",
+    "es": "Por ahora no tenemos un producto que coincida exactamente con \"{request}\". Puedo recomendarle primero alternativas cercanas como {alternatives}.",
+    "fr": "Nous n'avons pas actuellement de produit correspondant exactement à « {request} ». Je peux d'abord vous recommander des alternatives proches comme {alternatives}.",
+}
+
+PRODUCT_MATCH_CONSTRAINT_ADMIN_TEMPLATES = {
+    "zh": "匹配提示：客户条件未完全满足，缺少：{missing}。",
+    "en": "Match notice: the customer constraints are not fully satisfied. Missing: {missing}.",
+    "ja": "マッチング通知：お客様の条件を完全には満たしていません。不足：{missing}。",
+    "ko": "매칭 알림: 고객 조건이 완전히 충족되지 않았습니다. 부족: {missing}.",
+    "es": "Aviso de coincidencia: las condiciones del cliente no se satisfacen por completo. Falta: {missing}.",
+    "fr": "Alerte de correspondance : les critères client ne sont pas entièrement satisfaits. Manquant : {missing}.",
+}
+
+
+def build_product_constraint_notice(
+    user_message: str,
+    products: list[dict],
+    language: str = "en",
+) -> dict[str, Any]:
+    """Return a localized notice when explicit product constraints are only partially satisfiable."""
+    lang = _match_language(language)
+    profile = _extract_product_query_profile(user_message)
+    if not profile.get("categories"):
+        return {"has_notice": False}
+
+    category_pool = [
+        product for product in products
+        if any(_matches_profile_value(_product_match_text(product), "categories", value) for value in profile["categories"])
+    ]
+    if not category_pool:
+        return {"has_notice": False}
+
+    unsatisfied: list[dict[str, str]] = []
+    for dimension in PRODUCT_MATCH_STRICT_DIMENSIONS:
+        for value in sorted(profile.get(dimension) or []):
+            matched = any(
+                _matches_profile_value(_product_match_text(product), dimension, value)
+                for product in category_pool
+            )
+            if not matched:
+                unsatisfied.append({
+                    "dimension": dimension,
+                    "value": value,
+                    "label": _match_label(dimension, value, lang),
+                })
+
+    if not unsatisfied:
+        return {"has_notice": False}
+
+    request = _constraint_phrase(profile, lang) or user_message.strip()
+    alternatives = _alternative_phrases(profile, unsatisfied, lang)
+    if not alternatives:
+        alternatives = [_constraint_phrase({"categories": profile.get("categories", set())}, lang)]
+    alternatives_text = _join_match_labels(alternatives, lang) or request
+    missing_text = _join_match_labels([item["label"] for item in unsatisfied], lang)
+    text = PRODUCT_MATCH_CONSTRAINT_TEMPLATES[lang].format(
+        request=request,
+        alternatives=alternatives_text,
+    )
+    admin_text = PRODUCT_MATCH_CONSTRAINT_ADMIN_TEMPLATES[lang].format(missing=missing_text)
+    return {
+        "has_notice": True,
+        "language": lang,
+        "text": text,
+        "admin_text": admin_text,
+        "missing": unsatisfied,
+        "request": request,
+        "alternatives": alternatives,
+    }
+
+
+def _score_product_candidate(product: dict[str, Any], profile: dict[str, set[str]]) -> int:
+    product_text = _product_match_text(product)
+    has_constraints = any(profile.values())
+    score = 0
+
+    for dimension, values in profile.items():
+        if not values:
+            continue
+        weight = PRODUCT_MATCH_WEIGHTS[dimension]
+        matched = any(_matches_profile_value(product_text, dimension, value) for value in values)
+        if matched:
+            score += weight
+        elif dimension == "categories":
+            score -= weight
+        else:
+            score -= max(3, weight // 5)
+
+    if product.get("image_paths"):
+        score += 8
+    if product.get("buy_url") or product.get("detail_url"):
+        score += 4
+    if product.get("space"):
+        score += 2
+    if product.get("style"):
+        score += 2
+
+    if not has_constraints:
+        score += len(str(product.get("name") or "")) > 0
+        score += 8 if product.get("image_paths") else 0
+        score += 4 if product.get("buy_url") or product.get("detail_url") else 0
+    return int(score)
+
+
+def _local_product_candidates(
+    user_message: str,
+    products: list[dict],
+    limit: int = PRODUCT_MATCH_CANDIDATE_LIMIT,
+) -> list[tuple[dict, int]]:
+    profile = _extract_product_query_profile(user_message)
+    scored = [(product, _score_product_candidate(product, profile)) for product in products]
+    scored.sort(key=lambda item: (-item[1], int(item[0].get("id") or 0)))
+
+    if any(profile.values()):
+        positive = [item for item in scored if item[1] > 0]
+        if len(positive) >= min(3, len(scored)):
+            selected = positive[:limit]
+            if len(selected) < limit:
+                selected.extend([item for item in scored if item not in selected][: limit - len(selected)])
+            return selected[:limit]
+    return scored[:limit]
+
+
+def _fallback_product_ids(candidates: list[tuple[dict, int]], count: int = 3) -> list[int]:
+    ids: list[int] = []
+    for product, _score in candidates:
+        try:
+            pid = int(product.get("id"))
+        except (TypeError, ValueError):
+            continue
+        if pid not in ids:
+            ids.append(pid)
+        if len(ids) >= count:
+            break
+    return ids
+
+
+def _parse_product_id_array(raw: str, valid_ids: set[int]) -> list[int]:
+    match = re.search(r"\[[^\]]*\]", raw or "")
+    if not match:
+        return []
+    try:
+        ids = json.loads(match.group())
+    except Exception:
+        return []
+    if not isinstance(ids, list):
+        return []
+    out: list[int] = []
+    for item in ids:
+        try:
+            pid = int(float(item))
+        except (TypeError, ValueError):
+            continue
+        if pid in valid_ids and pid not in out:
+            out.append(pid)
+    return out[:3]
+
+
 async def ai_select_products(
     user_message: str,
     products: list[dict],
     conversation_memory: str = "",
 ) -> list[int]:
-    """Use AI to select up to 3 best-matching product IDs from the catalog."""
-    import re
+    """Select product recommendations with local recall, LLM rerank, and deterministic fallback."""
     if not products:
         return []
+    candidates = _local_product_candidates(user_message, products)
+    fallback_ids = _fallback_product_ids(candidates)
+    if not candidates:
+        return fallback_ids
+
     memory_section = ""
     if conversation_memory.strip():
         memory_section = (
@@ -833,55 +1286,66 @@ async def ai_select_products(
             f"{conversation_memory.strip()}\n\n"
         )
     catalog = "\n".join(
-        f"ID:{p['id']} | 品牌:{p.get('brand', '')} | {p['name']} | 系列:{p['series']} | 空间:{p['space']} "
-        f"| 风格:{p['style']} | 颜色:{p['color']} | 材质:{p.get('material', '')}"
-        for p in products
+        f"ID:{p.get('id')} | score:{score} | 品牌:{p.get('brand', '')} | {p.get('name', '')} | 系列:{p.get('series', '')} | 空间:{p.get('space', '')} "
+        f"| 风格:{p.get('style', '')} | 颜色:{p.get('color', '')} | 材质:{p.get('material', '')}"
+        for p, score in candidates
+    )
+    valid_ids = {int(p["id"]) for p, _score in candidates if p.get("id") is not None}
+    logger.info(
+        "Product matching local recall: total=%d candidates=%d catalog_chars=%d fallback=%s",
+        len(products),
+        len(candidates),
+        len(catalog),
+        fallback_ids,
     )
     try:
-        result = await _chat_completion(
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a furniture product matcher. The customer wants product recommendations.\n"
-                        "Given the catalog below, pick up to 3 product IDs that BEST match the request.\n"
-                        "RULES:\n"
-                        "- Match by brand, style, space, color, series, or name.\n"
-                        "- If same-conversation memory includes explicit preferences, use them when the latest request is underspecified.\n"
-                        "- If the latest request clearly overrides previous preferences, follow the latest request.\n"
-                        "- Return a JSON array of numeric IDs, e.g. [12, 45, 78]\n"
-                        "- If nothing matches, return []\n"
-                        "- Output ONLY the JSON array, no explanation.\n\n"
-                        f"{memory_section}"
-                        f"CATALOG:\n{catalog}"
-                    ),
-                },
-                {"role": "user", "content": user_message},
-            ],
-            max_tokens=100,
-            temperature=0,
+        result = await asyncio.wait_for(
+            _chat_completion(
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are a furniture product matcher. The customer wants product recommendations.\n"
+                            "Given the pre-filtered candidate catalog below, pick up to 3 product IDs that BEST match the request.\n"
+                            "RULES:\n"
+                            "- Match by category, brand, style, room/space, color, material, series, or name.\n"
+                            "- Prefer the candidate score when quality is otherwise similar, but override it when the customer request clearly says so.\n"
+                            "- If same-conversation memory includes explicit preferences, use them when the latest request is underspecified.\n"
+                            "- If the latest request clearly overrides previous preferences, follow the latest request.\n"
+                            "- Return a JSON array of numeric IDs, e.g. [12, 45, 78]\n"
+                            "- If nothing matches, return []\n"
+                            "- Output ONLY the JSON array, no explanation.\n\n"
+                            f"{memory_section}"
+                            f"CANDIDATE CATALOG:\n{catalog}"
+                        ),
+                    },
+                    {"role": "user", "content": user_message},
+                ],
+                max_tokens=100,
+                temperature=0,
+                disable_thinking=True,
+            ),
+            timeout=PRODUCT_MATCH_LLM_TIMEOUT_SECONDS,
         )
         raw = result.strip()
         logger.info(f"AI product selection raw response: {raw[:200]}")
-        m = re.search(r'\[[\d\s,]*\]', raw)
-        if not m:
-            return []
-        ids = json.loads(m.group())
-        if not isinstance(ids, list):
-            return []
-        valid_ids = {p['id'] for p in products}
-        out: list[int] = []
-        for x in ids:
-            try:
-                pid = int(float(x))
-                if pid in valid_ids:
-                    out.append(pid)
-            except (TypeError, ValueError):
-                continue
-        return out[:3]
+        out = _parse_product_id_array(raw, valid_ids)
+        for pid in fallback_ids:
+            if pid not in out:
+                out.append(pid)
+            if len(out) >= 3:
+                break
+        return out[:3] or fallback_ids
+    except asyncio.TimeoutError:
+        logger.warning(
+            "Product AI selection timed out after %ss; falling back to local ranking ids=%s",
+            PRODUCT_MATCH_LLM_TIMEOUT_SECONDS,
+            fallback_ids,
+        )
+        return fallback_ids
     except Exception as e:
-        logger.error(f"Product AI selection failed: {e}")
-        return []
+        logger.error(f"Product AI selection failed; falling back to local ranking: {e}")
+        return fallback_ids
 
 
 LANGUAGE_NAMES = {

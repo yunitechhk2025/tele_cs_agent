@@ -5,6 +5,7 @@ import relativeTime from 'dayjs/plugin/relativeTime';
 import utc from 'dayjs/plugin/utc';
 import 'dayjs/locale/zh-cn';
 import {
+  Alert,
   Badge,
   Button,
   Card,
@@ -223,6 +224,10 @@ type ProductRecommendationDraftPayload = {
   intro_text?: string;
   followup_text?: string;
   cards?: ProductDraftCard[];
+  match_notice?: {
+    admin_text?: string;
+    text?: string;
+  };
 };
 
 type SceneResultDraftPayload = {
@@ -243,6 +248,14 @@ function ProductRecommendationDraftPreview({ payload }: { payload: Record<string
 
   return (
     <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+      {data.match_notice?.admin_text ? (
+        <Alert
+          type="warning"
+          showIcon
+          message={data.match_notice.admin_text}
+          style={{ borderRadius: 8 }}
+        />
+      ) : null}
       {data.intro_text ? (
         <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', lineHeight: 1.6 }}>
           {data.intro_text}

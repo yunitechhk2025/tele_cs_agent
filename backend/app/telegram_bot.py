@@ -22,7 +22,7 @@ from app.models import (
 from app.services.llm_service import (
     detect_language, check_file_request, generate_response,
     classify_customer_intent, classify_customer_intent_fast, ai_select_products,
-    resolve_recent_product_reference,
+    resolve_recent_product_reference, build_product_constraint_notice,
 )
 from app.services.rag_service import search_knowledge_for_bot
 from app.services.scene_service import CUSTOMER_SCENE_TIMEOUT_SECONDS, build_scene_record_response, generate_scene_images
@@ -2041,6 +2041,12 @@ async def process_customer_text_message(
             products_by_id = {p["id"]: p for p in all_products}
             selected_products = [products_by_id[pid] for pid in selected_ids if pid in products_by_id]
             intro = PRODUCT_REC_INTRO.get(language, PRODUCT_REC_INTRO["en"])
+            constraint_notice = build_product_constraint_notice(user_message, all_products, language)
+            recommendation_intro = (
+                f"{constraint_notice['text']}\n\n{intro}"
+                if constraint_notice.get("has_notice")
+                else intro
+            )
             none_msg = PRODUCT_REC_NONE.get(language, PRODUCT_REC_NONE["en"])
             stop_typing.set()
             await typing_task
@@ -2050,7 +2056,9 @@ async def process_customer_text_message(
                     suggested_scene = select_default_scene(selected_products, language)
                     followup = build_scene_followup_message(language, selected_products)
                     delivery = build_product_recommendation_delivery(selected_products, language)
-                    delivery["intro_text"] = intro
+                    delivery["intro_text"] = recommendation_intro
+                    if constraint_notice.get("has_notice"):
+                        delivery["match_notice"] = constraint_notice
                     delivery["followup_text"] = followup
                     delivery["scene_state"] = {
                         "primary_product_id": primary_product["id"],
@@ -2064,7 +2072,10 @@ async def process_customer_text_message(
                         "active_product_id": primary_product["id"],
                         "preferences": turn_preferences,
                     }
-                    preview_text = "\n".join([intro, *delivery.get("preview_lines", []), "", followup]).strip()
+                    preview_lines = [recommendation_intro]
+                    if constraint_notice.get("has_notice"):
+                        preview_lines.append(constraint_notice.get("admin_text", ""))
+                    preview_text = "\n".join([*preview_lines, *delivery.get("preview_lines", []), "", followup]).strip()
                     await stage("creating_ai_draft", "商品推荐待确认")
                     await first_response("product_recommendation_draft")
                     await create_pending_ai_delivery(
@@ -2087,8 +2098,8 @@ async def process_customer_text_message(
                     return
                 await first_response("product_recommendation")
                 await stage("sending_response", "发送商品推荐")
-                await outbound.reply_text(intro)
-                await save_message(conversation_id, MessageRole.ASSISTANT, intro, language)
+                await outbound.reply_text(recommendation_intro)
+                await save_message(conversation_id, MessageRole.ASSISTANT, recommendation_intro, language)
                 await send_product_recommendations(selected_products, language, outbound)
                 primary_product = selected_products[0]
                 suggested_scene = select_default_scene(selected_products, language)
