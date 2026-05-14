@@ -103,6 +103,7 @@ class ConversationDetailSchema(ConversationSchema):
     outbound_events: list["TelegramSimulatorEventSchema"] = []
     processing_state: Optional[ConversationProcessingStateSchema] = None
     latest_turn_metric: Optional[ConversationTurnMetricSchema] = None
+    turn_metrics: list[ConversationTurnMetricSchema] = []
     latest_turn_steps: list[ConversationTurnStepMetricSchema] = []
     ai_draft: Optional["PendingAIReplySchema"] = None
 

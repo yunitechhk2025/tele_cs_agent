@@ -518,6 +518,12 @@ function OutboundEventBubble({ event }: { event: SimulatorOutgoingEvent }) {
 function TurnMetricBadge({ metric }: { metric: ConversationDetail['latest_turn_metric'] }) {
   if (!metric) return null;
   const ic = intentConfig(metric);
+  const displayLatencyMs = metric.total_ms ?? metric.first_response_ms;
+  const latencyTooltip = metric.total_ms
+    ? `完整处理耗时：${formatLatency(metric.total_ms)}${
+        metric.first_response_ms ? `；首响：${formatLatency(metric.first_response_ms)}` : ''
+      }`
+    : '首响时间';
   return (
     <div
       style={{
@@ -533,9 +539,9 @@ function TurnMetricBadge({ metric }: { metric: ConversationDetail['latest_turn_m
           意图 {ic.label}
         </Tag>
       </Tooltip>
-      <Tooltip title="首响时间">
+      <Tooltip title={latencyTooltip}>
         <Tag color="purple" style={{ fontSize: 11, margin: 0 }}>
-          {formatLatency(metric.first_response_ms)}
+          {formatLatency(displayLatencyMs)}
         </Tag>
       </Tooltip>
     </div>
@@ -1100,17 +1106,27 @@ export default function Conversations() {
     });
   }, [detail]);
 
-  // 找到第一条 AI 回复消息的 timeline 下标——即 latest_turn_metric.started_at 之后的首条 assistant 消息
-  const metricAnnotationIdx = useMemo(() => {
-    if (!detail?.latest_turn_metric) return -1;
-    const startedAt = new Date(detail.latest_turn_metric.started_at).getTime();
-    return timeline.findIndex(
-      (item) =>
-        item.kind === 'message' &&
-        item.message.role === 'assistant' &&
-        new Date(item.message.created_at).getTime() >= startedAt,
-    );
-  }, [detail?.latest_turn_metric, timeline]);
+  const metricAnnotationByItemIdx = useMemo(() => {
+    const metrics = detail?.turn_metrics?.length
+      ? detail.turn_metrics
+      : detail?.latest_turn_metric
+        ? [detail.latest_turn_metric]
+        : [];
+    const annotations = new Map<number, NonNullable<ConversationDetail['latest_turn_metric']>[]>();
+    metrics.forEach((metric) => {
+      const startedAt = new Date(metric.started_at).getTime();
+      const itemIdx = timeline.findIndex((item) => {
+        const itemTime = new Date(item.created_at).getTime();
+        if (itemTime < startedAt) return false;
+        if (item.kind === 'message') return item.message.role === 'assistant';
+        return item.event.role === 'assistant';
+      });
+      if (itemIdx < 0) return;
+      const existing = annotations.get(itemIdx) || [];
+      annotations.set(itemIdx, [...existing, metric]);
+    });
+    return annotations;
+  }, [detail?.latest_turn_metric, detail?.turn_metrics, timeline]);
 
   const renderTimelineItem = useCallback((item: ConversationTimelineItem) => {
     if (item.kind === 'message') {
@@ -1604,9 +1620,9 @@ export default function Conversations() {
                   <Empty description="暂无消息" />
                 ) : timeline.length ? (
                   timeline.flatMap((item, idx) => [
-                    ...(idx === metricAnnotationIdx
-                      ? [<TurnMetricBadge key="metric-badge" metric={detail?.latest_turn_metric} />]
-                      : []),
+                    ...(metricAnnotationByItemIdx.get(idx) || []).map((metric) => (
+                      <TurnMetricBadge key={`metric-badge-${metric.id}`} metric={metric} />
+                    )),
                     renderTimelineItem(item),
                   ])
                 ) : null}

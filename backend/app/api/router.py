@@ -30,7 +30,7 @@ from app.schemas import (
     ContractSchema, ContractUpdateRequest, ContractGenerateRequest, SendContractRequest, DashboardStats,
     TelegramSimulatorSessionCreate, TelegramSimulatorSessionResponse,
     TelegramSimulatorSendRequest, TelegramSimulatorSendResponse, TelegramSimulatorEventSchema,
-    PendingAIReplySchema, SendPendingAIReplyRequest, ConversationTurnStepMetricSchema,
+    PendingAIReplySchema, SendPendingAIReplyRequest, ConversationTurnMetricSchema, ConversationTurnStepMetricSchema,
     CustomerServiceSettingsSchema, CustomerServiceSettingsUpdateRequest,
     LLMSettingsSchema, LLMSettingsUpdateRequest,
     FileEntrySchema, FileEntryUpdateRequest,
@@ -405,9 +405,13 @@ async def get_conversation(
         select(ConversationTurnMetric)
         .where(ConversationTurnMetric.conversation_id == conversation_id)
         .order_by(desc(ConversationTurnMetric.started_at), desc(ConversationTurnMetric.id))
-        .limit(1)
     )
-    detail.latest_turn_metric = metric_result.scalar_one_or_none()
+    turn_metrics = metric_result.scalars().all()
+    detail.turn_metrics = [
+        ConversationTurnMetricSchema.model_validate(metric)
+        for metric in turn_metrics
+    ]
+    detail.latest_turn_metric = detail.turn_metrics[0] if detail.turn_metrics else None
     if detail.latest_turn_metric:
         step_result = await db.execute(
             select(ConversationTurnStepMetric)

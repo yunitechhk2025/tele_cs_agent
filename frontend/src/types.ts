@@ -27,6 +27,7 @@ export interface ConversationDetail extends Conversation {
   outbound_events: SimulatorOutgoingEvent[];
   processing_state?: ConversationProcessingState | null;
   latest_turn_metric?: ConversationTurnMetric | null;
+  turn_metrics?: ConversationTurnMetric[];
   latest_turn_steps?: ConversationTurnStepMetric[];
   ai_draft?: PendingAIReply | null;
 }
