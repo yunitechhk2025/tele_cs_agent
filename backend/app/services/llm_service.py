@@ -856,11 +856,11 @@ PRODUCT_CATEGORY_TERMS = {
     "dining_chair": ["餐椅", "饭椅", "dining chair", "silla de comedor", "chaise de salle a manger", "ダイニングチェア", "食卓椅", "식탁 의자"],
     "bed": ["床", "双人床", "单人床", "bed", "cama", "lit", "ベッド", "침대"],
     "nightstand": ["床头柜", "床頭櫃", "nightstand", "bedside table", "mesita de noche", "mesa de noche", "table de chevet", "ナイトテーブル", "ベッドサイド", "협탁"],
-    "coffee_table": ["茶几", "边几", "角几", "coffee table", "side table", "end table", "mesa de centro", "mesa auxiliar", "table basse", "table d'appoint", "ローテーブル", "サイドテーブル", "커피 테이블", "사이드 테이블"],
+    "coffee_table": ["茶几", "茶桌", "茶台", "边几", "角几", "tea table", "coffee table", "side table", "end table", "mesa de centro", "mesa auxiliar", "table basse", "table d'appoint", "ローテーブル", "サイドテーブル", "커피 테이블", "사이드 테이블"],
     "tv_cabinet": ["电视柜", "電視櫃", "电视机柜", "tv cabinet", "tv stand", "media console", "mueble tv", "meuble tv", "テレビ台", "tvボード", "거실장", "tv장"],
     "cabinet": ["柜", "储物柜", "收纳柜", "边柜", "斗柜", "cabinet", "storage cabinet", "commode", "dresser", "aparador", "armario", "buffet", "rangement", "キャビネット", "収納", "수납장", "서랍장"],
     "wardrobe": ["衣柜", "衣櫃", "wardrobe", "closet", "armoire", "armario ropero", "クローゼット", "ワードローブ", "옷장"],
-    "desk": ["书桌", "办公桌", "茶台", "desk", "office desk", "bureau", "escritorio", "デスク", "机", "책상"],
+    "desk": ["书桌", "办公桌", "desk", "office desk", "bureau", "escritorio", "デスク", "机", "책상"],
     "bookshelf": ["书柜", "书架", "书橱", "bookcase", "bookshelf", "bibliotheque", "estanteria", "本棚", "書棚", "책장", "책꽂이"],
     "bar": ["吧台", "吧椅", "bar table", "bar stool", "barra", "taburete", "table de bar", "bar", "バーテーブル", "바 테이블", "바 의자"],
     "chair": ["椅", "椅子", "休闲椅", "单椅", "chair", "armchair", "silla", "fauteuil", "chaise", "チェア", "椅子", "의자"],
@@ -1024,6 +1024,21 @@ def _extract_product_query_profile(user_message: str) -> dict[str, set[str]]:
     return profile
 
 
+def _extract_product_query_terms(user_message: str) -> list[str]:
+    text = _normalize_match_text(user_message)
+    matched: list[str] = []
+    for table in PRODUCT_MATCH_TABLES.values():
+        for terms in table.values():
+            for term in terms:
+                normalized = _normalize_match_text(term)
+                if len(normalized) < 2:
+                    continue
+                if normalized in text and normalized not in matched:
+                    matched.append(normalized)
+    matched.sort(key=len, reverse=True)
+    return matched[:8]
+
+
 def _product_match_text(product: dict[str, Any]) -> str:
     values = [
         product.get("brand", ""),
@@ -1179,7 +1194,11 @@ def build_product_constraint_notice(
     }
 
 
-def _score_product_candidate(product: dict[str, Any], profile: dict[str, set[str]]) -> int:
+def _score_product_candidate(
+    product: dict[str, Any],
+    profile: dict[str, set[str]],
+    query_terms: list[str] | None = None,
+) -> int:
     product_text = _product_match_text(product)
     has_constraints = any(profile.values())
     score = 0
@@ -1204,6 +1223,8 @@ def _score_product_candidate(product: dict[str, Any], profile: dict[str, set[str
         score += 2
     if product.get("style"):
         score += 2
+    if query_terms:
+        score += 60 if any(term in product_text for term in query_terms) else 0
 
     if not has_constraints:
         score += len(str(product.get("name") or "")) > 0
@@ -1218,7 +1239,8 @@ def _local_product_candidates(
     limit: int = PRODUCT_MATCH_CANDIDATE_LIMIT,
 ) -> list[tuple[dict, int]]:
     profile = _extract_product_query_profile(user_message)
-    scored = [(product, _score_product_candidate(product, profile)) for product in products]
+    query_terms = _extract_product_query_terms(user_message)
+    scored = [(product, _score_product_candidate(product, profile, query_terms)) for product in products]
     scored.sort(key=lambda item: (-item[1], int(item[0].get("id") or 0)))
 
     if any(profile.values()):
@@ -1234,6 +1256,32 @@ def _local_product_candidates(
 def _fallback_product_ids(candidates: list[tuple[dict, int]], count: int = 3) -> list[int]:
     ids: list[int] = []
     for product, _score in candidates:
+        try:
+            pid = int(product.get("id"))
+        except (TypeError, ValueError):
+            continue
+        if pid not in ids:
+            ids.append(pid)
+        if len(ids) >= count:
+            break
+    return ids
+
+
+def _protected_exact_product_ids(
+    candidates: list[tuple[dict, int]],
+    query_terms: list[str],
+    count: int = 2,
+) -> list[int]:
+    if not candidates or not query_terms:
+        return []
+    top_score = candidates[0][1]
+    ids: list[int] = []
+    for product, score in candidates:
+        if score < top_score - 5:
+            break
+        product_text = _product_match_text(product)
+        if not any(term in product_text for term in query_terms):
+            continue
         try:
             pid = int(product.get("id"))
         except (TypeError, ValueError):
@@ -1275,6 +1323,8 @@ async def ai_select_products(
     if not products:
         return []
     candidates = _local_product_candidates(user_message, products)
+    query_terms = _extract_product_query_terms(user_message)
+    protected_ids = _protected_exact_product_ids(candidates, query_terms)
     fallback_ids = _fallback_product_ids(candidates)
     if not candidates:
         return fallback_ids
@@ -1330,6 +1380,10 @@ async def ai_select_products(
         raw = result.strip()
         logger.info(f"AI product selection raw response: {raw[:200]}")
         out = _parse_product_id_array(raw, valid_ids)
+        for pid in reversed(protected_ids):
+            if pid in out:
+                out.remove(pid)
+            out.insert(0, pid)
         for pid in fallback_ids:
             if pid not in out:
                 out.append(pid)

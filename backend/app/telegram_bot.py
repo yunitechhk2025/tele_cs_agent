@@ -22,7 +22,8 @@ from app.models import (
 from app.services.llm_service import (
     detect_language, check_file_request, generate_response,
     classify_customer_intent, classify_customer_intent_fast, ai_select_products,
-    resolve_recent_product_reference, build_product_constraint_notice,
+    resolve_recent_product_reference, analyze_scene_image_request, build_product_constraint_notice,
+    PRODUCT_SPACE_TERMS, PRODUCT_STYLE_TERMS,
 )
 from app.services.rag_service import search_knowledge_for_bot
 from app.services.scene_service import CUSTOMER_SCENE_TIMEOUT_SECONDS, build_scene_record_response, generate_scene_images
@@ -1079,14 +1080,8 @@ def extract_explicit_product_preferences(user_message: str) -> dict[str, list[st
         return {}
 
     vocab = {
-        "spaces": [
-            "客厅", "餐厅", "卧室", "书房", "儿童房", "玄关",
-            "living room", "dining room", "bedroom", "study", "entryway",
-        ],
-        "styles": [
-            "现代", "简约", "现代简约", "中式", "新中式", "轻奢", "北欧", "奶油", "日式", "美式", "欧式", "意式", "极简",
-            "modern", "minimalist", "chinese", "nordic", "japanese", "luxury",
-        ],
+        "spaces": sorted({term for terms in PRODUCT_SPACE_TERMS.values() for term in terms}, key=len, reverse=True),
+        "styles": sorted({term for terms in PRODUCT_STYLE_TERMS.values() for term in terms}, key=len, reverse=True),
         "materials": [
             "白蜡木", "实木", "木质", "真皮", "皮质", "布艺", "大理石", "岩板", "金属", "玻璃", "藤编",
             "wood", "solid wood", "ash wood", "leather", "fabric", "marble", "metal", "glass",
@@ -1106,6 +1101,82 @@ def extract_explicit_product_preferences(user_message: str) -> dict[str, list[st
         if matches:
             preferences[key] = matches[:5]
     return preferences
+
+
+def _clean_style_phrase(raw: str) -> str:
+    phrase = (raw or "").strip(" \t\r\n，。,.、;；:：的")
+    if not phrase:
+        return ""
+    leading_noise = r"^(?:我想|想看|想看看|看看|看|生成|做成|搭配|按照|按|以|在|成|为|第?[一二三四五六七八九1-9#]+(?:个|款|件|号)?)+"
+    phrase = re.sub(leading_noise, "", phrase)
+    phrase = re.sub(
+        r".*(?:product|item|table|sofa|bed|desk|chair|cabinet|产品|商品|家具|沙发|餐桌|茶几|电视柜|床头柜|床|书桌|书柜|餐椅|柜|桌|椅|款|个|件|号|#)",
+        "",
+        phrase,
+        flags=re.IGNORECASE,
+    )
+    phrase = re.sub(leading_noise, "", phrase)
+    phrase = phrase.strip(" \t\r\n，。,.、;；:：的")
+    if len(phrase) > 24:
+        return ""
+    return phrase
+
+
+def extract_explicit_style_phrase(user_message: str) -> str:
+    """Extract a user-authored style phrase such as 中式复古/侘寂/industrial."""
+    raw = (user_message or "").strip()
+    if not raw:
+        return ""
+
+    compact = re.sub(r"\s+", "", raw.lower())
+    patterns = [
+        (compact, r"([\u4e00-\u9fffぁ-んァ-ン가-힣a-z0-9#]{1,24})(?:风格|風格|风|風|스타일)"),
+        (raw, r"(?:in|with|as)\s+(?:an?\s+|the\s+)?([a-zÀ-ÿ][a-zÀ-ÿ\s-]{1,30}?)(?:\s+style|-style)\b"),
+        (raw, r"\b([a-zÀ-ÿ][a-zÀ-ÿ\s-]{1,30}?)-style\b"),
+        (raw, r"\b(?:estilo(?:\s+de)?|style(?:\s+de)?)\s+([a-zÀ-ÿ][a-zÀ-ÿ\s-]{1,30}?)(?=\s+(?:en|dans|in|para|pour|con|with|del|de|el|la)\b|[,.;，。]|$)"),
+    ]
+    for text, pattern in patterns:
+        matches = list(re.finditer(pattern, text, flags=re.IGNORECASE))
+        for match in reversed(matches):
+            phrase = _clean_style_phrase(match.group(1))
+            if phrase:
+                return phrase
+    return ""
+
+
+def infer_requested_scene_name(user_message: str, preferences: dict[str, list[str]]) -> str:
+    spaces = [x.strip() for x in preferences.get("spaces", []) if x.strip()]
+    if spaces:
+        return localize_scene_name(spaces[0], "zh") or spaces[0]
+
+    normalized = _context_text(user_message)
+    compact = re.sub(r"\s+", "", normalized)
+    for canonical, translations in SCENE_NAME_TRANSLATIONS.items():
+        candidates = [canonical, *(translations.values())]
+        for candidate in candidates:
+            probe = re.sub(r"\s+", "", str(candidate).lower())
+            if probe and probe in compact:
+                return canonical
+    return ""
+
+
+def infer_requested_style_hint(user_message: str, preferences: dict[str, list[str]]) -> str:
+    explicit_phrase = extract_explicit_style_phrase(user_message)
+    if explicit_phrase:
+        return explicit_phrase
+
+    styles = [x.strip() for x in preferences.get("styles", []) if x.strip()]
+    if styles:
+        return styles[0]
+
+    normalized = _context_text(user_message)
+    compact = re.sub(r"\s+", "", normalized)
+    style_terms = sorted({term for terms in PRODUCT_STYLE_TERMS.values() for term in terms}, key=len, reverse=True)
+    for term in style_terms:
+        probe = re.sub(r"\s+", "", term.lower())
+        if probe and probe in compact:
+            return term
+    return ""
 
 
 def build_scene_followup_message(language: str, products: list[dict]) -> str:
@@ -1465,9 +1536,11 @@ async def process_customer_text_message(
         scene_state = await get_scene_state(conversation_id)
         conversation_memory = await get_conversation_memory(conversation_id)
         recent_scene_product_ids: list[int] = []
+        latest_recommended_product_ids: list[int] = []
         if conversation_memory:
             recent_scene_product_ids = parse_memory_product_ids(conversation_memory.recent_product_ids_json)
         if scene_state:
+            latest_recommended_product_ids = parse_memory_product_ids(scene_state.recommended_product_ids_json)
             try:
                 if not recent_scene_product_ids:
                     recent_scene_product_ids = [
@@ -1519,23 +1592,29 @@ async def process_customer_text_message(
         intent_confidence = float(intent.get("confidence") or 0.0)
         intent_slots = intent.get("slots") if isinstance(intent.get("slots"), dict) else {}
         secondary_intents = intent.get("secondary_intents") if isinstance(intent.get("secondary_intents"), list) else []
-        context_product_id = resolve_context_product_reference_locally(
-            user_message,
-            recent_scene_product_ids,
-            active_product_id,
-        )
-        if (
-            context_product_id
-            and intent_name == "general_question"
-            and intent_confidence < 0.65
-            and is_recent_product_followup(user_message)
-        ):
-            intent_name = "product_intro"
-            intent_confidence = max(intent_confidence, 0.72)
-            intent["primary_intent"] = intent_name
-            intent["confidence"] = intent_confidence
-            intent["source"] = f"{intent.get('source') or 'router'}+context"
-            intent["reason"] = "same-session product reference resolved from conversation memory"
+        is_product_recommendation_intent = (
+            intent_name == "product_recommendation"
+            or "product_recommendation" in secondary_intents
+        ) and intent_confidence >= 0.55
+        context_product_id = None
+        if not is_product_recommendation_intent:
+            context_product_id = resolve_context_product_reference_locally(
+                user_message,
+                recent_scene_product_ids,
+                active_product_id,
+            )
+            if (
+                context_product_id
+                and intent_name == "general_question"
+                and intent_confidence < 0.65
+                and is_recent_product_followup(user_message)
+            ):
+                intent_name = "product_intro"
+                intent_confidence = max(intent_confidence, 0.72)
+                intent["primary_intent"] = intent_name
+                intent["confidence"] = intent_confidence
+                intent["source"] = f"{intent.get('source') or 'router'}+context"
+                intent["reason"] = "same-session product reference resolved from conversation memory"
         logger.info(
             "[Bot %s] Intent routed: intent=%s confidence=%.2f source=%s reason=%s",
             bot_id,
@@ -1678,13 +1757,15 @@ async def process_customer_text_message(
                 scene_state,
                 products_by_id_for_memory,
             )
+        scene_reference_product_ids = latest_recommended_product_ids or recent_scene_product_ids
         if not context_product_id:
             target_slot = intent_slots.get("target_product_id")
             if target_slot is not None and str(target_slot).strip().isdigit():
                 context_product_id = int(target_slot)
         if (
             not context_product_id
-            and recent_scene_product_ids
+            and not is_product_recommendation_intent
+            and scene_reference_product_ids
             and all_products
             and (
                 intent_name in {"product_intro", "general_question"}
@@ -1696,7 +1777,7 @@ async def process_customer_text_message(
             resolved_ref = await resolve_recent_product_reference(
                 user_message,
                 all_products,
-                recent_scene_product_ids,
+                scene_reference_product_ids,
             )
             context_product_id = resolved_ref.get("target_product_id")
 
@@ -1710,22 +1791,61 @@ async def process_customer_text_message(
             "target_product_id": intent_slots.get("target_product_id"),
             "reason": str(intent.get("reason") or ""),
         }
+        if intent_name in {"scene_image_request", "scene_image_confirmation"} or "scene_image_request" in secondary_intents:
+            local_scene_name = infer_requested_scene_name(user_message, turn_preferences)
+            local_style_hint = infer_requested_style_hint(user_message, turn_preferences)
+            local_target_id = resolve_recommended_product_reference_locally(
+                user_message,
+                scene_reference_product_ids,
+            )
+            if local_scene_name and not scene_req["scene_name"]:
+                scene_req["scene_name"] = local_scene_name
+            if local_style_hint and not scene_req["style_hint"]:
+                scene_req["style_hint"] = local_style_hint
+            if local_target_id and not scene_req["target_product_id"]:
+                scene_req["target_product_id"] = local_target_id
+            if all_products and (
+                not scene_req["scene_name"]
+                or not scene_req["style_hint"]
+                or not scene_req["target_product_id"]
+            ):
+                await stage("analyzing_scene_request")
+                analyzed_scene = await analyze_scene_image_request(
+                    user_message,
+                    all_products,
+                    scene_reference_product_ids,
+                )
+                scene_req["is_scene_request"] = bool(scene_req["is_scene_request"] or analyzed_scene.get("is_scene_request"))
+                if analyzed_scene.get("scene_name") and not scene_req["scene_name"]:
+                    scene_req["scene_name"] = str(analyzed_scene.get("scene_name") or "")
+                if analyzed_scene.get("style_hint") and not scene_req["style_hint"]:
+                    scene_req["style_hint"] = str(analyzed_scene.get("style_hint") or "")
+                if analyzed_scene.get("target_product_id") and not scene_req["target_product_id"]:
+                    scene_req["target_product_id"] = analyzed_scene.get("target_product_id")
+                if analyzed_scene.get("reason") and not scene_req["reason"]:
+                    scene_req["reason"] = str(analyzed_scene.get("reason") or "")
 
         if scene_state and scene_state.pending_confirmation:
             local_referenced_id = resolve_recommended_product_reference_locally(
                 user_message,
-                recent_scene_product_ids,
+                scene_reference_product_ids,
             )
             resolved_ref = await resolve_recent_product_reference(
                 user_message,
                 all_products,
-                recent_scene_product_ids,
+                scene_reference_product_ids,
             )
             referenced_id = local_referenced_id or resolved_ref.get("target_product_id")
             selection_only = is_product_selection_only(user_message)
+            is_scene_followup_intent = (
+                bool(scene_req.get("is_scene_request"))
+                or intent_name in {"scene_image_request", "scene_image_confirmation"}
+                or "scene_image_request" in secondary_intents
+            )
             product_detail_followup = (
                 referenced_id is not None
                 and not selection_only
+                and not is_scene_followup_intent
                 and (
                     intent_name == "product_intro"
                     or "product_intro" in secondary_intents
@@ -1746,7 +1866,7 @@ async def process_customer_text_message(
                     scene_req.get("target_product_id")
                     or referenced_id
                     or scene_state.primary_product_id
-                    or (recent_scene_product_ids[0] if recent_scene_product_ids else None)
+                    or (scene_reference_product_ids[0] if scene_reference_product_ids else None)
                 )
                 primary_product = None
                 if primary_id:
@@ -1852,6 +1972,7 @@ async def process_customer_text_message(
 
         product_detail_request = (
             bool(context_product_id)
+            and not is_product_recommendation_intent
             and not scene_req.get("is_scene_request")
             and intent_confidence >= 0.55
             and (
@@ -1911,7 +2032,7 @@ async def process_customer_text_message(
             resolved_ref = await resolve_recent_product_reference(
                 user_message,
                 all_products,
-                recent_scene_product_ids,
+                scene_reference_product_ids,
             )
             referenced_id = resolved_ref.get("target_product_id")
             target_id = scene_req.get("target_product_id") or referenced_id or (scene_state.primary_product_id if scene_state else None)
@@ -2026,10 +2147,7 @@ async def process_customer_text_message(
                     return
 
         await stage("checking_product_recommendation")
-        is_product_rec = (
-            intent_name == "product_recommendation"
-            or "product_recommendation" in secondary_intents
-        ) and intent_confidence >= 0.55
+        is_product_rec = is_product_recommendation_intent
         logger.info(f"[Bot {bot_id}] Product recommendation: {is_product_rec}")
         if is_product_rec:
             await stage("product_matching")
