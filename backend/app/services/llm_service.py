@@ -875,12 +875,57 @@ PRODUCT_CATEGORY_TERMS = {
     "nightstand": ["床头柜", "床頭櫃", "nightstand", "bedside table", "mesita de noche", "mesa de noche", "table de chevet", "ナイトテーブル", "ベッドサイド", "협탁"],
     "coffee_table": ["茶几", "茶桌", "茶台", "边几", "角几", "tea table", "coffee table", "side table", "end table", "mesa de centro", "mesa auxiliar", "table basse", "table d'appoint", "ローテーブル", "サイドテーブル", "커피 테이블", "사이드 테이블"],
     "tv_cabinet": ["电视柜", "電視櫃", "电视机柜", "tv cabinet", "tv stand", "media console", "mueble tv", "meuble tv", "テレビ台", "tvボード", "거실장", "tv장"],
-    "cabinet": ["柜", "储物柜", "收纳柜", "边柜", "斗柜", "cabinet", "storage cabinet", "commode", "dresser", "aparador", "armario", "buffet", "rangement", "キャビネット", "収納", "수납장", "서랍장"],
+    "cabinet": ["柜", "櫃", "储物柜", "儲物櫃", "收纳柜", "收納櫃", "边柜", "邊櫃", "斗柜", "斗櫃", "cabinet", "storage cabinet", "commode", "dresser", "aparador", "armario", "buffet", "rangement", "キャビネット", "収納", "수납장", "서랍장"],
     "wardrobe": ["衣柜", "衣櫃", "wardrobe", "closet", "armoire", "armario ropero", "クローゼット", "ワードローブ", "옷장"],
-    "desk": ["书桌", "办公桌", "desk", "office desk", "bureau", "escritorio", "デスク", "机", "책상"],
-    "bookshelf": ["书柜", "书架", "书橱", "bookcase", "bookshelf", "bibliotheque", "estanteria", "本棚", "書棚", "책장", "책꽂이"],
+    "desk": ["书桌", "書桌", "办公桌", "辦公桌", "书台", "書台", "写字桌", "寫字桌", "desk", "office desk", "bureau", "escritorio", "デスク", "テスク", "机", "책상"],
+    "bookshelf": ["书柜", "書櫃", "书架", "書架", "书橱", "書櫥", "bookcase", "bookshelf", "bibliotheque", "estanteria", "本棚", "書棚", "책장", "책꽂이"],
     "bar": ["吧台", "吧椅", "bar table", "bar stool", "barra", "taburete", "table de bar", "bar", "バーテーブル", "바 테이블", "바 의자"],
     "chair": ["椅", "椅子", "休闲椅", "单椅", "chair", "armchair", "silla", "fauteuil", "chaise", "チェア", "椅子", "의자"],
+}
+
+PRODUCT_CATEGORY_PRODUCT_TERMS = {
+    **PRODUCT_CATEGORY_TERMS,
+    # Query terms such as "bureau" (French office/desk) and "机" (Japanese desk)
+    # are useful for understanding the user, but too ambiguous inside product
+    # search text because they also appear in room names or unrelated descriptions.
+    "desk": [
+        "书桌", "書桌", "办公桌", "辦公桌", "书台", "書台", "写字桌", "寫字桌",
+        "desk", "office desk", "escritorio", "デスク", "テスク", "책상",
+    ],
+}
+
+PRODUCT_CATEGORY_EXCLUSION_TERMS = {
+    "sofa": [
+        "沙发背柜", "沙發背櫃", "沙发柜", "沙發櫃", "沙发边柜", "沙發邊櫃",
+        "沙发背几", "沙發背几", "沙發背幾", "背几", "背幾",
+        "玄关柜", "玄關櫃", "sofa back cabinet", "cabinet behind sofa", "sofa console",
+    ],
+    "desk": [
+        "书桌椅", "書桌椅", "办公椅", "辦公椅", "书房椅", "書房椅",
+        "desk chair", "office chair", "study chair", "silla", "chaise",
+        "チェア", "椅子", "의자",
+    ],
+}
+
+PRODUCT_CATEGORY_STRONG_ALLOW_TERMS = {
+    "desk": [
+        "书台", "書台", "办公桌", "辦公桌", "写字桌", "寫字桌",
+        "office desk", "escritorio", "デスク", "テスク", "책상",
+    ],
+}
+
+PRODUCT_CATEGORY_PREFERENCE_TERMS = {
+    "desk": [
+        "书台", "書台", "办公桌", "辦公桌", "写字桌", "寫字桌",
+        "office desk", "escritorio", "デスク", "テスク", "책상",
+    ],
+}
+
+PRODUCT_CATEGORY_CONTEXT_PENALTY_TERMS = {
+    "desk": [
+        "餐桌", "饭桌", "餐台", "dining table", "mesa de comedor", "table a manger",
+        "ダイニングテーブル", "食卓", "식탁",
+    ],
 }
 
 PRODUCT_SPACE_TERMS = {
@@ -941,6 +986,16 @@ PRODUCT_MATCH_TABLES = {
     "colors": PRODUCT_COLOR_TERMS,
     "materials": PRODUCT_MATERIAL_TERMS,
     "brands": PRODUCT_BRAND_TERMS,
+}
+
+PRODUCT_CATEGORY_PRUNE_RULES = {
+    "nightstand": {"bed", "cabinet"},
+    "tv_cabinet": {"cabinet"},
+    "wardrobe": {"cabinet"},
+    "bookshelf": {"cabinet"},
+    "dining_chair": {"chair", "dining_table"},
+    "coffee_table": {"dining_table"},
+    "desk": {"chair"},
 }
 
 PRODUCT_MATCH_WEIGHTS = {
@@ -1038,13 +1093,19 @@ def _extract_product_query_profile(user_message: str) -> dict[str, set[str]]:
         for key, terms in table.items():
             if _contains_any(text, terms):
                 profile[dimension].add(key)
+    categories = profile.get("categories") or set()
+    for specific, broad_values in PRODUCT_CATEGORY_PRUNE_RULES.items():
+        if specific in categories:
+            categories.difference_update(broad_values)
     return profile
 
 
 def _extract_product_query_terms(user_message: str) -> list[str]:
     text = _normalize_match_text(user_message)
     matched: list[str] = []
-    for table in PRODUCT_MATCH_TABLES.values():
+    for dimension, table in PRODUCT_MATCH_TABLES.items():
+        if dimension == "categories":
+            continue
         for terms in table.values():
             for term in terms:
                 normalized = _normalize_match_text(term)
@@ -1060,8 +1121,60 @@ def _product_match_text(product: dict[str, Any]) -> str:
     return _normalize_match_text(product_search_text(product))
 
 
-def _matches_profile_value(product_text: str, dimension: str, value: str) -> bool:
+def _product_category_match_text(product: dict[str, Any]) -> str:
+    parts: list[str] = []
+
+    def add(value: Any) -> None:
+        text = str(value or "").strip()
+        if text and text not in parts:
+            parts.append(text)
+
+    for key in ("category", "name", "product_name", "series"):
+        add(product.get(key))
+    translations = product.get("translations") or {}
+    if isinstance(translations, dict):
+        for values in translations.values():
+            if not isinstance(values, dict):
+                continue
+            for key in ("category", "name", "product_name"):
+                add(values.get(key))
+    return _normalize_match_text("\n".join(parts))
+
+
+def _matches_product_category(product: dict[str, Any], value: str) -> bool:
+    category_text = _product_category_match_text(product)
+    if not category_text:
+        return False
+    if (
+        _contains_any(category_text, PRODUCT_CATEGORY_EXCLUSION_TERMS.get(value, []))
+        and not _contains_any(category_text, PRODUCT_CATEGORY_STRONG_ALLOW_TERMS.get(value, []))
+    ):
+        return False
+    return _contains_any(category_text, PRODUCT_CATEGORY_PRODUCT_TERMS.get(value, []))
+
+
+def _matches_product_profile_value(product: dict[str, Any], product_text: str, dimension: str, value: str) -> bool:
+    if dimension == "categories":
+        return _matches_product_category(product, value)
     return _contains_any(product_text, PRODUCT_MATCH_TABLES[dimension].get(value, []))
+
+
+def _matches_profile_value(product_text: str, dimension: str, value: str) -> bool:
+    if dimension == "categories":
+        if (
+            _contains_any(product_text, PRODUCT_CATEGORY_EXCLUSION_TERMS.get(value, []))
+            and not _contains_any(product_text, PRODUCT_CATEGORY_STRONG_ALLOW_TERMS.get(value, []))
+        ):
+            return False
+        return _contains_any(product_text, PRODUCT_CATEGORY_PRODUCT_TERMS.get(value, []))
+    return _contains_any(product_text, PRODUCT_MATCH_TABLES[dimension].get(value, []))
+
+
+def _matches_any_requested_category(product: dict[str, Any], profile: dict[str, set[str]]) -> bool:
+    return any(
+        _matches_product_category(product, value)
+        for value in profile.get("categories", set())
+    )
 
 
 def _match_language(language: str | None) -> str:
@@ -1165,7 +1278,7 @@ def build_product_constraint_notice(
 
     category_pool = [
         product for product in products
-        if any(_matches_profile_value(_product_match_text(product), "categories", value) for value in profile["categories"])
+        if any(_matches_product_category(product, value) for value in profile["categories"])
     ]
     if not category_pool:
         return {"has_notice": False}
@@ -1174,7 +1287,7 @@ def build_product_constraint_notice(
     for dimension in PRODUCT_MATCH_STRICT_DIMENSIONS:
         for value in sorted(profile.get(dimension) or []):
             matched = any(
-                _matches_profile_value(_product_match_text(product), dimension, value)
+                _matches_product_profile_value(product, _product_match_text(product), dimension, value)
                 for product in category_pool
             )
             if not matched:
@@ -1222,13 +1335,26 @@ def _score_product_candidate(
         if not values:
             continue
         weight = PRODUCT_MATCH_WEIGHTS[dimension]
-        matched = any(_matches_profile_value(product_text, dimension, value) for value in values)
+        matched = any(_matches_product_profile_value(product, product_text, dimension, value) for value in values)
         if matched:
             score += weight
         elif dimension == "categories":
             score -= weight
         else:
             score -= max(3, weight // 5)
+
+    for category in profile.get("categories", set()):
+        if not _matches_product_category(product, category):
+            continue
+        if _contains_any(product_text, PRODUCT_CATEGORY_PREFERENCE_TERMS.get(category, [])):
+            score += 16
+        if category == "desk" and _matches_profile_value(product_text, "spaces", "study"):
+            score += 12
+        if (
+            _contains_any(product_text, PRODUCT_CATEGORY_CONTEXT_PENALTY_TERMS.get(category, []))
+            and not _contains_any(product_text, PRODUCT_CATEGORY_PREFERENCE_TERMS.get(category, []))
+        ):
+            score -= 18
 
     if product.get("image_paths"):
         score += 8
@@ -1257,6 +1383,14 @@ def _local_product_candidates(
     query_terms = _extract_product_query_terms(user_message)
     scored = [(product, _score_product_candidate(product, profile, query_terms)) for product in products]
     scored.sort(key=lambda item: (-item[1], int(item[0].get("id") or 0)))
+
+    if profile.get("categories"):
+        category_scored = [
+            item for item in scored
+            if _matches_any_requested_category(item[0], profile)
+        ]
+        if category_scored:
+            return category_scored[:limit]
 
     if any(profile.values()):
         positive = [item for item in scored if item[1] > 0]
@@ -1329,6 +1463,13 @@ def _parse_product_id_array(raw: str, valid_ids: set[int]) -> list[int]:
     return out[:3]
 
 
+def _should_use_deterministic_category_ranking(profile: dict[str, set[str]]) -> bool:
+    return bool(profile.get("categories")) and not any(
+        profile.get(dimension)
+        for dimension in ("brands", "materials", "colors", "styles")
+    )
+
+
 async def ai_select_products(
     user_message: str,
     products: list[dict],
@@ -1337,11 +1478,19 @@ async def ai_select_products(
     """Select product recommendations with local recall, LLM rerank, and deterministic fallback."""
     if not products:
         return []
+    profile = _extract_product_query_profile(user_message)
     candidates = _local_product_candidates(user_message, products)
     query_terms = _extract_product_query_terms(user_message)
     protected_ids = _protected_exact_product_ids(candidates, query_terms)
     fallback_ids = _fallback_product_ids(candidates)
     if not candidates:
+        return fallback_ids
+    if _should_use_deterministic_category_ranking(profile):
+        logger.info(
+            "Product matching deterministic category ranking: profile=%s ids=%s",
+            {k: sorted(v) for k, v in profile.items() if v},
+            fallback_ids,
+        )
         return fallback_ids
 
     memory_section = ""
