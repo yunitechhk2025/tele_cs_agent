@@ -164,6 +164,7 @@ export interface ProductEntry {
   detail_content_text: string;
   buy_url: string;
   detail_url: string;
+  translations: Record<string, Record<string, string>>;
   first_image_path: string | null;
   images: ProductImage[];
   created_at: string;

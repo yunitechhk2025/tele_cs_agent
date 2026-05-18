@@ -72,7 +72,8 @@ const FILTER_TABS: { key: FilterKey; label: string }[] = [
 ];
 
 const CONTRACT_OUTPUT_LANG_OPTIONS = [
-  { value: 'zh', label: '中文' },
+  { value: 'zh-Hans', label: '简体中文' },
+  { value: 'zh-Hant', label: '繁體中文' },
   { value: 'en', label: 'English' },
   { value: 'ja', label: '日本語' },
   { value: 'ko', label: '한국어' },
@@ -162,6 +163,8 @@ function intentConfig(metric?: ConversationDetail['latest_turn_metric'] | null) 
 
 function languageLabel(code: string) {
   const upper = code?.toUpperCase() || '—';
+  if (code === 'zh-Hans') return `${upper} · 简体中文`;
+  if (code === 'zh-Hant') return `${upper} · 繁體中文`;
   try {
     const dn = new Intl.DisplayNames(['zh'], { type: 'language' });
     const name = dn.of(code.split('-')[0]);
@@ -985,9 +988,14 @@ export default function Conversations() {
     if (selectedId == null) return;
     setGenerateModalOpen(true);
     setGenTemplateId(null);
-    const base = detail?.language?.split('-')[0]?.toLowerCase() || 'en';
-    const match = CONTRACT_OUTPUT_LANG_OPTIONS.some((o) => o.value === base);
-    setGenOutputLang(match ? base : 'en');
+    const rawLanguage = detail?.language || 'en';
+    const normalizedLanguage = rawLanguage === 'zh-Hant'
+      ? 'zh-Hant'
+      : rawLanguage === 'zh-Hans' || rawLanguage === 'zh'
+        ? 'zh-Hans'
+        : rawLanguage.split('-')[0]?.toLowerCase() || 'en';
+    const match = CONTRACT_OUTPUT_LANG_OPTIONS.some((o) => o.value === normalizedLanguage);
+    setGenOutputLang(match ? normalizedLanguage : 'en');
     setTemplatesLoading(true);
     try {
       const { data } = await contractTemplateApi.list();

@@ -61,7 +61,7 @@ function readPersistedState(): PersistedSimulatorState | null {
     return {
       conversationId: typeof parsed.conversationId === 'number' ? parsed.conversationId : null,
       selectedBotId: typeof parsed.selectedBotId === 'number' ? parsed.selectedBotId : null,
-      language: typeof parsed.language === 'string' && parsed.language ? parsed.language : 'zh',
+      language: typeof parsed.language === 'string' && parsed.language ? parsed.language : 'zh-Hans',
       ephemeralEvents: Array.isArray(parsed.ephemeralEvents) ? parsed.ephemeralEvents : [],
     };
   } catch {
@@ -173,7 +173,7 @@ export default function TelegramSimulator() {
   const [searchParams] = useSearchParams();
   const [bots, setBots] = useState<TelegramBot[]>([]);
   const [selectedBotId, setSelectedBotId] = useState<number | null>(null);
-  const [language, setLanguage] = useState('zh');
+  const [language, setLanguage] = useState('zh-Hans');
   const [conversationId, setConversationId] = useState<number | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [persistedEvents, setPersistedEvents] = useState<TimelineItem[]>([]);
@@ -252,7 +252,7 @@ export default function TelegramSimulator() {
     if (queryConversationId == null) return;
     conversationApi.get(queryConversationId).then(({ data }) => {
       setSelectedBotId(data.bot_id ?? null);
-      setLanguage(data.language || 'zh');
+      setLanguage(data.language || 'zh-Hans');
       setConversationId(data.id);
     }).catch(() => {
       message.error('加载指定模拟会话失败');
@@ -288,7 +288,7 @@ export default function TelegramSimulator() {
 
   useEffect(() => {
     if (!restoredRef.current) return;
-    if (!conversationId && !selectedBotId && language === 'zh' && ephemeralEvents.length === 0) {
+    if (!conversationId && !selectedBotId && language === 'zh-Hans' && ephemeralEvents.length === 0) {
       clearPersistedState();
       return;
     }
@@ -515,7 +515,8 @@ export default function TelegramSimulator() {
               value={language}
               onChange={setLanguage}
               options={[
-                { value: 'zh', label: '中文' },
+                { value: 'zh-Hans', label: '简体中文' },
+                { value: 'zh-Hant', label: '繁體中文' },
                 { value: 'en', label: 'English' },
                 { value: 'ja', label: '日本語' },
                 { value: 'ko', label: '한국어' },

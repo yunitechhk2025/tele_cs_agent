@@ -25,6 +25,18 @@ from app.services.llm_service import (
     resolve_recent_product_reference, analyze_scene_image_request, build_product_constraint_notice,
     PRODUCT_SPACE_TERMS, PRODUCT_STYLE_TERMS,
 )
+from app.services.i18n import (
+    DEFAULT_LANGUAGE,
+    SUPPORTED_LANGUAGE_SET,
+    get_localized_static_dict,
+    get_localized_static_text,
+    normalize_language_code,
+    resolve_reply_language as resolve_supported_reply_language,
+)
+from app.services.product_i18n import (
+    localize_product_payload,
+    product_entry_to_payload,
+)
 from app.services.rag_service import search_knowledge_for_bot
 from app.services.scene_service import CUSTOMER_SCENE_TIMEOUT_SECONDS, build_scene_record_response, generate_scene_images
 from app.services.customer_service_service import (
@@ -144,21 +156,37 @@ PRODUCT_REC_NONE = {
 SCENE_FOLLOWUP_MESSAGES = {
     "zh": "如果您愿意，我还可以继续为您生成其中某一款产品在{scene}中的搭配效果图，并附上相关商品链接。您可以回复商品编号（如 #3）或直接说商品名。",
     "en": "If you'd like, I can also generate a styled scene image for any one of these products in a {scene} setting with matching product links. You can reply with the product number (for example #3) or the product name.",
+    "ja": "よろしければ、これらの商品から1点を選んで、{scene}でのコーディネートイメージを生成し、関連商品のリンクも添えられます。商品番号（例：#3）または商品名で返信してください。",
+    "ko": "원하시면 이 제품 중 하나를 선택해 {scene} 공간의 스타일링 이미지를 생성하고 관련 상품 링크도 함께 제공해 드릴 수 있습니다. 상품 번호(예: #3)나 상품명으로 답장해 주세요.",
+    "es": "Si lo desea, también puedo generar una imagen ambientada de cualquiera de estos productos en un espacio de {scene}, con enlaces a los productos relacionados. Puede responder con el número del producto (por ejemplo, #3) o con el nombre del producto.",
+    "fr": "Si vous le souhaitez, je peux aussi générer une image d'ambiance pour l'un de ces produits dans un espace {scene}, avec les liens des produits associés. Répondez avec le numéro du produit (par exemple #3) ou son nom.",
 }
 
 SCENE_GENERATING_MESSAGES = {
     "zh": "好的，我正在为您生成场景搭配图，通常需要一点时间，请稍候。",
     "en": "Sure, I'm generating the styled scene images for you now. This may take a little while.",
+    "ja": "承知しました。コーディネート画像を生成しています。少し時間がかかる場合があります。",
+    "ko": "알겠습니다. 지금 스타일링 이미지를 생성하고 있습니다. 잠시 시간이 걸릴 수 있습니다.",
+    "es": "De acuerdo, estoy generando la imagen ambientada. Puede tardar un poco.",
+    "fr": "D'accord, je génère l'image d'ambiance. Cela peut prendre un peu de temps.",
 }
 
 SCENE_FAILED_MESSAGES = {
     "zh": "抱歉，这次场景图生成失败了。您可以稍后再试，或告诉我更具体的场景和风格要求。",
     "en": "Sorry, the scene image generation failed this time. Please try again later or share a more specific scene/style request.",
+    "ja": "申し訳ありません。今回のコーディネート画像の生成に失敗しました。後ほど再試行するか、より具体的な空間やスタイルのご要望を教えてください。",
+    "ko": "죄송합니다. 이번 스타일링 이미지 생성에 실패했습니다. 나중에 다시 시도하시거나 더 구체적인 공간과 스타일 요구사항을 알려 주세요.",
+    "es": "Lo siento, esta vez no se pudo generar la imagen ambientada. Inténtelo más tarde o comparta requisitos de espacio y estilo más específicos.",
+    "fr": "Désolé, la génération de l'image d'ambiance a échoué cette fois. Réessayez plus tard ou indiquez des critères d'espace et de style plus précis.",
 }
 
 SCENE_TIMEOUT_MESSAGES = {
     "zh": "抱歉，这次场景图生成超时了。请稍后再试，或减少搭配要求后重新生成。",
     "en": "Sorry, the scene image generation timed out. Please try again later or simplify the styling request.",
+    "ja": "申し訳ありません。今回のコーディネート画像生成がタイムアウトしました。後ほど再試行するか、コーディネート条件を少し簡略化してください。",
+    "ko": "죄송합니다. 이번 스타일링 이미지 생성 시간이 초과되었습니다. 나중에 다시 시도하시거나 스타일링 요구사항을 조금 줄여 주세요.",
+    "es": "Lo siento, la generación de la imagen ambientada agotó el tiempo de espera. Inténtelo más tarde o simplifique la solicitud de ambientación.",
+    "fr": "Désolé, la génération de l'image d'ambiance a expiré. Réessayez plus tard ou simplifiez la demande de mise en scène.",
 }
 
 SCENE_KEYWORDS = {
@@ -170,7 +198,7 @@ SCENE_KEYWORDS = {
 
 # UI copy in the recommendation + scene-image path is intentionally complete only
 # for these languages. Any other language falls back to English to avoid mixed output.
-SCENE_UI_SUPPORTED_LANGUAGES = {"zh", "en", "ja", "ko", "es", "fr"}
+SCENE_UI_SUPPORTED_LANGUAGES = SUPPORTED_LANGUAGE_SET
 
 SCENE_NAME_TRANSLATIONS = {
     "客厅": {"zh": "客厅", "en": "living room", "ja": "リビング", "ko": "거실", "es": "sala de estar", "fr": "salon"},
@@ -552,28 +580,14 @@ async def get_products_for_bot() -> list[dict]:
     async with AsyncSessionLocal() as db:
         result = await db.execute(
             select(ProductEntry)
-            .options(selectinload(ProductEntry.images))
+            .options(
+                selectinload(ProductEntry.images),
+                selectinload(ProductEntry.translations),
+            )
             .order_by(ProductEntry.id)
         )
         entries = result.scalars().all()
-        return [
-            {
-                "id": e.id,
-                "brand": e.brand,
-                "name": e.product_name,
-                "series": e.series_name,
-                "space": e.space,
-                "style": e.style,
-                "color": e.color,
-                "material": e.material,
-                "size": e.size,
-                "description": e.description_text,
-                "buy_url": e.buy_url,
-                "detail_url": e.detail_url,
-                "image_paths": [img.local_path for img in e.images],
-            }
-            for e in entries
-        ]
+        return [product_entry_to_payload(e) for e in entries]
 
 
 async def get_scene_state(conversation_id: int) -> ConversationSceneState | None:
@@ -750,8 +764,8 @@ async def clear_scene_state(conversation_id: int, active_topic: str = ""):
 
 
 def ui_scene_language(language: str | None) -> str:
-    lang = (language or "").strip().lower()
-    return lang if lang in SCENE_UI_SUPPORTED_LANGUAGES else "en"
+    lang = normalize_language_code(language, fallback=DEFAULT_LANGUAGE) or DEFAULT_LANGUAGE
+    return lang if lang in SCENE_UI_SUPPORTED_LANGUAGES else DEFAULT_LANGUAGE
 
 
 def localize_scene_name(scene: str, language: str) -> str:
@@ -763,7 +777,7 @@ def localize_scene_name(scene: str, language: str) -> str:
     for canonical, translations in SCENE_NAME_TRANSLATIONS.items():
         values = {canonical.lower(), *(value.lower() for value in translations.values())}
         if raw == canonical or normalized in values:
-            return translations.get(language, translations.get("en", canonical))
+            return get_localized_static_text(translations, language) or canonical
     return raw
 
 
@@ -787,8 +801,16 @@ def resolve_turn_language(
     scene_reply_language: str | None,
 ) -> str:
     if _is_context_language_reply(user_message):
-        return scene_reply_language or conversation_language or detected_language or "en"
-    return detected_language or scene_reply_language or conversation_language or "en"
+        return resolve_supported_reply_language(
+            scene_reply_language or conversation_language or detected_language,
+            previous_language=conversation_language or detected_language,
+            text=user_message,
+        )
+    return resolve_supported_reply_language(
+        detected_language,
+        previous_language=conversation_language or scene_reply_language,
+        text=user_message,
+    )
 
 
 def infer_product_scene(product: dict) -> str:
@@ -814,7 +836,7 @@ def select_default_scene(products: list[dict], language: str) -> str:
         counts[scene] = counts.get(scene, 0) + 1
     if counts:
         return max(counts.items(), key=lambda item: (item[1], item[0]))[0]
-    return "客厅" if language == "zh" else "living room"
+    return "客厅" if ui_scene_language(language).startswith("zh") else "living room"
 
 
 def resolve_recommended_product_reference_locally(
@@ -989,27 +1011,28 @@ def resolve_context_product_reference_locally(
 
 def build_product_detail_message(product: ProductEntry, language: str) -> str:
     ui_lang = ui_scene_language(language)
-    labels = PRODUCT_DETAIL_LABELS.get(ui_lang, PRODUCT_DETAIL_LABELS["en"])
+    labels = get_localized_static_dict(PRODUCT_DETAIL_LABELS, ui_lang)
+    localized = localize_product_payload(product_entry_to_payload(product), ui_lang)
     lines = [labels["intro"]]
     fields = [
-        ("name", product.product_name),
-        ("brand", product.brand),
-        ("series", product.series_name),
-        ("space", localize_scene_name(product.space, ui_lang) if product.space else ""),
-        ("style", product.style),
-        ("color", product.color),
-        ("material", product.material),
-        ("size", product.size),
-        ("model", product.serial_number),
+        ("name", localized.get("name", "")),
+        ("brand", localized.get("brand", "")),
+        ("series", localized.get("series", "")),
+        ("space", localize_scene_name(localized.get("space", ""), ui_lang) if localized.get("space") else ""),
+        ("style", localized.get("style", "")),
+        ("color", localized.get("color", "")),
+        ("material", localized.get("material", "")),
+        ("size", localized.get("size", "")),
+        ("model", localized.get("serial_number", "")),
     ]
     for key, value in fields:
         value = (value or "").strip()
         if value:
             lines.append(f"{labels[key]}: {value}")
-    description = (product.description_text or product.detail_content_text or "").strip()
+    description = (localized.get("description") or localized.get("detail_content") or "").strip()
     if description:
         lines.append(f"{labels['description']}: {description[:500]}")
-    link = (product.buy_url or product.detail_url or "").strip()
+    link = (localized.get("buy_url") or localized.get("detail_url") or "").strip()
     if link:
         lines.append(f"{labels['link']}: {link}")
     return "\n".join(lines)
@@ -1147,7 +1170,7 @@ def extract_explicit_style_phrase(user_message: str) -> str:
 def infer_requested_scene_name(user_message: str, preferences: dict[str, list[str]]) -> str:
     spaces = [x.strip() for x in preferences.get("spaces", []) if x.strip()]
     if spaces:
-        return localize_scene_name(spaces[0], "zh") or spaces[0]
+        return localize_scene_name(spaces[0], "zh-Hans") or spaces[0]
 
     normalized = _context_text(user_message)
     compact = re.sub(r"\s+", "", normalized)
@@ -1182,38 +1205,39 @@ def infer_requested_style_hint(user_message: str, preferences: dict[str, list[st
 def build_scene_followup_message(language: str, products: list[dict]) -> str:
     ui_lang = ui_scene_language(language)
     scene = localize_scene_name(select_default_scene(products, ui_lang), ui_lang)
-    template = SCENE_FOLLOWUP_MESSAGES.get(ui_lang, SCENE_FOLLOWUP_MESSAGES["en"])
+    template = get_localized_static_text(SCENE_FOLLOWUP_MESSAGES, ui_lang)
     return template.format(scene=scene)
 
 
 def build_product_recommendation_delivery(products: list[dict], language: str) -> dict[str, Any]:
     ui_lang = ui_scene_language(language)
-    labels = PRODUCT_CARD_LABELS.get(ui_lang, PRODUCT_CARD_LABELS["en"])
+    labels = get_localized_static_dict(PRODUCT_CARD_LABELS, ui_lang)
     cards: list[dict[str, Any]] = []
     preview_lines: list[str] = []
 
     for idx, p in enumerate(products, start=1):
-        lines = [f"[#{idx}] *{p['name']}*"]
-        preview_lines.append(f"#{idx} {p['name']}")
-        if p.get("series"):
-            lines.append(f"{labels['series']}: {p['series']}")
-        if p.get("space"):
-            lines.append(f"{labels['space']}: {localize_scene_name(p['space'], ui_lang)}")
-        if p.get("style"):
-            lines.append(f"{labels['style']}: {p['style']}")
-        if p.get("color"):
-            lines.append(f"{labels['color']}: {p['color']}")
-        if p.get("material"):
-            lines.append(f"{labels['material']}: {p['material']}")
-        if p.get("buy_url"):
-            lines.append(f"[{labels['view']}]({p['buy_url']})")
-        image_paths = p.get("image_paths", [])
+        localized = localize_product_payload(p, ui_lang)
+        lines = [f"[#{idx}] *{localized['name']}*"]
+        preview_lines.append(f"#{idx} {localized['name']}")
+        if localized.get("series"):
+            lines.append(f"{labels['series']}: {localized['series']}")
+        if localized.get("space"):
+            lines.append(f"{labels['space']}: {localize_scene_name(localized['space'], ui_lang)}")
+        if localized.get("style"):
+            lines.append(f"{labels['style']}: {localized['style']}")
+        if localized.get("color"):
+            lines.append(f"{labels['color']}: {localized['color']}")
+        if localized.get("material"):
+            lines.append(f"{labels['material']}: {localized['material']}")
+        if localized.get("buy_url"):
+            lines.append(f"[{labels['view']}]({localized['buy_url']})")
+        image_paths = localized.get("image_paths", [])
         image_path = image_paths[0] if image_paths else ""
         cards.append({
-            "product_id": p["id"],
+            "product_id": localized["id"],
             "caption": "\n".join(lines)[:1024],
             "image_path": image_path,
-            "image_url": f"/api/products/{p['id']}/images/0" if image_path else "",
+            "image_url": f"/api/products/{localized['id']}/images/0" if image_path else "",
             "parse_mode": "Markdown",
         })
 
@@ -1225,37 +1249,60 @@ def build_product_recommendation_delivery(products: list[dict], language: str) -
 
 async def build_scene_result_delivery(record, language: str) -> dict[str, Any]:
     ui_lang = ui_scene_language(language)
-    localized_scene = localize_scene_name(record.scene_name or "", ui_lang) or {
+    localized_scene = localize_scene_name(record.scene_name or "", ui_lang) or get_localized_static_text({
         "zh": "该场景",
         "en": "requested setting",
         "ja": "ご希望の空間",
         "ko": "요청하신 공간",
         "es": "ambiente solicitado",
         "fr": "cadre demande",
-    }.get(ui_lang, "requested setting")
-    intro_template = SCENE_RESULT_MESSAGES.get(ui_lang, SCENE_RESULT_MESSAGES["en"])
+    }, ui_lang)
+    intro_template = get_localized_static_text(SCENE_RESULT_MESSAGES, ui_lang)
     intro_text = intro_template.format(scene=localized_scene)
     resp = await build_scene_record_response(record)
-    labels = SCENE_RESULT_LINK_LABELS.get(ui_lang, SCENE_RESULT_LINK_LABELS["en"])
+    labels = get_localized_static_dict(SCENE_RESULT_LINK_LABELS, ui_lang)
     lines: list[str] = []
     if resp.get("primary_product_name") and resp.get("primary_product_id"):
         async with AsyncSessionLocal() as db:
-            primary = await db.get(ProductEntry, record.primary_product_id)
+            result = await db.execute(
+                select(ProductEntry)
+                .options(
+                    selectinload(ProductEntry.images),
+                    selectinload(ProductEntry.translations),
+                )
+                .where(ProductEntry.id == record.primary_product_id)
+            )
+            primary = result.scalar_one_or_none()
         if primary:
             primary_link = primary.buy_url or primary.detail_url
             if primary_link:
-                lines.append(f"{labels['main']}: [{primary.product_name}]({primary_link})")
-    for rel in resp.get("related_products", []):
-        link = rel.get("buy_url") or rel.get("detail_url")
-        if link:
-            lines.append(f"{labels['related']}: [{rel.get('product_name', '')}]({link})")
+                localized_primary = localize_product_payload(product_entry_to_payload(primary), ui_lang)
+                lines.append(f"{labels['main']}: [{localized_primary.get('name', primary.product_name)}]({primary_link})")
+    related_ids = [int(x) for x in json.loads(record.related_product_ids_json or "[]") if str(x).isdigit()]
+    if related_ids:
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(
+                select(ProductEntry)
+                .options(
+                    selectinload(ProductEntry.images),
+                    selectinload(ProductEntry.translations),
+                )
+                .where(ProductEntry.id.in_(related_ids))
+                .order_by(ProductEntry.id)
+            )
+            related_products = result.scalars().all()
+        for product in related_products:
+            link = product.buy_url or product.detail_url
+            if link:
+                localized_product = localize_product_payload(product_entry_to_payload(product), ui_lang)
+                lines.append(f"{labels['related']}: [{localized_product.get('name', product.product_name)}]({link})")
     return {
         "intro_text": intro_text,
         "links_text": "\n".join(lines),
         "links_parse_mode": "Markdown",
         "image_urls": resp.get("image_urls", []),
         "output_paths": json.loads(record.output_paths_json or "[]"),
-        "preview_line": f"{localized_scene} 场景图 {len(resp.get('image_urls', []))} 张" if ui_lang == "zh" else f"{localized_scene} scene image x{len(resp.get('image_urls', []))}",
+        "preview_line": f"{localized_scene} 场景图 {len(resp.get('image_urls', []))} 张" if ui_lang.startswith("zh") else f"{localized_scene} scene image x{len(resp.get('image_urls', []))}",
     }
 
 
@@ -1264,20 +1311,20 @@ async def send_scene_generation_result(language: str, record, outbound: Customer
     ui_lang = ui_scene_language(language)
 
     if record.status != "completed":
-        text = SCENE_FAILED_MESSAGES.get(ui_lang, SCENE_FAILED_MESSAGES["en"])
+        text = get_localized_static_text(SCENE_FAILED_MESSAGES, ui_lang)
         await outbound.reply_text(text)
         return
 
     output_paths = json.loads(record.output_paths_json or "[]")
-    localized_scene = localize_scene_name(record.scene_name or "", ui_lang) or {
+    localized_scene = localize_scene_name(record.scene_name or "", ui_lang) or get_localized_static_text({
         "zh": "该场景",
         "en": "requested setting",
         "ja": "ご希望の空間",
         "ko": "요청하신 공간",
         "es": "ambiente solicitado",
         "fr": "cadre demande",
-    }.get(ui_lang, "requested setting")
-    intro_template = SCENE_RESULT_MESSAGES.get(ui_lang, SCENE_RESULT_MESSAGES["en"])
+    }, ui_lang)
+    intro_template = get_localized_static_text(SCENE_RESULT_MESSAGES, ui_lang)
     intro = intro_template.format(scene=localized_scene)
     await outbound.reply_text(intro)
 
@@ -1291,23 +1338,41 @@ async def send_scene_generation_result(language: str, record, outbound: Customer
             logger.error("Failed to send generated scene image %s: %s", full, e)
 
     async with AsyncSessionLocal() as db:
-        primary = await db.get(ProductEntry, record.primary_product_id)
+        primary_result = await db.execute(
+            select(ProductEntry)
+            .options(
+                selectinload(ProductEntry.images),
+                selectinload(ProductEntry.translations),
+            )
+            .where(ProductEntry.id == record.primary_product_id)
+        )
+        primary = primary_result.scalar_one_or_none()
         related_ids = json.loads(record.related_product_ids_json or "[]")
         related = []
         if related_ids:
-            result = await db.execute(select(ProductEntry).where(ProductEntry.id.in_(related_ids)).order_by(ProductEntry.id))
+            result = await db.execute(
+                select(ProductEntry)
+                .options(
+                    selectinload(ProductEntry.images),
+                    selectinload(ProductEntry.translations),
+                )
+                .where(ProductEntry.id.in_(related_ids))
+                .order_by(ProductEntry.id)
+            )
             related = result.scalars().all()
 
-    labels = SCENE_RESULT_LINK_LABELS.get(ui_lang, SCENE_RESULT_LINK_LABELS["en"])
+    labels = get_localized_static_dict(SCENE_RESULT_LINK_LABELS, ui_lang)
     lines = []
     if primary:
         link = primary.buy_url or primary.detail_url
         if link:
-            lines.append(f"{labels['main']}: [{primary.product_name}]({link})")
+            localized_primary = localize_product_payload(product_entry_to_payload(primary), ui_lang)
+            lines.append(f"{labels['main']}: [{localized_primary.get('name', primary.product_name)}]({link})")
     for p in related:
         link = p.buy_url or p.detail_url
         if link:
-            lines.append(f"{labels['related']}: [{p.product_name}]({link})")
+            localized_product = localize_product_payload(product_entry_to_payload(p), ui_lang)
+            lines.append(f"{labels['related']}: [{localized_product.get('name', p.product_name)}]({link})")
     if lines:
         await outbound.reply_text(
             "\n".join(lines),
@@ -1319,25 +1384,26 @@ async def send_scene_generation_result(language: str, record, outbound: Customer
 async def send_product_recommendations(products: list[dict], language: str, outbound: CustomerOutbound):
     """Send 1-3 recommended products as Telegram photo cards."""
     ui_lang = ui_scene_language(language)
-    labels = PRODUCT_CARD_LABELS.get(ui_lang, PRODUCT_CARD_LABELS["en"])
+    labels = get_localized_static_dict(PRODUCT_CARD_LABELS, ui_lang)
     for idx, p in enumerate(products, start=1):
-        lines = [f"[#{idx}] *{p['name']}*"]
-        if p.get("series"):
-            lines.append(f"{labels['series']}: {p['series']}")
-        if p.get("space"):
-            lines.append(f"{labels['space']}: {localize_scene_name(p['space'], ui_lang)}")
-        if p.get("style"):
-            lines.append(f"{labels['style']}: {p['style']}")
-        if p.get("color"):
-            lines.append(f"{labels['color']}: {p['color']}")
-        if p.get("material"):
-            lines.append(f"{labels['material']}: {p['material']}")
-        if p.get("buy_url"):
-            lines.append(f"[{labels['view']}]({p['buy_url']})")
+        localized = localize_product_payload(p, ui_lang)
+        lines = [f"[#{idx}] *{localized['name']}*"]
+        if localized.get("series"):
+            lines.append(f"{labels['series']}: {localized['series']}")
+        if localized.get("space"):
+            lines.append(f"{labels['space']}: {localize_scene_name(localized['space'], ui_lang)}")
+        if localized.get("style"):
+            lines.append(f"{labels['style']}: {localized['style']}")
+        if localized.get("color"):
+            lines.append(f"{labels['color']}: {localized['color']}")
+        if localized.get("material"):
+            lines.append(f"{labels['material']}: {localized['material']}")
+        if localized.get("buy_url"):
+            lines.append(f"[{labels['view']}]({localized['buy_url']})")
         caption = "\n".join(lines)[:1024]
 
         sent = False
-        for image_order, img_path in enumerate(p.get("image_paths", [])):
+        for image_order, img_path in enumerate(localized.get("image_paths", [])):
             full = os.path.join("/app", img_path)
             if not os.path.exists(full):
                 continue
@@ -1511,7 +1577,7 @@ async def process_customer_text_message(
                     await db.commit()
 
             if current_status != ConversationStatus.PENDING_HUMAN:
-                wait_msg = MANUAL_ONLY_WAIT_MESSAGES.get(language, MANUAL_ONLY_WAIT_MESSAGES["en"])
+                wait_msg = get_localized_static_text(MANUAL_ONLY_WAIT_MESSAGES, language)
                 await first_response("human_only_wait")
                 await save_message(conversation_id, MessageRole.ASSISTANT, wait_msg, language)
                 stop_typing.set()
@@ -1650,7 +1716,7 @@ async def process_customer_text_message(
                     conv.quote_language = language
                     await db.commit()
 
-            complaint_msg = COMPLAINT_HANDOFF_MESSAGES.get(language, COMPLAINT_HANDOFF_MESSAGES["en"])
+            complaint_msg = get_localized_static_text(COMPLAINT_HANDOFF_MESSAGES, language)
             await first_response("complaint_handoff")
             await save_message(conversation_id, MessageRole.ASSISTANT, complaint_msg, language)
             stop_typing.set()
@@ -1681,9 +1747,9 @@ async def process_customer_text_message(
                     await db.commit()
 
             handoff_msg = (
-                HANDOFF_MESSAGES.get(language, HANDOFF_MESSAGES["en"])
+                get_localized_static_text(HANDOFF_MESSAGES, language)
                 if intent_name == "quote_handoff"
-                else MANUAL_ONLY_WAIT_MESSAGES.get(language, MANUAL_ONLY_WAIT_MESSAGES["en"])
+                else get_localized_static_text(MANUAL_ONLY_WAIT_MESSAGES, language)
             )
             await first_response("handoff")
             await save_message(conversation_id, MessageRole.ASSISTANT, handoff_msg, language)
@@ -1705,7 +1771,7 @@ async def process_customer_text_message(
             await notify_admin(bot_id, conversation, user_message, notify_bot, is_followup=True)
 
         if intent_name == "out_of_scope" and intent_confidence >= 0.7:
-            out_of_scope_msg = OUT_OF_SCOPE_MESSAGES.get(language, OUT_OF_SCOPE_MESSAGES["en"])
+            out_of_scope_msg = get_localized_static_text(OUT_OF_SCOPE_MESSAGES, language)
             await first_response("out_of_scope")
             await save_message(conversation_id, MessageRole.ASSISTANT, out_of_scope_msg, language)
             stop_typing.set()
@@ -1716,7 +1782,7 @@ async def process_customer_text_message(
 
         clarification_question = str(intent.get("clarification_question") or "").strip()
         if intent_confidence < 0.45:
-            clarification_msg = clarification_question or CLARIFICATION_MESSAGES.get(language, CLARIFICATION_MESSAGES["en"])
+            clarification_msg = clarification_question or get_localized_static_text(CLARIFICATION_MESSAGES, language)
             await first_response("clarification")
             await save_message(conversation_id, MessageRole.ASSISTANT, clarification_msg, language)
             stop_typing.set()
@@ -1888,7 +1954,7 @@ async def process_customer_text_message(
                     stop_typing.set()
                     await typing_task
                     if service_mode != "ai_assist":
-                        generating = SCENE_GENERATING_MESSAGES.get(language, SCENE_GENERATING_MESSAGES["en"])
+                        generating = get_localized_static_text(SCENE_GENERATING_MESSAGES, language)
                         await first_response("scene_generating_notice")
                         await outbound.reply_text(generating)
                         await save_message(conversation_id, MessageRole.ASSISTANT, generating, language)
@@ -1904,7 +1970,7 @@ async def process_customer_text_message(
                             timeout_seconds=CUSTOMER_SCENE_TIMEOUT_SECONDS,
                         )
                     except asyncio.TimeoutError:
-                        timeout_text = SCENE_TIMEOUT_MESSAGES.get(language, SCENE_TIMEOUT_MESSAGES["en"])
+                        timeout_text = get_localized_static_text(SCENE_TIMEOUT_MESSAGES, language)
                         await first_response("scene_timeout")
                         if service_mode == "ai_assist":
                             await create_pending_ai_reply(conversation_id, timeout_text, language)
@@ -1918,7 +1984,7 @@ async def process_customer_text_message(
                         return
                     if service_mode == "ai_assist":
                         if record.status != "completed":
-                            failed_text = SCENE_FAILED_MESSAGES.get(language, SCENE_FAILED_MESSAGES["en"])
+                            failed_text = get_localized_static_text(SCENE_FAILED_MESSAGES, language)
                             await first_response("scene_failed")
                             await create_pending_ai_reply(conversation_id, failed_text, language)
                             await clear_scene_state(conversation_id)
@@ -1987,7 +2053,15 @@ async def process_customer_text_message(
         if product_detail_request:
             await stage("loading_product_detail")
             async with AsyncSessionLocal() as db:
-                context_product = await db.get(ProductEntry, int(context_product_id))
+                result = await db.execute(
+                    select(ProductEntry)
+                    .options(
+                        selectinload(ProductEntry.images),
+                        selectinload(ProductEntry.translations),
+                    )
+                    .where(ProductEntry.id == int(context_product_id))
+                )
+                context_product = result.scalar_one_or_none()
             if context_product:
                 response_text = build_product_detail_message(context_product, language)
                 await save_scene_state(
@@ -2043,7 +2117,7 @@ async def process_customer_text_message(
                     stop_typing.set()
                     await typing_task
                     if service_mode != "ai_assist":
-                        generating = SCENE_GENERATING_MESSAGES.get(language, SCENE_GENERATING_MESSAGES["en"])
+                        generating = get_localized_static_text(SCENE_GENERATING_MESSAGES, language)
                         await first_response("scene_generating_notice")
                         await outbound.reply_text(generating)
                         await save_message(conversation_id, MessageRole.ASSISTANT, generating, language)
@@ -2059,7 +2133,7 @@ async def process_customer_text_message(
                             timeout_seconds=CUSTOMER_SCENE_TIMEOUT_SECONDS,
                         )
                     except asyncio.TimeoutError:
-                        timeout_text = SCENE_TIMEOUT_MESSAGES.get(language, SCENE_TIMEOUT_MESSAGES["en"])
+                        timeout_text = get_localized_static_text(SCENE_TIMEOUT_MESSAGES, language)
                         await first_response("scene_timeout")
                         if service_mode == "ai_assist":
                             await create_pending_ai_reply(conversation_id, timeout_text, language)
@@ -2072,7 +2146,7 @@ async def process_customer_text_message(
                         return
                     if service_mode == "ai_assist":
                         if record.status != "completed":
-                            failed_text = SCENE_FAILED_MESSAGES.get(language, SCENE_FAILED_MESSAGES["en"])
+                            failed_text = get_localized_static_text(SCENE_FAILED_MESSAGES, language)
                             await first_response("scene_failed")
                             await create_pending_ai_reply(conversation_id, failed_text, language)
                             if run_notify_admin and notify_bot and conversation:
@@ -2158,14 +2232,14 @@ async def process_customer_text_message(
             ) if all_products else []
             products_by_id = {p["id"]: p for p in all_products}
             selected_products = [products_by_id[pid] for pid in selected_ids if pid in products_by_id]
-            intro = PRODUCT_REC_INTRO.get(language, PRODUCT_REC_INTRO["en"])
+            intro = get_localized_static_text(PRODUCT_REC_INTRO, language)
             constraint_notice = build_product_constraint_notice(user_message, all_products, language)
             recommendation_intro = (
                 f"{constraint_notice['text']}\n\n{intro}"
                 if constraint_notice.get("has_notice")
                 else intro
             )
-            none_msg = PRODUCT_REC_NONE.get(language, PRODUCT_REC_NONE["en"])
+            none_msg = get_localized_static_text(PRODUCT_REC_NONE, language)
             stop_typing.set()
             await typing_task
             if selected_products:
@@ -2316,9 +2390,9 @@ async def process_customer_text_message(
         )
         prefix = ""
         if topic_switch:
-            prefix += TOPIC_SWITCH_PREFIX.get(language, TOPIC_SWITCH_PREFIX["en"])
+            prefix += get_localized_static_text(TOPIC_SWITCH_PREFIX, language)
         if repeated_question:
-            prefix += REPEATED_QUESTION_PREFIX.get(language, REPEATED_QUESTION_PREFIX["en"])
+            prefix += get_localized_static_text(REPEATED_QUESTION_PREFIX, language)
         if prefix:
             response_text = f"{prefix}{response_text}"
         logger.info(f"[Bot {bot_id}] AI response generated ({len(response_text)} chars)")
@@ -2360,7 +2434,7 @@ async def process_customer_text_message(
             "en": "Sorry, the system is temporarily unavailable. Please try again later.",
         }
         try:
-            await outbound.reply_text(fallback.get(language, fallback["en"]))
+            await outbound.reply_text(get_localized_static_text(fallback, language))
         except Exception:
             logger.error(f"[Bot {bot_id}] Failed to send fallback message", exc_info=True)
 
@@ -2369,7 +2443,7 @@ def make_start_handler(bot_id: int):
     async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = update.effective_user
         chat_id = str(update.effective_chat.id)
-        user_lang = user.language_code[:2] if user.language_code else "en"
+        user_lang = normalize_language_code(user.language_code if user.language_code else "en") or DEFAULT_LANGUAGE
         await get_or_create_conversation(
             bot_id=bot_id, chat_id=chat_id, user_id=str(user.id),
             username=user.username, first_name=user.first_name, last_name=user.last_name,
@@ -2380,7 +2454,7 @@ def make_start_handler(bot_id: int):
         if bot_config and bot_config.welcome_message:
             await update.message.reply_text(bot_config.welcome_message)
         else:
-            welcome = WELCOME_MESSAGES.get(user_lang, WELCOME_MESSAGES["en"])
+            welcome = get_localized_static_text(WELCOME_MESSAGES, user_lang)
             await update.message.reply_text(welcome)
 
     return handle_start
@@ -2393,7 +2467,7 @@ def make_message_handler(bot_id: int):
         user_message = update.message.text
         logger.info(f"[Bot {bot_id}] Received message from chat {chat_id}: {user_message[:80]}")
 
-        user_lang = user.language_code[:2] if user.language_code else "en"
+        user_lang = normalize_language_code(user.language_code if user.language_code else "en") or DEFAULT_LANGUAGE
         try:
             conversation = await get_or_create_conversation(
                 bot_id=bot_id, chat_id=chat_id, user_id=str(user.id),

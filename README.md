@@ -133,6 +133,22 @@ python backend/scripts/export_knowledge.py \
   --output backend/seed_data/knowledge.json
 ```
 
+### 5.2 离线填充产品多语言
+
+产品推荐链路不会在客户对话时翻译商品字段。导入或更新产品库后，先离线生成并写入产品翻译：
+
+```bash
+# 试跑，不调用 LLM、不写数据库，先确认剩余任务量
+docker compose exec backend python scripts/fill_product_translations.py \
+  --dry-run --only-missing --languages en,ja,ko,es,fr --limit 5
+
+# 正式补齐外语；会显示批次进度条，失败后可原命令续跑
+docker compose exec backend python scripts/fill_product_translations.py \
+  --only-missing --languages en,ja,ko,es,fr --batch-size 20 --max-tokens 8000
+```
+
+默认语言为：简体中文、繁体中文、英文、日语、韩语、西班牙语、法语。脚本会把产品源字段写入 `zh-Hans`，用本地转换填充 `zh-Hant`，其余语言按批次调用当前 LLM 配置并写入 `product_entry_translations`。脚本支持断点续跑；如果中途失败，继续执行同一命令即可只补缺失项。当前进度以“待翻译 product-language 请求数”为单位统计，交互终端中会原地刷新，非 TTY 日志中会按批次输出。
+
 两个脚本都只依赖 Python 标准库，可在任意 Python 3.10+ 环境运行，无需先 `pip install`。
 
 ### 6. 查看商品场景图与耗时

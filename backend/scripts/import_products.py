@@ -30,7 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from sqlalchemy import select
 from app.database import AsyncSessionLocal, engine, Base
-from app.models import ProductEntry, ProductImage
+from app.models import ProductEntry, ProductEntryTranslation, ProductImage
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -246,6 +246,11 @@ async def import_csv(csv_path: Path, images_root: Path, uploads_dir: Path):
             else:
                 for k, v in fields.items():
                     setattr(entry, k, v)
+                old_translations_result = await db.execute(
+                    select(ProductEntryTranslation).where(ProductEntryTranslation.product_entry_id == entry.id)
+                )
+                for translation in old_translations_result.scalars().all():
+                    await db.delete(translation)
                 # Delete old images before re-inserting
                 old_imgs_result = await db.execute(
                     select(ProductImage).where(ProductImage.product_entry_id == entry.id)

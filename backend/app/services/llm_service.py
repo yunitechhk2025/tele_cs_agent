@@ -11,6 +11,14 @@ from sqlalchemy import select
 from app.config import get_settings
 from app.database import AsyncSessionLocal
 from app.models import SystemSetting
+from app.services.i18n import (
+    DEFAULT_LANGUAGE,
+    SUPPORTED_LANGUAGE_SET,
+    detect_chinese_script,
+    normalize_language_code,
+    to_traditional_chinese,
+)
+from app.services.product_i18n import product_search_text
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -206,7 +214,7 @@ def _heuristic_language(text: str) -> str | None:
     if re.search(r'[\u3040-\u30ff\uff66-\uff9f]', text):
         return "ja"
     if re.search(r'[\u4e00-\u9fff]', text):
-        return "zh"
+        return detect_chinese_script(text) or "zh-Hans"
     if re.search(r'[\u0600-\u06ff]', text):
         return "ar"
     if re.search(r'[\u0400-\u04ff]', text):
@@ -401,17 +409,25 @@ def _product_router_context(products: list[dict] | None, recent_product_ids: lis
     products_by_id = {int(p["id"]): p for p in products if p.get("id") is not None}
     recent = [products_by_id[pid] for pid in recent_product_ids if pid in products_by_id]
     recent_lines = [
-        f"SLOT:{idx} | ID:{p['id']} | {p.get('name', '')} | space:{p.get('space', '')} | style:{p.get('style', '')}"
+        f"SLOT:{idx} | ID:{p['id']} | {_product_catalog_alias(p, 120)}"
         for idx, p in enumerate(recent, start=1)
     ]
     catalog_lines = [
-        f"ID:{p['id']} | {p.get('name', '')} | space:{p.get('space', '')} | style:{p.get('style', '')} | material:{p.get('material', '')}"
+        f"ID:{p['id']} | {_product_catalog_alias(p, 160)}"
         for p in products[:80]
     ]
     return (
         f"Recent recommended products:\n{chr(10).join(recent_lines) or '(none)'}\n\n"
         f"Product catalog sample:\n{chr(10).join(catalog_lines) or '(none)'}"
     )
+
+
+def _product_catalog_alias(product: dict[str, Any], limit: int = 160) -> str:
+    text = product.get("search_text") or product_search_text(product)
+    text = re.sub(r"\s+", " ", str(text or "")).strip()
+    if len(text) > limit:
+        return text[:limit].rstrip() + "..."
+    return text
 
 
 def classify_customer_intent_fast(
@@ -519,15 +535,16 @@ async def classify_customer_intent(
 async def detect_language(text: str) -> str:
     heuristic = _heuristic_language(text)
     if heuristic:
-        return heuristic
+        return normalize_language_code(heuristic, text=text) or DEFAULT_LANGUAGE
     try:
         result = await _chat_completion(
             messages=[
                 {
                     "role": "system",
                     "content": (
-                        "You are a language detector. Return ONLY the ISO 639-1 language code "
-                        "(e.g., 'en', 'zh', 'ja', 'ko', 'es', 'fr', 'de', 'ar', 'ru', 'pt'). "
+                        "You are a language detector. Return ONLY one language code. "
+                        "Use 'zh-Hans' for Simplified Chinese, 'zh-Hant' for Traditional Chinese, "
+                        "or ISO 639-1 codes such as 'en', 'ja', 'ko', 'es', 'fr', 'de', 'ar', 'ru', 'pt'. "
                         "Treat any text containing hiragana or katakana as 'ja' even if it also "
                         "contains Chinese kanji. Treat hangul as 'ko'. Nothing else."
                     ),
@@ -538,10 +555,10 @@ async def detect_language(text: str) -> str:
             temperature=0,
             disable_thinking=True,
         )
-        return result.strip().lower()[:2]
+        return normalize_language_code(result.strip(), text=text) or DEFAULT_LANGUAGE
     except Exception as e:
         logger.error(f"Language detection failed: {e}")
-        return "en"
+        return DEFAULT_LANGUAGE
 
 
 async def check_is_quote_related(text: str) -> bool:
@@ -681,7 +698,7 @@ async def resolve_recent_product_reference(
         return {"target_product_id": None, "reason": ""}
 
     recent_lines = "\n".join(
-        f"SLOT:{idx} | ID:{p['id']} | {p['name']} | 空间:{p.get('space', '')} | 风格:{p.get('style', '')}"
+        f"SLOT:{idx} | ID:{p['id']} | {_product_catalog_alias(p, 140)}"
         for idx, p in enumerate(recent_products, start=1)
     )
     prompt = (
@@ -740,10 +757,10 @@ async def analyze_scene_image_request(
     for p in products:
         if p.get("id") in recent_product_ids:
             recent_lines.append(
-                f"SLOT:{len(recent_lines) + 1} | ID:{p['id']} | {p['name']} | 空间:{p.get('space', '')} | 风格:{p.get('style', '')}"
+                f"SLOT:{len(recent_lines) + 1} | ID:{p['id']} | {_product_catalog_alias(p, 140)}"
             )
     catalog = "\n".join(
-        f"ID:{p['id']} | {p['name']} | 空间:{p.get('space', '')} | 风格:{p.get('style', '')} | 材质:{p.get('material', '')}"
+        f"ID:{p['id']} | {_product_catalog_alias(p, 180)}"
         for p in products[:120]
     )
     prompt = (
@@ -801,7 +818,7 @@ async def select_scene_bundle_products(
     if not candidate_products:
         return []
     catalog = "\n".join(
-        f"ID:{p['id']} | 品牌:{p.get('brand', '')} | {p['name']} | 类别:{p.get('category', '')} | 空间:{p.get('space', '')} | 风格:{p.get('style', '')} | 材质:{p.get('material', '')}"
+        f"ID:{p['id']} | {_product_catalog_alias(p, 180)} | category:{p.get('category', '')}"
         for p in candidate_products[:50]
     )
     try:
@@ -1000,7 +1017,7 @@ PRODUCT_MATCH_VALUE_LABELS = {
 }
 
 PRODUCT_MATCH_STRICT_DIMENSIONS = ("colors", "styles", "materials", "brands", "spaces")
-PRODUCT_MATCH_SUPPORTED_LANGUAGES = {"zh", "en", "ja", "ko", "es", "fr"}
+PRODUCT_MATCH_SUPPORTED_LANGUAGES = SUPPORTED_LANGUAGE_SET
 
 
 def _normalize_match_text(value: Any) -> str:
@@ -1040,18 +1057,7 @@ def _extract_product_query_terms(user_message: str) -> list[str]:
 
 
 def _product_match_text(product: dict[str, Any]) -> str:
-    values = [
-        product.get("brand", ""),
-        product.get("name", ""),
-        product.get("series", ""),
-        product.get("space", ""),
-        product.get("style", ""),
-        product.get("color", ""),
-        product.get("material", ""),
-        product.get("size", ""),
-        product.get("description", ""),
-    ]
-    return _normalize_match_text(" ".join(str(v or "") for v in values))
+    return _normalize_match_text(product_search_text(product))
 
 
 def _matches_profile_value(product_text: str, dimension: str, value: str) -> bool:
@@ -1059,12 +1065,17 @@ def _matches_profile_value(product_text: str, dimension: str, value: str) -> boo
 
 
 def _match_language(language: str | None) -> str:
-    code = (language or "en").split("-")[0].lower()
-    return code if code in PRODUCT_MATCH_SUPPORTED_LANGUAGES else "en"
+    code = normalize_language_code(language, fallback=DEFAULT_LANGUAGE) or DEFAULT_LANGUAGE
+    return code if code in PRODUCT_MATCH_SUPPORTED_LANGUAGES else DEFAULT_LANGUAGE
 
 
 def _match_label(dimension: str, value: str, language: str) -> str:
     labels = PRODUCT_MATCH_VALUE_LABELS.get(dimension, {}).get(value, {})
+    if language == "zh-Hans":
+        return labels.get("zh") or labels.get("en") or value
+    if language == "zh-Hant":
+        label = labels.get("zh-Hant") or labels.get("zh")
+        return to_traditional_chinese(label) if label else labels.get("en") or value
     return labels.get(language) or labels.get("en") or value
 
 
@@ -1119,6 +1130,8 @@ def _alternative_phrases(
 
 
 PRODUCT_MATCH_CONSTRAINT_TEMPLATES = {
+    "zh-Hans": "暂时没有完全符合“{request}”的商品，我可以先为您推荐接近的{alternatives}。",
+    "zh-Hant": "暫時沒有完全符合「{request}」的產品，我可以先為您推薦接近的{alternatives}。",
     "zh": "暂时没有完全符合“{request}”的商品，我可以先为您推荐接近的{alternatives}。",
     "en": "We do not currently have an exact match for \"{request}\". I can first recommend close alternatives such as {alternatives}.",
     "ja": "「{request}」に完全一致する商品は現在見つかりません。まずは近い候補として{alternatives}をご提案します。",
@@ -1128,6 +1141,8 @@ PRODUCT_MATCH_CONSTRAINT_TEMPLATES = {
 }
 
 PRODUCT_MATCH_CONSTRAINT_ADMIN_TEMPLATES = {
+    "zh-Hans": "匹配提示：客户条件未完全满足，缺少：{missing}。",
+    "zh-Hant": "匹配提示：客戶條件未完全滿足，缺少：{missing}。",
     "zh": "匹配提示：客户条件未完全满足，缺少：{missing}。",
     "en": "Match notice: the customer constraints are not fully satisfied. Missing: {missing}.",
     "ja": "マッチング通知：お客様の条件を完全には満たしていません。不足：{missing}。",
@@ -1336,8 +1351,7 @@ async def ai_select_products(
             f"{conversation_memory.strip()}\n\n"
         )
     catalog = "\n".join(
-        f"ID:{p.get('id')} | score:{score} | 品牌:{p.get('brand', '')} | {p.get('name', '')} | 系列:{p.get('series', '')} | 空间:{p.get('space', '')} "
-        f"| 风格:{p.get('style', '')} | 颜色:{p.get('color', '')} | 材质:{p.get('material', '')}"
+        f"ID:{p.get('id')} | score:{score} | {_product_catalog_alias(p, 220)}"
         for p, score in candidates
     )
     valid_ids = {int(p["id"]) for p, _score in candidates if p.get("id") is not None}
@@ -1403,7 +1417,7 @@ async def ai_select_products(
 
 
 LANGUAGE_NAMES = {
-    "zh": "中文", "en": "English", "ja": "日本語", "ko": "한국어",
+    "zh": "简体中文", "zh-Hans": "简体中文", "zh-Hant": "繁體中文", "en": "English", "ja": "日本語", "ko": "한국어",
     "es": "Español", "fr": "Français", "de": "Deutsch", "ar": "العربية",
     "ru": "Русский", "pt": "Português", "it": "Italiano", "th": "ภาษาไทย",
     "vi": "Tiếng Việt", "id": "Bahasa Indonesia", "ms": "Bahasa Melayu",
@@ -1419,6 +1433,7 @@ async def generate_response(
     file_info: str = "",
     conversation_memory: str = "",
 ) -> str:
+    language = normalize_language_code(language, fallback=DEFAULT_LANGUAGE) or DEFAULT_LANGUAGE
     lang_name = LANGUAGE_NAMES.get(language, "English")
 
     file_section = ""
@@ -1482,9 +1497,14 @@ async def generate_response(
     except Exception as e:
         logger.error(f"Response generation failed: {e}")
         error_messages = {
+            "zh-Hans": "抱歉，系统暂时出现问题，请稍后再试或联系人工客服。",
+            "zh-Hant": "抱歉，系統暫時出現問題，請稍後再試或聯絡人工客服。",
             "zh": "抱歉，系统暂时出现问题，请稍后再试或联系人工客服。",
             "en": "Sorry, the system is temporarily unavailable. Please try again later or contact human support.",
             "ja": "申し訳ございません。システムに一時的な問題が発生しました。後ほどお試しください。",
+            "ko": "죄송합니다. 시스템을 일시적으로 사용할 수 없습니다. 잠시 후 다시 시도하거나 상담원에게 문의해 주세요.",
+            "es": "Lo sentimos, el sistema no está disponible temporalmente. Inténtelo más tarde o contacte con un agente.",
+            "fr": "Désolé, le système est temporairement indisponible. Veuillez réessayer plus tard ou contacter un agent.",
         }
         return error_messages.get(language, error_messages["en"])
 
@@ -1505,6 +1525,7 @@ async def generate_contract(
     language: str = "en",
     template_content: str | None = None,
 ) -> str:
+    language = normalize_language_code(language, fallback=DEFAULT_LANGUAGE) or DEFAULT_LANGUAGE
     lang_name = LANGUAGE_NAMES.get(language, "English")
 
     conversation_text = "\n".join(
@@ -1672,6 +1693,7 @@ async def _test_dashscope_kling(api_key: str, base_url: str, model: str, size: s
 
 async def translate_text(text: str, target_language: str) -> str | None:
     """Translate text into the target language. Returns None on failure."""
+    target_language = normalize_language_code(target_language, fallback=DEFAULT_LANGUAGE) or DEFAULT_LANGUAGE
     lang_name = LANGUAGE_NAMES.get(target_language, target_language)
     try:
         result = await _chat_completion(

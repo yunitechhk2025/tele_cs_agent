@@ -106,6 +106,34 @@ def _run_migrations(conn):
             logger.info(f"Running migration: adding {table}.{column}")
             conn.execute(text(ddl))
 
+    conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS product_entry_translations (
+            id SERIAL PRIMARY KEY,
+            product_entry_id INTEGER NOT NULL REFERENCES product_entries(id) ON DELETE CASCADE,
+            language VARCHAR(20) NOT NULL,
+            product_name VARCHAR(500) DEFAULT '',
+            series_name VARCHAR(500) DEFAULT '',
+            space VARCHAR(200) DEFAULT '',
+            style VARCHAR(200) DEFAULT '',
+            color VARCHAR(200) DEFAULT '',
+            material VARCHAR(500) DEFAULT '',
+            size VARCHAR(500) DEFAULT '',
+            description_text TEXT DEFAULT '',
+            detail_content_text TEXT DEFAULT '',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT uq_product_entry_translations_product_language UNIQUE (product_entry_id, language)
+        )
+    """))
+    conn.execute(text(
+        "CREATE INDEX IF NOT EXISTS ix_product_entry_translations_product_entry_id "
+        "ON product_entry_translations(product_entry_id)"
+    ))
+    conn.execute(text(
+        "CREATE INDEX IF NOT EXISTS ix_product_entry_translations_language "
+        "ON product_entry_translations(language)"
+    ))
+
 
 async def init_db():
     async with engine.begin() as conn:

@@ -225,7 +225,7 @@ class DashboardStats(BaseModel):
 
 class TelegramSimulatorSessionCreate(BaseModel):
     bot_id: int
-    language: Optional[str] = "zh"
+    language: Optional[str] = "zh-Hans"
 
 
 class TelegramSimulatorSessionResponse(BaseModel):
@@ -382,6 +382,7 @@ class ProductEntrySchema(BaseModel):
     detail_content_text: str
     buy_url: str
     detail_url: str
+    translations: dict[str, dict[str, str]] = Field(default_factory=dict)
     created_at: datetime
     updated_at: datetime
     images: list[ProductImageSchema] = []
@@ -405,6 +406,7 @@ class ProductEntryListSchema(BaseModel):
     serial_number: str
     description_text: str
     buy_url: str
+    translations: dict[str, dict[str, str]] = Field(default_factory=dict)
     first_image_path: Optional[str] = None
     created_at: datetime
     updated_at: datetime

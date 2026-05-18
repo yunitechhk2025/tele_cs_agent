@@ -1,6 +1,6 @@
 import enum
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Text, DateTime, BigInteger, Boolean, ForeignKey, Enum as SQLEnum, LargeBinary, Float
+from sqlalchemy import Column, Integer, String, Text, DateTime, BigInteger, Boolean, ForeignKey, Enum as SQLEnum, LargeBinary, Float, UniqueConstraint
 from sqlalchemy.orm import relationship
 from app.database import Base
 
@@ -157,6 +157,36 @@ class ProductEntry(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     images = relationship("ProductImage", back_populates="product", order_by="ProductImage.display_order")
+    translations = relationship(
+        "ProductEntryTranslation",
+        back_populates="product",
+        cascade="all, delete-orphan",
+        order_by="ProductEntryTranslation.language",
+    )
+
+
+class ProductEntryTranslation(Base):
+    __tablename__ = "product_entry_translations"
+    __table_args__ = (
+        UniqueConstraint("product_entry_id", "language", name="uq_product_entry_translations_product_language"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    product_entry_id = Column(Integer, ForeignKey("product_entries.id"), nullable=False, index=True)
+    language = Column(String(20), nullable=False, index=True)
+    product_name = Column(String(500), default="")
+    series_name = Column(String(500), default="")
+    space = Column(String(200), default="")
+    style = Column(String(200), default="")
+    color = Column(String(200), default="")
+    material = Column(String(500), default="")
+    size = Column(String(500), default="")
+    description_text = Column(Text, default="")
+    detail_content_text = Column(Text, default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    product = relationship("ProductEntry", back_populates="translations")
 
 
 class ProductImage(Base):
