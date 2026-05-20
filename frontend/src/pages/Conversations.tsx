@@ -5,6 +5,7 @@ import relativeTime from 'dayjs/plugin/relativeTime';
 import utc from 'dayjs/plugin/utc';
 import 'dayjs/locale/zh-cn';
 import {
+  Alert,
   Badge,
   Button,
   Card,
@@ -41,7 +42,7 @@ import {
   UserOutlined,
 } from '@ant-design/icons';
 import { conversationApi, contractApi, contractTemplateApi, dashboardApi, settingsApi } from '../api';
-import { TypewriterText, RichText } from '../components/TypewriterText';
+import { RichText } from '../components/RichText';
 import type {
   Contract,
   ContractTemplate,
@@ -71,7 +72,8 @@ const FILTER_TABS: { key: FilterKey; label: string }[] = [
 ];
 
 const CONTRACT_OUTPUT_LANG_OPTIONS = [
-  { value: 'zh', label: '中文' },
+  { value: 'zh-Hans', label: '简体中文' },
+  { value: 'zh-Hant', label: '繁體中文' },
   { value: 'en', label: 'English' },
   { value: 'ja', label: '日本語' },
   { value: 'ko', label: '한국어' },
@@ -161,6 +163,8 @@ function intentConfig(metric?: ConversationDetail['latest_turn_metric'] | null) 
 
 function languageLabel(code: string) {
   const upper = code?.toUpperCase() || '—';
+  if (code === 'zh-Hans') return `${upper} · 简体中文`;
+  if (code === 'zh-Hant') return `${upper} · 繁體中文`;
   try {
     const dn = new Intl.DisplayNames(['zh'], { type: 'language' });
     const name = dn.of(code.split('-')[0]);
@@ -223,6 +227,10 @@ type ProductRecommendationDraftPayload = {
   intro_text?: string;
   followup_text?: string;
   cards?: ProductDraftCard[];
+  match_notice?: {
+    admin_text?: string;
+    text?: string;
+  };
 };
 
 type SceneResultDraftPayload = {
@@ -243,6 +251,14 @@ function ProductRecommendationDraftPreview({ payload }: { payload: Record<string
 
   return (
     <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+      {data.match_notice?.admin_text ? (
+        <Alert
+          type="warning"
+          showIcon
+          message={data.match_notice.admin_text}
+          style={{ borderRadius: 8 }}
+        />
+      ) : null}
       {data.intro_text ? (
         <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', lineHeight: 1.6 }}>
           {data.intro_text}
@@ -441,18 +457,7 @@ type ConversationTimelineItem =
       event: SimulatorOutgoingEvent;
     };
 
-function OutboundEventBubble({
-  event,
-  textOverride,
-  captionOverride,
-  animateKey,
-}: {
-  event: SimulatorOutgoingEvent;
-  textOverride?: string;
-  captionOverride?: string;
-  /** 提供时使用打字机效果输出文本/图片说明。 */
-  animateKey?: string;
-}) {
+function OutboundEventBubble({ event }: { event: SimulatorOutgoingEvent }) {
   const isHuman = event.role === 'human_agent';
   const bg = isHuman ? '#f6ffed' : '#fff';
   const name = isHuman ? '人工客服' : 'AI 助手';
@@ -491,13 +496,9 @@ function OutboundEventBubble({
               src={event.url}
               style={{ maxWidth: '100%', maxHeight: 320, borderRadius: 10, display: 'block', background: '#fafafa' }}
             />
-            {(captionOverride ?? event.caption) ? (
+            {event.caption ? (
               <div style={{ marginTop: 10, whiteSpace: 'pre-wrap', wordBreak: 'break-word', lineHeight: 1.55, fontSize: 14 }}>
-                {animateKey ? (
-                  <TypewriterText id={animateKey} text={(captionOverride ?? event.caption) || ''} />
-                ) : (
-                  <RichText text={(captionOverride ?? event.caption) || ''} />
-                )}
+                <RichText text={event.caption} />
               </div>
             ) : null}
           </div>
@@ -507,13 +508,9 @@ function OutboundEventBubble({
             {event.filename || 'Document'}
           </a>
         ) : null}
-        {event.type === 'text' && (textOverride ?? event.text) ? (
+        {event.type === 'text' && event.text ? (
           <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', lineHeight: 1.55, fontSize: 14 }}>
-            {animateKey ? (
-              <TypewriterText id={animateKey} text={(textOverride ?? event.text) || ''} />
-            ) : (
-              <RichText text={(textOverride ?? event.text) || ''} />
-            )}
+            <RichText text={event.text} />
           </div>
         ) : null}
       </div>
@@ -524,6 +521,12 @@ function OutboundEventBubble({
 function TurnMetricBadge({ metric }: { metric: ConversationDetail['latest_turn_metric'] }) {
   if (!metric) return null;
   const ic = intentConfig(metric);
+  const displayLatencyMs = metric.total_ms ?? metric.first_response_ms;
+  const latencyTooltip = metric.total_ms
+    ? `完整处理耗时：${formatLatency(metric.total_ms)}${
+        metric.first_response_ms ? `；首响：${formatLatency(metric.first_response_ms)}` : ''
+      }`
+    : '首响时间';
   return (
     <div
       style={{
@@ -539,24 +542,16 @@ function TurnMetricBadge({ metric }: { metric: ConversationDetail['latest_turn_m
           意图 {ic.label}
         </Tag>
       </Tooltip>
-      <Tooltip title="首响时间">
+      <Tooltip title={latencyTooltip}>
         <Tag color="purple" style={{ fontSize: 11, margin: 0 }}>
-          {formatLatency(metric.first_response_ms)}
+          {formatLatency(displayLatencyMs)}
         </Tag>
       </Tooltip>
     </div>
   );
 }
 
-function MessageBubble({
-  msg,
-  contentOverride,
-  animateKey,
-}: {
-  msg: Message;
-  contentOverride?: string;
-  animateKey?: string;
-}) {
+function MessageBubble({ msg }: { msg: Message }) {
   const isUser = msg.role === 'user';
   const isAssistant = msg.role === 'assistant';
 
@@ -611,11 +606,7 @@ function MessageBubble({
           </Text>
         </Space>
         <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 14, lineHeight: 1.55 }}>
-          {animateKey ? (
-            <TypewriterText id={animateKey} text={(contentOverride ?? msg.content) || ''} />
-          ) : (
-            <RichText text={(contentOverride ?? msg.content) || ''} />
-          )}
+          <RichText text={msg.content} />
         </div>
         {msg.attachment_file_id != null && msg.attachment_file_id !== undefined && (
           <div style={{ marginTop: 10 }}>
@@ -997,9 +988,14 @@ export default function Conversations() {
     if (selectedId == null) return;
     setGenerateModalOpen(true);
     setGenTemplateId(null);
-    const base = detail?.language?.split('-')[0]?.toLowerCase() || 'en';
-    const match = CONTRACT_OUTPUT_LANG_OPTIONS.some((o) => o.value === base);
-    setGenOutputLang(match ? base : 'en');
+    const rawLanguage = detail?.language || 'en';
+    const normalizedLanguage = rawLanguage === 'zh-Hant'
+      ? 'zh-Hant'
+      : rawLanguage === 'zh-Hans' || rawLanguage === 'zh'
+        ? 'zh-Hans'
+        : rawLanguage.split('-')[0]?.toLowerCase() || 'en';
+    const match = CONTRACT_OUTPUT_LANG_OPTIONS.some((o) => o.value === normalizedLanguage);
+    setGenOutputLang(match ? normalizedLanguage : 'en');
     setTemplatesLoading(true);
     try {
       const { data } = await contractTemplateApi.list();
@@ -1103,7 +1099,7 @@ export default function Conversations() {
       message: msg,
     }));
     const eventItems = (detail.outbound_events || [])
-      .filter((event) => event.type === 'photo' || event.type === 'document')
+      .filter((event) => event.type === 'text' || event.type === 'photo' || event.type === 'document')
       .map((event) => ({
         id: event.id,
         created_at: event.created_at,
@@ -1118,30 +1114,34 @@ export default function Conversations() {
     });
   }, [detail]);
 
-  // 找到第一条 AI 回复消息的 timeline 下标——即 latest_turn_metric.started_at 之后的首条 assistant 消息
-  const metricAnnotationIdx = useMemo(() => {
-    if (!detail?.latest_turn_metric) return -1;
-    const startedAt = new Date(detail.latest_turn_metric.started_at).getTime();
-    return timeline.findIndex(
-      (item) =>
-        item.kind === 'message' &&
-        item.message.role === 'assistant' &&
-        new Date(item.message.created_at).getTime() >= startedAt,
-    );
-  }, [detail?.latest_turn_metric, timeline]);
+  const metricAnnotationByItemIdx = useMemo(() => {
+    const metrics = detail?.turn_metrics?.length
+      ? detail.turn_metrics
+      : detail?.latest_turn_metric
+        ? [detail.latest_turn_metric]
+        : [];
+    const annotations = new Map<number, NonNullable<ConversationDetail['latest_turn_metric']>[]>();
+    metrics.forEach((metric) => {
+      const startedAt = new Date(metric.started_at).getTime();
+      const itemIdx = timeline.findIndex((item) => {
+        const itemTime = new Date(item.created_at).getTime();
+        if (itemTime < startedAt) return false;
+        if (item.kind === 'message') return item.message.role === 'assistant';
+        return item.event.role === 'assistant';
+      });
+      if (itemIdx < 0) return;
+      const existing = annotations.get(itemIdx) || [];
+      annotations.set(itemIdx, [...existing, metric]);
+    });
+    return annotations;
+  }, [detail?.latest_turn_metric, detail?.turn_metrics, timeline]);
 
-  const renderTimelineItem = useCallback(
-    (item: ConversationTimelineItem) => {
-      if (item.kind === 'message') {
-        const animKey = item.message.role === 'assistant' ? `msg-${item.id}` : undefined;
-        return <MessageBubble key={item.id} msg={item.message} animateKey={animKey} />;
-      }
-      const ev = item.event;
-      const animKey = ev.role !== 'human_agent' ? `evt-${item.id}` : undefined;
-      return <OutboundEventBubble key={item.id} event={ev} animateKey={animKey} />;
-    },
-    [],
-  );
+  const renderTimelineItem = useCallback((item: ConversationTimelineItem) => {
+    if (item.kind === 'message') {
+      return <MessageBubble key={item.id} msg={item.message} />;
+    }
+    return <OutboundEventBubble key={item.id} event={item.event} />;
+  }, []);
   const pendingCount = stats?.pending_human ?? 0;
   const renderStatItem = (
     label: string,
@@ -1628,9 +1628,9 @@ export default function Conversations() {
                   <Empty description="暂无消息" />
                 ) : timeline.length ? (
                   timeline.flatMap((item, idx) => [
-                    ...(idx === metricAnnotationIdx
-                      ? [<TurnMetricBadge key="metric-badge" metric={detail?.latest_turn_metric} />]
-                      : []),
+                    ...(metricAnnotationByItemIdx.get(idx) || []).map((metric) => (
+                      <TurnMetricBadge key={`metric-badge-${metric.id}`} metric={metric} />
+                    )),
                     renderTimelineItem(item),
                   ])
                 ) : null}

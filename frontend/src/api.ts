@@ -208,7 +208,7 @@ export const simulatorApi = {
   createSession: (botId: number, language?: string) =>
     api.post<TelegramSimulatorSessionResponse>('/simulator/sessions', {
       bot_id: botId,
-      language: language || 'zh',
+      language: language || 'zh-Hans',
     }),
   sendMessage: (conversationId: number, text: string) =>
     api.post<{ conversation_id: number; outgoing: SimulatorOutgoingEvent[] }>(

@@ -648,6 +648,114 @@ async def _find_reusable_record(
     return None
 
 
+async def _find_completed_conversation_record(
+    conversation_id: int,
+    primary_product_id: int,
+    scene_name: str,
+    style_hint: str,
+    related_product_ids: list[int] | None = None,
+) -> SceneGenerationRecord | None:
+    scene_key = _normalize_reuse_text(scene_name)
+    style_key = _normalize_reuse_text(style_hint)
+    requested_related = sorted(int(x) for x in (related_product_ids or []))
+
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(SceneGenerationRecord)
+            .where(
+                SceneGenerationRecord.conversation_id == conversation_id,
+                SceneGenerationRecord.primary_product_id == primary_product_id,
+                SceneGenerationRecord.status == "completed",
+            )
+            .order_by(SceneGenerationRecord.updated_at.desc())
+            .limit(20)
+        )
+        candidates = result.scalars().all()
+
+    for candidate in candidates:
+        if _normalize_reuse_text(candidate.scene_name) != scene_key:
+            continue
+        if _normalize_reuse_text(candidate.style_hint) != style_key:
+            continue
+        if requested_related:
+            candidate_related = sorted(
+                int(x) for x in _clean_json_list(candidate.related_product_ids_json) if str(x).isdigit()
+            )
+            if candidate_related != requested_related:
+                continue
+        await _backfill_record_images_from_disk(candidate)
+        async with AsyncSessionLocal() as db:
+            refreshed = await db.get(SceneGenerationRecord, candidate.id)
+            if refreshed:
+                return refreshed
+    return None
+
+
+async def _clone_reusable_record_for_conversation(
+    reusable: SceneGenerationRecord,
+    conversation_id: int,
+    user_request: str = "",
+) -> SceneGenerationRecord:
+    await _backfill_record_images_from_disk(reusable)
+    async with AsyncSessionLocal() as db:
+        image_result = await db.execute(
+            select(SceneGenerationImage)
+            .where(SceneGenerationImage.record_id == reusable.id)
+            .order_by(SceneGenerationImage.image_index)
+        )
+        reusable_images = image_result.scalars().all()
+        record = SceneGenerationRecord(
+            conversation_id=conversation_id,
+            primary_product_id=reusable.primary_product_id,
+            scene_name=reusable.scene_name or "",
+            style_hint=reusable.style_hint or "",
+            request_text=user_request or reusable.request_text or "",
+            prompt_text=reusable.prompt_text or "",
+            related_product_ids_json=reusable.related_product_ids_json or "[]",
+            output_paths_json="[]",
+            duration_ms=0,
+            status="completed",
+            deferred_delivery=False,
+            in_library=False,
+            error_message="",
+        )
+        db.add(record)
+        await db.flush()
+        cloned_paths: list[str] = []
+        upload_dir = _scene_upload_root() / str(record.id)
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        for image in reusable_images:
+            binary = image.binary_data or b""
+            if binary:
+                ext = ".png"
+                if (image.mime_type or "").lower() == "image/jpeg":
+                    ext = ".jpg"
+                elif (image.mime_type or "").lower() == "image/webp":
+                    ext = ".webp"
+                filename = f"{uuid.uuid4().hex}_{image.image_index + 1}{ext}"
+                full = upload_dir / filename
+                full.write_bytes(binary)
+                cloned_paths.append(
+                    os.path.join("uploads", "generated_scenes", str(record.id), filename).replace("\\", "/")
+                )
+            db.add(
+                SceneGenerationImage(
+                    record_id=record.id,
+                    image_index=image.image_index,
+                    mime_type=image.mime_type or "image/png",
+                    binary_data=binary,
+                    file_size=image.file_size or len(binary),
+                )
+            )
+        record.output_paths_json = json.dumps(
+            cloned_paths or _clean_json_list(reusable.output_paths_json),
+            ensure_ascii=False,
+        )
+        await db.commit()
+        await db.refresh(record)
+        return record
+
+
 async def build_scene_record_response(record: SceneGenerationRecord) -> dict[str, Any]:
     if record.status == "completed":
         await _backfill_record_images_from_disk(record)
@@ -718,6 +826,17 @@ async def _create_scene_generation_record(
     scene_name = scene_name.strip() or default_scene
     style_hint = style_hint.strip() or default_style
 
+    if conversation_id:
+        existing = await _find_completed_conversation_record(
+            conversation_id=conversation_id,
+            primary_product_id=primary_product.id,
+            scene_name=scene_name,
+            style_hint=style_hint,
+            related_product_ids=related_product_ids,
+        )
+        if existing:
+            return existing
+
     if allow_reuse:
         reusable = await _find_reusable_record(
             primary_product_id=primary_product.id,
@@ -726,6 +845,12 @@ async def _create_scene_generation_record(
             related_product_ids=related_product_ids,
         )
         if reusable:
+            if conversation_id and reusable.conversation_id != conversation_id:
+                return await _clone_reusable_record_for_conversation(
+                    reusable=reusable,
+                    conversation_id=conversation_id,
+                    user_request=user_request,
+                )
             return reusable
 
     record = SceneGenerationRecord(

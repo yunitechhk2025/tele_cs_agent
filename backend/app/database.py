@@ -80,6 +80,22 @@ def _run_migrations(conn):
             "conversation_turn_metrics", "intent_reason",
             "ALTER TABLE conversation_turn_metrics ADD COLUMN intent_reason TEXT DEFAULT ''"
         ),
+        (
+            "conversation_scene_states", "active_product_id",
+            "ALTER TABLE conversation_scene_states ADD COLUMN active_product_id INTEGER REFERENCES product_entries(id)"
+        ),
+        (
+            "conversation_scene_states", "recent_product_ids_json",
+            "ALTER TABLE conversation_scene_states ADD COLUMN recent_product_ids_json TEXT DEFAULT '[]'"
+        ),
+        (
+            "conversation_scene_states", "active_topic",
+            "ALTER TABLE conversation_scene_states ADD COLUMN active_topic VARCHAR(100) DEFAULT ''"
+        ),
+        (
+            "conversation_scene_states", "preferences_json",
+            "ALTER TABLE conversation_scene_states ADD COLUMN preferences_json TEXT DEFAULT '{}'"
+        ),
     ]
     for table, column, ddl in migrations:
         result = conn.execute(text(
@@ -89,6 +105,34 @@ def _run_migrations(conn):
         if result.fetchone() is None:
             logger.info(f"Running migration: adding {table}.{column}")
             conn.execute(text(ddl))
+
+    conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS product_entry_translations (
+            id SERIAL PRIMARY KEY,
+            product_entry_id INTEGER NOT NULL REFERENCES product_entries(id) ON DELETE CASCADE,
+            language VARCHAR(20) NOT NULL,
+            product_name VARCHAR(500) DEFAULT '',
+            series_name VARCHAR(500) DEFAULT '',
+            space VARCHAR(200) DEFAULT '',
+            style VARCHAR(200) DEFAULT '',
+            color VARCHAR(200) DEFAULT '',
+            material VARCHAR(500) DEFAULT '',
+            size VARCHAR(500) DEFAULT '',
+            description_text TEXT DEFAULT '',
+            detail_content_text TEXT DEFAULT '',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT uq_product_entry_translations_product_language UNIQUE (product_entry_id, language)
+        )
+    """))
+    conn.execute(text(
+        "CREATE INDEX IF NOT EXISTS ix_product_entry_translations_product_entry_id "
+        "ON product_entry_translations(product_entry_id)"
+    ))
+    conn.execute(text(
+        "CREATE INDEX IF NOT EXISTS ix_product_entry_translations_language "
+        "ON product_entry_translations(language)"
+    ))
 
 
 async def init_db():

@@ -27,6 +27,7 @@ export interface ConversationDetail extends Conversation {
   outbound_events: SimulatorOutgoingEvent[];
   processing_state?: ConversationProcessingState | null;
   latest_turn_metric?: ConversationTurnMetric | null;
+  turn_metrics?: ConversationTurnMetric[];
   latest_turn_steps?: ConversationTurnStepMetric[];
   ai_draft?: PendingAIReply | null;
 }
@@ -163,6 +164,7 @@ export interface ProductEntry {
   detail_content_text: string;
   buy_url: string;
   detail_url: string;
+  translations: Record<string, Record<string, string>>;
   first_image_path: string | null;
   images: ProductImage[];
   created_at: string;

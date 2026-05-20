@@ -11,8 +11,8 @@ import {
 import dayjs from 'dayjs';
 import { Link, useSearchParams } from 'react-router-dom';
 import { botApi, conversationApi, simulatorApi } from '../api';
-import type { Message, TelegramBot } from '../types';
-import { TypewriterText, RichText } from '../components/TypewriterText';
+import type { Message, SimulatorOutgoingEvent, TelegramBot } from '../types';
+import { RichText } from '../components/RichText';
 
 const { Text } = Typography;
 
@@ -26,15 +26,6 @@ const TG_TEXT = '#f5f5f5';
 const TG_SECONDARY = '#6d7f8e';
 const TG_ACCENT = '#5ca5db';
 const SIMULATOR_STORAGE_KEY = 'telegram-simulator-session';
-
-const SIMULATED_NAME_POOL = [
-  '张三', '李四', '王五', '赵六', '钱七', '孙八', '周九', '吴十',
-  '郑明', '冯华', '陈晓', '楚云', '林峰', '黄磊', '徐波', '高远',
-];
-function simulatedDisplayName(id: number | null) {
-  if (id == null) return '模拟用户';
-  return SIMULATED_NAME_POOL[id % SIMULATED_NAME_POOL.length];
-}
 
 type TimelineItem =
   | {
@@ -70,7 +61,7 @@ function readPersistedState(): PersistedSimulatorState | null {
     return {
       conversationId: typeof parsed.conversationId === 'number' ? parsed.conversationId : null,
       selectedBotId: typeof parsed.selectedBotId === 'number' ? parsed.selectedBotId : null,
-      language: typeof parsed.language === 'string' && parsed.language ? parsed.language : 'zh',
+      language: typeof parsed.language === 'string' && parsed.language ? parsed.language : 'zh-Hans',
       ephemeralEvents: Array.isArray(parsed.ephemeralEvents) ? parsed.ephemeralEvents : [],
     };
   } catch {
@@ -88,6 +79,10 @@ function clearPersistedState() {
   window.localStorage.removeItem(SIMULATOR_STORAGE_KEY);
 }
 
+function isMediaEvent(event: SimulatorOutgoingEvent): event is SimulatorOutgoingEvent & { type: 'photo' | 'document' } {
+  return event.type === 'photo' || event.type === 'document';
+}
+
 function mapMessages(messages: Message[]): TimelineItem[] {
   return messages.map((msg) => ({
     id: `msg-${msg.id}`,
@@ -98,12 +93,11 @@ function mapMessages(messages: Message[]): TimelineItem[] {
   }));
 }
 
-function Bubble({ item, userName }: { item: TimelineItem; userName: string }) {
+function Bubble({ item }: { item: TimelineItem }) {
   const isUser = item.role === 'user';
   const isHuman = item.role === 'human_agent';
-  const animate = item.role === 'assistant';
   const bg = isUser ? TG_USER_BUBBLE : isHuman ? TG_HUMAN_BUBBLE : TG_ASSISTANT_BUBBLE;
-  const name = isUser ? userName : isHuman ? '人工客服' : 'AI 助手';
+  const name = isUser ? '模拟用户' : isHuman ? '人工客服' : 'AI 助手';
   const icon = isUser ? <UserOutlined /> : <RobotOutlined />;
 
   return (
@@ -132,13 +126,7 @@ function Bubble({ item, userName }: { item: TimelineItem; userName: string }) {
           <Text style={{ color: TG_ACCENT, fontSize: 12, fontWeight: 600 }}>{name}</Text>
         </div>
         {item.kind === 'text' && (
-          <div style={{ whiteSpace: 'pre-wrap' }}>
-            {animate ? (
-              <TypewriterText id={`sim-${item.id}`} text={item.content} />
-            ) : (
-              <RichText text={item.content} />
-            )}
-          </div>
+          <div style={{ whiteSpace: 'pre-wrap' }}><RichText text={item.content} /></div>
         )}
         {item.kind === 'photo' && (
           <div>
@@ -147,11 +135,11 @@ function Bubble({ item, userName }: { item: TimelineItem; userName: string }) {
               alt={item.caption || 'scene'}
               style={{ width: '100%', borderRadius: 10, display: 'block' }}
             />
-            {item.caption ? (
+            {item.caption && (
               <div style={{ marginTop: 6, whiteSpace: 'pre-wrap' }}>
-                <TypewriterText id={`sim-cap-${item.id}`} text={item.caption} enabled={animate} />
+                <RichText text={item.caption} />
               </div>
-            ) : null}
+            )}
           </div>
         )}
         {item.kind === 'document' && (
@@ -164,11 +152,11 @@ function Bubble({ item, userName }: { item: TimelineItem; userName: string }) {
             >
               <LinkOutlined /> {item.filename || 'Document'}
             </a>
-            {item.caption ? (
+            {item.caption && (
               <div style={{ marginTop: 6, whiteSpace: 'pre-wrap' }}>
                 <RichText text={item.caption} />
               </div>
-            ) : null}
+            )}
           </div>
         )}
         <div style={{ textAlign: 'right', marginTop: 4 }}>
@@ -185,7 +173,7 @@ export default function TelegramSimulator() {
   const [searchParams] = useSearchParams();
   const [bots, setBots] = useState<TelegramBot[]>([]);
   const [selectedBotId, setSelectedBotId] = useState<number | null>(null);
-  const [language, setLanguage] = useState('zh');
+  const [language, setLanguage] = useState('zh-Hans');
   const [conversationId, setConversationId] = useState<number | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [persistedEvents, setPersistedEvents] = useState<TimelineItem[]>([]);
@@ -264,7 +252,7 @@ export default function TelegramSimulator() {
     if (queryConversationId == null) return;
     conversationApi.get(queryConversationId).then(({ data }) => {
       setSelectedBotId(data.bot_id ?? null);
-      setLanguage(data.language || 'zh');
+      setLanguage(data.language || 'zh-Hans');
       setConversationId(data.id);
     }).catch(() => {
       message.error('加载指定模拟会话失败');
@@ -300,7 +288,7 @@ export default function TelegramSimulator() {
 
   useEffect(() => {
     if (!restoredRef.current) return;
-    if (!conversationId && !selectedBotId && language === 'zh' && ephemeralEvents.length === 0) {
+    if (!conversationId && !selectedBotId && language === 'zh-Hans' && ephemeralEvents.length === 0) {
       clearPersistedState();
       return;
     }
@@ -312,15 +300,12 @@ export default function TelegramSimulator() {
     });
   }, [conversationId, selectedBotId, language, ephemeralEvents]);
 
-  // 记录"用户是否处于贴底状态"。只有贴底时新消息才自动滚到底；
-  // 用户向上滚动离开底部后，新消息进来不再强行拉回，避免回看时被打断。
   const stickToBottomRef = useRef<boolean>(true);
 
   const handleScroll = useCallback(() => {
     const node = scrollRef.current;
     if (!node) return;
     const distance = node.scrollHeight - node.scrollTop - node.clientHeight;
-    // 60px 容差：靠近底部就视作"想跟随"
     stickToBottomRef.current = distance < 60;
   }, []);
 
@@ -337,7 +322,6 @@ export default function TelegramSimulator() {
     scrollToBottom();
   }, [messages, ephemeralEvents, scrollToBottom]);
 
-  // 切换会话时强制贴底一次，避免上一会话的滚动状态污染。
   useEffect(() => {
     stickToBottomRef.current = true;
     scrollToBottom(true);
@@ -345,16 +329,21 @@ export default function TelegramSimulator() {
 
   const timeline = useMemo(() => {
     const textItems = mapMessages(messages);
-    // 用一个集合记录 messages 中已存在的 (role, content) 组合，
-    // 用于过滤掉本地"乐观更新"的占位条目，避免 DB 回填后短暂出现重复。
-    const messageTextKeys = new Set(
-      textItems
-        .filter((m): m is Extract<TimelineItem, { kind: 'text' }> => m.kind === 'text')
-        .map((m) => `${m.role}::${m.content}`),
-    );
+    const persistedTextKeys = new Set<string>();
+    textItems.forEach((item) => {
+      if (item.kind === 'text') {
+        persistedTextKeys.add(`${item.role}\n${item.content.trim()}`);
+      }
+    });
+    persistedEvents.forEach((item) => {
+      if (item.kind === 'text') {
+        persistedTextKeys.add(`${item.role}\n${item.content.trim()}`);
+      }
+    });
     const dedupedEphemeral = ephemeralEvents.filter((item) => {
       if (item.kind === 'text') {
-        return !messageTextKeys.has(`${item.role}::${item.content}`);
+        const key = `${item.role}\n${item.content.trim()}`;
+        return !persistedTextKeys.has(key);
       }
       return !persistedEvents.some(
         (persisted) =>
@@ -390,62 +379,42 @@ export default function TelegramSimulator() {
     if (!conversationId) return;
     const text = inputText.trim();
     if (!text) return;
-    // 乐观更新：立即把用户消息渲染到时间线，等后端处理完后再由 loadMessages 移除占位。
-    const optimisticId = `optimistic-user-${Date.now()}`;
-    const optimisticItem: TimelineItem = {
-      id: optimisticId,
-      kind: 'text',
-      role: 'user',
-      content: text,
-      created_at: new Date().toISOString(),
-    };
-    // 用 flushSync 强制同步刷新到 DOM，确保浏览器在发起网络请求之前
-    // 已经把这个气泡画出来——否则 React 18 会把乐观更新和后续网络
-    // 完成后的状态变化合并成一次提交，用户感知不到立即出现。
-    flushSync(() => {
-      setSending(true);
-      setInputText('');
-      setEphemeralEvents((prev) => [...prev, optimisticItem]);
-    });
+    setSending(true);
+    setInputText('');
     try {
       const { data } = await simulatorApi.sendMessage(conversationId, text);
-      // 立刻把后端返回的全部 outbound（文本 + 图片 + 文档）作为乐观气泡渲染，
-      // 这样"加载中" Spin 一消失，AI 回复就在同一帧出现，不再等下一次 loadMessages 网络往返。
-      // 真正的持久化数据稍后由轮询/后台 loadMessages 拉回；timeline useMemo 里已经
-      // 按 (role, content) / (kind, role, url) 做了去重，不会出现重复气泡。
-      const outgoingEvents = (data.outgoing || []).map<TimelineItem>((event, index) => {
-        if (event.type === 'text') {
-          return {
-            id: event.id || `evt-text-${Date.now()}-${index}`,
-            kind: 'text',
-            role: 'assistant' as const,
-            content: event.text || '',
-            created_at: event.created_at,
-          };
-        }
-        return {
+      const outgoingEvents = (data.outgoing || [])
+        .filter((event) => event.type === 'text' || isMediaEvent(event))
+        .map<TimelineItem>((event, index) => ({
           id: event.id || `evt-${Date.now()}-${index}`,
-          kind: event.type,
-          role: 'assistant' as const,
-          url: event.url || '',
-          caption: event.caption,
-          filename: event.filename,
-          created_at: event.created_at,
-        };
-      });
-      // 同步刷新：保证 Spin 消失与 AI 气泡出现在同一次渲染提交里。
+          ...(event.type === 'text'
+            ? {
+                kind: 'text' as const,
+                role: event.role === 'human_agent' ? 'human_agent' : (event.role as 'user' | 'assistant'),
+                content: event.text || '',
+                created_at: event.created_at,
+              }
+            : {
+                kind: event.type,
+                role: 'assistant' as const,
+                url: event.url || '',
+                caption: event.caption,
+                filename: event.filename,
+                created_at: event.created_at,
+              }),
+        }));
       flushSync(() => {
-        setEphemeralEvents((prev) => [...prev.filter((it) => it.id !== optimisticId), ...outgoingEvents]);
+        setEphemeralEvents((prev) => [...prev, ...outgoingEvents]);
         setSending(false);
       });
-      // 后台静默对齐 DB（不再 await，不阻塞 UI）；轮询每 4s 也会兜底。
       void Promise.all([loadMessages(conversationId), loadEvents(conversationId)]).catch(() => {
-        /* 失败由轮询处理 */
+        /* polling will retry */
       });
     } catch {
-      setEphemeralEvents((prev) => prev.filter((it) => it.id !== optimisticId));
       message.error('发送失败');
       setSending(false);
+    } finally {
+      // setSending is handled above so outgoing events can render in the same commit as spinner removal.
     }
   };
 
@@ -506,7 +475,7 @@ export default function TelegramSimulator() {
                   border: '1px solid rgba(92,165,219,0.32)',
                 }}
               >
-                {simulatedDisplayName(conversationId)}
+                ID #{conversationId}
               </Text>
             ) : null}
           </Space>
@@ -546,7 +515,8 @@ export default function TelegramSimulator() {
               value={language}
               onChange={setLanguage}
               options={[
-                { value: 'zh', label: '中文' },
+                { value: 'zh-Hans', label: '简体中文' },
+                { value: 'zh-Hant', label: '繁體中文' },
                 { value: 'en', label: 'English' },
                 { value: 'ja', label: '日本語' },
                 { value: 'ko', label: '한국어' },
@@ -582,9 +552,7 @@ export default function TelegramSimulator() {
                   image={Empty.PRESENTED_IMAGE_SIMPLE}
                 />
               ) : (
-                timeline.map((item) => (
-                  <Bubble key={item.id} item={item} userName={simulatedDisplayName(conversationId)} />
-                ))
+                timeline.map((item) => <Bubble key={item.id} item={item} />)
               )}
               {sending && (
                 <div style={{ display: 'flex', justifyContent: 'flex-start', padding: '0 12px' }}>

@@ -20,7 +20,7 @@ from app.config import get_settings
 from app.database import get_db, AsyncSessionLocal
 from app.models import (
     Conversation, Message, KnowledgeEntry, Contract, ContractTemplate, FileEntry, TelegramBot,
-    ConversationStatus, MessageRole, ProductEntry, ProductImage, SceneGenerationImage, SceneGenerationRecord,
+    ConversationStatus, MessageRole, ProductEntry, ProductEntryTranslation, ProductImage, SceneGenerationImage, SceneGenerationRecord,
     ConversationSceneState, ConversationOutboundEvent, PendingAIReply,
     ConversationProcessingState, ConversationTurnMetric, ConversationTurnStepMetric,
 )
@@ -30,7 +30,7 @@ from app.schemas import (
     ContractSchema, ContractUpdateRequest, ContractGenerateRequest, SendContractRequest, DashboardStats,
     TelegramSimulatorSessionCreate, TelegramSimulatorSessionResponse,
     TelegramSimulatorSendRequest, TelegramSimulatorSendResponse, TelegramSimulatorEventSchema,
-    PendingAIReplySchema, SendPendingAIReplyRequest, ConversationTurnStepMetricSchema,
+    PendingAIReplySchema, SendPendingAIReplyRequest, ConversationTurnMetricSchema, ConversationTurnStepMetricSchema,
     CustomerServiceSettingsSchema, CustomerServiceSettingsUpdateRequest,
     LLMSettingsSchema, LLMSettingsUpdateRequest,
     FileEntrySchema, FileEntryUpdateRequest,
@@ -55,6 +55,7 @@ from app.services.llm_service import (
     test_llm_connection, test_embedding_connection, test_image_connection,
     LLM_SETTING_KEYS, translate_text, detect_language,
 )
+from app.services.i18n import DEFAULT_LANGUAGE, get_localized_static_dict, get_localized_static_text, normalize_language_code
 from app.services.scene_service import (
     generate_scene_images,
     build_scene_record_response,
@@ -72,6 +73,7 @@ from app.services.customer_service_service import (
     cancel_pending_ai_reply,
     dispatch_due_pending_ai_replies,
 )
+from app.services.product_i18n import localize_product_payload, product_entry_to_payload, translation_map_from_entries
 from app.services.conversation_monitoring import (
     attach_turn_user_message,
     record_turn_step,
@@ -125,6 +127,129 @@ def _pending_draft_schema(draft: PendingAIReply | None) -> PendingAIReplySchema 
         created_at=draft.created_at,
         updated_at=draft.updated_at,
     )
+
+
+def _simulator_event_created_at(event: dict[str, Any]) -> datetime:
+    raw = event.get("created_at")
+    if not raw:
+        return datetime.utcnow()
+    try:
+        return datetime.fromisoformat(str(raw).replace("Z", "+00:00")).replace(tzinfo=None)
+    except Exception:
+        return datetime.utcnow()
+
+
+async def _persist_simulator_outbound_events(
+    db: AsyncSession,
+    conversation_id: int,
+    events: list[dict[str, Any]],
+    language: str,
+) -> None:
+    for event in events:
+        event_type = event.get("type") or "text"
+        created_at = _simulator_event_created_at(event)
+        caption = (event.get("caption") or "").strip()
+        url = (event.get("url") or "").strip()
+        is_product_card = caption.startswith("[#") or url.startswith("/api/products/")
+        if event_type == "photo" and is_product_card:
+            db.add(ConversationOutboundEvent(
+                conversation_id=conversation_id,
+                role=event.get("role") or MessageRole.ASSISTANT.value,
+                event_type=event_type,
+                text=event.get("text") or "",
+                caption=caption,
+                url=url,
+                filename=event.get("filename") or "",
+                parse_mode=event.get("parse_mode") or None,
+                created_at=created_at,
+            ))
+            continue
+
+        if event_type == "document":
+            db.add(ConversationOutboundEvent(
+                conversation_id=conversation_id,
+                role=event.get("role") or MessageRole.ASSISTANT.value,
+                event_type=event_type,
+                text=event.get("text") or "",
+                caption=caption,
+                url=url,
+                filename=event.get("filename") or "",
+                parse_mode=event.get("parse_mode") or None,
+                created_at=created_at,
+            ))
+            continue
+
+        text = (event.get("text") or "").strip()
+        if event_type == "text" and text.startswith("[#"):
+            db.add(Message(
+                conversation_id=conversation_id,
+                role=MessageRole.ASSISTANT,
+                content=text,
+                language=language,
+                created_at=created_at,
+            ))
+    await db.commit()
+
+
+def _simulator_timeline_event_key(event: TelegramSimulatorEventSchema) -> tuple[str, str, str] | None:
+    event_type = event.type or ""
+    role = event.role or MessageRole.ASSISTANT.value
+    if event_type in {"photo", "document"} and event.url:
+        return (event_type, role, event.url)
+    if event_type == "text" and event.text:
+        return (event_type, role, event.text.strip())
+    return None
+
+
+def _simulator_message_text_keys(messages: list[Message]) -> set[tuple[str, str, str]]:
+    keys: set[tuple[str, str, str]] = set()
+    for msg in messages:
+        content = (msg.content or "").strip()
+        if content:
+            keys.add(("text", msg.role.value if hasattr(msg.role, "value") else str(msg.role), content))
+    return keys
+
+
+def _merge_simulator_timeline_events(
+    outbound_events: list[TelegramSimulatorEventSchema],
+    scene_events: list[TelegramSimulatorEventSchema],
+    messages: list[Message],
+) -> list[TelegramSimulatorEventSchema]:
+    message_text_keys = _simulator_message_text_keys(messages)
+    seen_event_keys = {
+        key
+        for key in (_simulator_timeline_event_key(event) for event in outbound_events)
+        if key
+    }
+    merged = list(outbound_events)
+    for event in scene_events:
+        key = _simulator_timeline_event_key(event)
+        if key and (key in seen_event_keys or key in message_text_keys):
+            continue
+        if key:
+            seen_event_keys.add(key)
+        merged.append(event)
+    return merged
+
+
+async def _load_scene_generation_events(
+    db: AsyncSession,
+    conversation_id: int,
+    conversation_language: str,
+) -> list[TelegramSimulatorEventSchema]:
+    result = await db.execute(
+        select(SceneGenerationRecord)
+        .where(
+            SceneGenerationRecord.conversation_id == conversation_id,
+            SceneGenerationRecord.status.in_(["completed", "failed"]),
+            SceneGenerationRecord.deferred_delivery == False,
+        )
+        .order_by(SceneGenerationRecord.created_at)
+    )
+    events: list[TelegramSimulatorEventSchema] = []
+    for record in result.scalars().all():
+        events.extend(await _build_simulator_scene_events(record, conversation_language, db))
+    return events
 
 
 # ─── Auth ────────────────────────────────────────────────────────────────────
@@ -246,7 +371,7 @@ async def get_conversation(
         .where(ConversationOutboundEvent.conversation_id == conversation_id)
         .order_by(ConversationOutboundEvent.created_at)
     )
-    detail.outbound_events = [
+    outbound_events = [
         TelegramSimulatorEventSchema(
             id=f"outbound-{event.id}",
             role=event.role,
@@ -260,6 +385,20 @@ async def get_conversation(
         )
         for event in outbound_result.scalars().all()
     ]
+    if (conversation.telegram_chat_id or "").startswith(SIM_CHAT_PREFIX):
+        await cleanup_stale_pending_scene_generations()
+        scene_events = await _load_scene_generation_events(
+            db,
+            conversation_id,
+            conversation.language or "en",
+        )
+        detail.outbound_events = _merge_simulator_timeline_events(
+            outbound_events,
+            scene_events,
+            list(conversation.messages or []),
+        )
+    else:
+        detail.outbound_events = outbound_events
     state_result = await db.execute(
         select(ConversationProcessingState).where(ConversationProcessingState.conversation_id == conversation_id)
     )
@@ -268,9 +407,13 @@ async def get_conversation(
         select(ConversationTurnMetric)
         .where(ConversationTurnMetric.conversation_id == conversation_id)
         .order_by(desc(ConversationTurnMetric.started_at), desc(ConversationTurnMetric.id))
-        .limit(1)
     )
-    detail.latest_turn_metric = metric_result.scalar_one_or_none()
+    turn_metrics = metric_result.scalars().all()
+    detail.turn_metrics = [
+        ConversationTurnMetricSchema.model_validate(metric)
+        for metric in turn_metrics
+    ]
+    detail.latest_turn_metric = detail.turn_metrics[0] if detail.turn_metrics else None
     if detail.latest_turn_metric:
         step_result = await db.execute(
             select(ConversationTurnStepMetric)
@@ -545,14 +688,53 @@ SIM_CHAT_PREFIX = "sim-"
 
 
 def _scene_fallback_name(ui_lang: str) -> str:
-    return {
+    return get_localized_static_text({
         "zh": "该场景",
         "en": "requested setting",
         "ja": "ご希望の空間",
         "ko": "요청하신 공간",
         "es": "ambiente solicitado",
         "fr": "cadre demandé",
-    }.get(ui_lang, "requested setting")
+    }, ui_lang)
+
+
+async def _resolve_scene_record_language(
+    record: SceneGenerationRecord,
+    conversation_language: str,
+    db: AsyncSession,
+) -> str:
+    fallback = normalize_language_code(conversation_language, fallback=DEFAULT_LANGUAGE) or DEFAULT_LANGUAGE
+    if not record.conversation_id:
+        return fallback
+
+    request_text = (record.request_text or "").strip()
+    if request_text:
+        result = await db.execute(
+            select(Message.language)
+            .where(
+                Message.conversation_id == record.conversation_id,
+                Message.role == MessageRole.USER,
+                Message.content == record.request_text,
+                Message.created_at <= (record.created_at or datetime.utcnow()),
+            )
+            .order_by(desc(Message.created_at))
+            .limit(1)
+        )
+        language = normalize_language_code(result.scalar_one_or_none(), fallback=None)
+        if language:
+            return language
+
+    result = await db.execute(
+        select(Message.language)
+        .where(
+            Message.conversation_id == record.conversation_id,
+            Message.role == MessageRole.USER,
+            Message.created_at <= (record.created_at or datetime.utcnow()),
+        )
+        .order_by(desc(Message.created_at))
+        .limit(1)
+    )
+    return normalize_language_code(result.scalar_one_or_none(), fallback=fallback) or fallback
 
 
 async def _build_simulator_scene_events(
@@ -560,12 +742,13 @@ async def _build_simulator_scene_events(
     conversation_language: str,
     db: AsyncSession,
 ) -> list[TelegramSimulatorEventSchema]:
-    ui_lang = ui_scene_language(conversation_language)
+    record_language = await _resolve_scene_record_language(record, conversation_language, db)
+    ui_lang = ui_scene_language(record_language)
     created_at = record.updated_at or record.created_at or datetime.utcnow()
     events: list[TelegramSimulatorEventSchema] = []
 
     if record.status == "failed":
-        text = SCENE_FAILED_MESSAGES.get(ui_lang, SCENE_FAILED_MESSAGES["en"])
+        text = get_localized_static_text(SCENE_FAILED_MESSAGES, ui_lang)
         events.append(TelegramSimulatorEventSchema(
             id=f"scene-{record.id}-failed",
             role="assistant",
@@ -579,7 +762,7 @@ async def _build_simulator_scene_events(
         return events
 
     localized_scene = localize_scene_name(record.scene_name or "", ui_lang) or _scene_fallback_name(ui_lang)
-    intro_template = SCENE_RESULT_MESSAGES.get(ui_lang, SCENE_RESULT_MESSAGES["en"])
+    intro_template = get_localized_static_text(SCENE_RESULT_MESSAGES, ui_lang)
     events.append(TelegramSimulatorEventSchema(
         id=f"scene-{record.id}-intro",
         role="assistant",
@@ -599,17 +782,50 @@ async def _build_simulator_scene_events(
             created_at=created_at,
         ))
 
-    labels = SCENE_RESULT_LINK_LABELS.get(ui_lang, SCENE_RESULT_LINK_LABELS["en"])
+    labels = get_localized_static_dict(SCENE_RESULT_LINK_LABELS, ui_lang)
     lines: list[str] = []
-    primary = await db.get(ProductEntry, record.primary_product_id)
+    primary_result = await db.execute(
+        select(ProductEntry)
+        .options(
+            selectinload(ProductEntry.images),
+            selectinload(ProductEntry.translations),
+        )
+        .where(ProductEntry.id == record.primary_product_id)
+    )
+    primary = primary_result.scalar_one_or_none()
     if primary:
-        primary_link = primary.buy_url or primary.detail_url
+        localized_primary = localize_product_payload(product_entry_to_payload(primary), ui_lang)
+        primary_link = localized_primary.get("buy_url") or localized_primary.get("detail_url")
         if primary_link:
-            lines.append(f"{labels['main']}: [{primary.product_name}]({primary_link})")
-    for rel in resp.get("related_products", []):
-        link = rel.get("buy_url") or rel.get("detail_url")
-        if link:
-            lines.append(f"{labels['related']}: [{rel.get('product_name', '')}]({link})")
+            lines.append(f"{labels['main']}: [{localized_primary.get('name') or primary.product_name}]({primary_link})")
+
+    try:
+        related_ids = [int(item) for item in json.loads(record.related_product_ids_json or "[]") if str(item).isdigit()]
+    except (TypeError, ValueError, json.JSONDecodeError):
+        related_ids = []
+    if related_ids:
+        related_result = await db.execute(
+            select(ProductEntry)
+            .options(
+                selectinload(ProductEntry.images),
+                selectinload(ProductEntry.translations),
+            )
+            .where(ProductEntry.id.in_(related_ids))
+        )
+        related_by_id = {product.id: product for product in related_result.scalars().all()}
+        for product_id in related_ids:
+            product = related_by_id.get(product_id)
+            if not product:
+                continue
+            localized_product = localize_product_payload(product_entry_to_payload(product), ui_lang)
+            link = localized_product.get("buy_url") or localized_product.get("detail_url")
+            if link:
+                lines.append(f"{labels['related']}: [{localized_product.get('name') or product.product_name}]({link})")
+    else:
+        for rel in resp.get("related_products", []):
+            link = rel.get("buy_url") or rel.get("detail_url")
+            if link:
+                lines.append(f"{labels['related']}: [{rel.get('product_name', '')}]({link})")
     if lines:
         events.append(TelegramSimulatorEventSchema(
             id=f"scene-{record.id}-links",
@@ -634,7 +850,7 @@ async def simulator_create_session(
 
     sim_chat_id = f"{SIM_CHAT_PREFIX}{uuid.uuid4().hex[:12]}"
     sim_user_id = sim_chat_id
-    language = (req.language or "zh").strip()[:10] or "zh"
+    language = normalize_language_code(req.language or "zh-Hans") or DEFAULT_LANGUAGE
 
     conversation = await get_or_create_conversation(
         bot_id=req.bot_id,
@@ -649,7 +865,7 @@ async def simulator_create_session(
     welcome = bot.welcome_message or ""
     if not welcome:
         from app.telegram_bot import WELCOME_MESSAGES
-        welcome = WELCOME_MESSAGES.get(language, WELCOME_MESSAGES["en"])
+        welcome = get_localized_static_text(WELCOME_MESSAGES, language)
     await tg_save_message(conversation.id, MessageRole.ASSISTANT, welcome, language)
 
     return TelegramSimulatorSessionResponse(
@@ -729,6 +945,7 @@ async def simulator_send_message(
         typing_task=typing_task,
         metric_id=metric_id,
     )
+    await _persist_simulator_outbound_events(db, conversation_id, outbound.events, language)
 
     return TelegramSimulatorSendResponse(
         conversation_id=conversation_id,
@@ -789,21 +1006,17 @@ async def simulator_get_events(
         for event in outbound_result.scalars().all()
     ]
 
-    result = await db.execute(
-        select(SceneGenerationRecord)
-        .where(
-            SceneGenerationRecord.conversation_id == conversation_id,
-            SceneGenerationRecord.status.in_(["completed", "failed"]),
-            SceneGenerationRecord.deferred_delivery == False,
-        )
-        .order_by(SceneGenerationRecord.created_at)
+    scene_events = await _load_scene_generation_events(db, conversation_id, conversation.language or "en")
+    message_result = await db.execute(
+        select(Message)
+        .where(Message.conversation_id == conversation_id)
+        .order_by(Message.created_at)
     )
-    records = result.scalars().all()
-
-    events: list[TelegramSimulatorEventSchema] = list(outbound_events)
-    for record in records:
-        events.extend(await _build_simulator_scene_events(record, conversation.language or "en", db))
-    return events
+    return _merge_simulator_timeline_events(
+        outbound_events,
+        scene_events,
+        list(message_result.scalars().all()),
+    )
 
 
 # ─── Knowledge Base ──────────────────────────────────────────────────────────
@@ -1502,7 +1715,10 @@ async def list_products(
     db: AsyncSession = Depends(get_db),
     _: str = Depends(get_current_user),
 ):
-    query = select(ProductEntry).options(selectinload(ProductEntry.images))
+    query = select(ProductEntry).options(
+        selectinload(ProductEntry.images),
+        selectinload(ProductEntry.translations),
+    )
     if keyword:
         kw = f"%{keyword}%"
         from sqlalchemy import or_
@@ -1511,6 +1727,9 @@ async def list_products(
                 ProductEntry.product_name.ilike(kw),
                 ProductEntry.series_name.ilike(kw),
                 ProductEntry.description_text.ilike(kw),
+                ProductEntry.translations.any(ProductEntryTranslation.product_name.ilike(kw)),
+                ProductEntry.translations.any(ProductEntryTranslation.series_name.ilike(kw)),
+                ProductEntry.translations.any(ProductEntryTranslation.description_text.ilike(kw)),
             )
         )
     if brand:
@@ -1545,6 +1764,7 @@ async def list_products(
             serial_number=e.serial_number,
             description_text=e.description_text,
             buy_url=e.buy_url,
+            translations=translation_map_from_entries(e.translations),
             first_image_path=first_img,
             created_at=e.created_at,
             updated_at=e.updated_at,
@@ -1560,13 +1780,38 @@ async def get_product(
 ):
     result = await db.execute(
         select(ProductEntry)
-        .options(selectinload(ProductEntry.images))
+        .options(
+            selectinload(ProductEntry.images),
+            selectinload(ProductEntry.translations),
+        )
         .where(ProductEntry.id == product_id)
     )
     entry = result.scalar_one_or_none()
     if not entry:
         raise HTTPException(status_code=404, detail="Product not found")
-    return ProductEntrySchema.model_validate(entry)
+    return ProductEntrySchema(
+        id=entry.id,
+        brand=entry.brand,
+        product_id_ext=entry.product_id_ext,
+        product_name=entry.product_name,
+        series_name=entry.series_name,
+        space=entry.space,
+        style=entry.style,
+        color=entry.color,
+        material=entry.material,
+        size=entry.size,
+        price_display=entry.price_display,
+        original_price=entry.original_price,
+        serial_number=entry.serial_number,
+        description_text=entry.description_text,
+        detail_content_text=entry.detail_content_text,
+        buy_url=entry.buy_url,
+        detail_url=entry.detail_url,
+        translations=translation_map_from_entries(entry.translations),
+        created_at=entry.created_at,
+        updated_at=entry.updated_at,
+        images=[ProductImageSchema.model_validate(img) for img in entry.images],
+    )
 
 
 @router.get("/products/{product_id}/images/{order}")
