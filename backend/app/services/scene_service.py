@@ -185,6 +185,13 @@ def _product_image_reference_value(image: ProductImage | None) -> str:
     return f"data:{mime_type};base64,{encoded}"
 
 
+def _normalize_dashscope_image_reference(value: str) -> str:
+    reference = (value or "").strip()
+    if reference.startswith("data:") and "," in reference:
+        return reference.split(",", 1)[1].strip()
+    return reference
+
+
 def _compact_text(value: str | None, limit: int) -> str:
     text = " ".join((value or "").split())
     if len(text) <= limit:
@@ -379,9 +386,14 @@ async def _generate_dashscope_kling_images(
 
     content: list[dict[str, str]] = [{"text": prompt}]
     if reference_image_urls:
+        reference_count = 0
         for url in reference_image_urls[:5]:
-            content.append({"image": url})
-        if "omni" not in model:
+            image_reference = _normalize_dashscope_image_reference(url)
+            if not image_reference:
+                continue
+            content.append({"image": image_reference})
+            reference_count += 1
+        if reference_count and "omni" not in model:
             model = model.replace("kling-v3-image-generation", "kling-v3-omni-image-generation")
             logger.info("Switched to omni model for multi-image reference: %s", model)
 
