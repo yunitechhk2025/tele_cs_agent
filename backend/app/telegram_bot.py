@@ -1636,14 +1636,6 @@ async def process_customer_text_message(
         chat_history = await get_chat_history(conversation_id)
         repeated_question = _is_repeated_user_question(chat_history, user_message)
 
-        # 先把最近的对话历史读出来，后续意图分类、生成回复、判重都用同一份。
-        # 这是修复"AI 不联系上下文"的关键：原来历史只在最末段 generate_response 之前才加载，
-        # 意图路由 / 商品识别 / 场景请求识别等所有前置 LLM 调用都看不到历史，
-        # 导致"这个多少钱""再来一个""价格呢"等省略式追问被误判。
-        await stage("loading_chat_history")
-        chat_history = await get_chat_history(conversation_id)
-        repeated_question = _is_repeated_user_question(chat_history, user_message)
-
         await stage("classifying_intent_fast")
         has_pending_scene_confirmation = bool(scene_state and scene_state.pending_confirmation)
         intent = classify_customer_intent_fast(
