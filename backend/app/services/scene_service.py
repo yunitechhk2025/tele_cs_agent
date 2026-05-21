@@ -179,7 +179,10 @@ def _product_image_reference_value(image: ProductImage | None) -> str:
     if not os.path.exists(full_path):
         return ""
 
-    return _public_product_image_url(image)
+    mime_type = _mime_type_from_filename(full_path)
+    with open(full_path, "rb") as fh:
+        encoded = base64.b64encode(fh.read()).decode("ascii")
+    return f"data:{mime_type};base64,{encoded}"
 
 
 def _is_public_http_url(value: str | None) -> bool:
@@ -210,7 +213,16 @@ def _public_product_image_url(image: ProductImage) -> str:
 
 def _normalize_dashscope_image_reference(value: str) -> str:
     reference = (value or "").strip()
-    return reference if _is_public_http_url(reference) else ""
+    if _is_public_http_url(reference):
+        return reference
+    if reference.startswith("data:image/") and ";base64," in reference:
+        _, encoded = reference.split(",", 1)
+        try:
+            base64.b64decode(encoded, validate=True)
+        except Exception:
+            return ""
+        return reference
+    return ""
 
 
 def _compact_text(value: str | None, limit: int) -> str:
@@ -418,7 +430,7 @@ async def _generate_dashscope_kling_images(
             reference_count += 1
         if skipped_reference_count:
             logger.info(
-                "Skipped %d non-public/non-URL DashScope reference image(s)",
+                "Skipped %d invalid DashScope reference image(s)",
                 skipped_reference_count,
             )
         if reference_count and "omni" not in model:
