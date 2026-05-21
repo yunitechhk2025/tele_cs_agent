@@ -44,6 +44,11 @@ from app.services.customer_service_service import (
     get_customer_service_settings,
     create_pending_ai_reply,
 )
+from app.services.recommendation_memory import (
+    get_recent_recommendation_turns,
+    record_recommendation_turn,
+    resolve_product_reference_from_history,
+)
 from app.services.conversation_monitoring import (
     attach_turn_user_message,
     complete_turn_metric,
@@ -115,6 +120,15 @@ CLARIFICATION_MESSAGES = {
     "ko": "정확히 처리하려면 조금 더 구체적인 정보가 필요합니다. 제품, 공간, 스타일 또는 구체적인 질문을 알려주시겠어요?",
     "es": "Necesito un poco más de detalle para atenderlo con precisión. ¿Podría indicar el producto, espacio, estilo o pregunta específica?",
     "fr": "J'ai besoin d'un peu plus de précisions pour traiter votre demande correctement. Pouvez-vous indiquer le produit, l'espace, le style ou la question précise ?",
+}
+
+PRODUCT_REFERENCE_CLARIFICATION_MESSAGES = {
+    "zh": "我没能在前面的推荐里准确定位到您说的这款商品。请回复商品名称，或说明是哪一轮推荐里的第几款。",
+    "en": "I could not identify that product from the previous recommendations. Please send the product name, or specify which recommendation round and slot it was.",
+    "ja": "前回までのおすすめから該当商品を特定できませんでした。商品名、またはどの回の何番目の商品かを教えてください。",
+    "ko": "이전 추천 내역에서 해당 제품을 정확히 찾지 못했습니다. 제품명 또는 몇 번째 추천의 몇 번째 제품인지 알려 주세요.",
+    "es": "No pude identificar ese producto entre las recomendaciones anteriores. Envíeme el nombre del producto o indique de qué ronda y posición se trata.",
+    "fr": "Je n'ai pas pu identifier ce produit dans les recommandations précédentes. Envoyez le nom du produit, ou indiquez le tour de recommandation et le numéro.",
 }
 
 TOPIC_SWITCH_PREFIX = {
@@ -1601,6 +1615,7 @@ async def process_customer_text_message(
         await stage("loading_scene_state")
         scene_state = await get_scene_state(conversation_id)
         conversation_memory = await get_conversation_memory(conversation_id)
+        recommendation_turns = await get_recent_recommendation_turns(conversation_id)
         recent_scene_product_ids: list[int] = []
         latest_recommended_product_ids: list[int] = []
         if conversation_memory:
@@ -1824,10 +1839,32 @@ async def process_customer_text_message(
                 products_by_id_for_memory,
             )
         scene_reference_product_ids = latest_recommended_product_ids or recent_scene_product_ids
+        history_reference = resolve_product_reference_from_history(
+            user_message,
+            recommendation_turns,
+            products_by_id_for_memory,
+        )
+        history_target_product_id = history_reference.get("target_product_id")
+        history_turn_product_ids = [
+            int(x) for x in (history_reference.get("turn_product_ids") or [])
+            if str(x).isdigit()
+        ]
+        history_reference_is_relevant = (
+            bool(history_target_product_id)
+            and not is_product_recommendation_intent
+            and (
+                intent_name in {"product_intro", "general_question", "scene_image_request", "scene_image_confirmation"}
+                or "product_intro" in secondary_intents
+                or "scene_image_request" in secondary_intents
+                or is_recent_product_followup(user_message)
+            )
+        )
         if not context_product_id:
             target_slot = intent_slots.get("target_product_id")
             if target_slot is not None and str(target_slot).strip().isdigit():
                 context_product_id = int(target_slot)
+        if history_reference_is_relevant:
+            context_product_id = int(history_target_product_id)
         if (
             not context_product_id
             and not is_product_recommendation_intent
@@ -1857,6 +1894,8 @@ async def process_customer_text_message(
             "target_product_id": intent_slots.get("target_product_id"),
             "reason": str(intent.get("reason") or ""),
         }
+        if history_reference_is_relevant:
+            scene_req["target_product_id"] = int(history_target_product_id)
         if intent_name in {"scene_image_request", "scene_image_confirmation"} or "scene_image_request" in secondary_intents:
             local_scene_name = infer_requested_scene_name(user_message, turn_preferences)
             local_style_hint = infer_requested_style_hint(user_message, turn_preferences)
@@ -1891,6 +1930,41 @@ async def process_customer_text_message(
                 if analyzed_scene.get("reason") and not scene_req["reason"]:
                     scene_req["reason"] = str(analyzed_scene.get("reason") or "")
 
+        should_clarify_product_reference = (
+            bool(history_reference.get("needs_clarification"))
+            and not is_product_recommendation_intent
+            and (
+                bool(scene_req.get("is_scene_request"))
+                or intent_name in {"product_intro", "scene_image_request", "scene_image_confirmation"}
+                or "product_intro" in secondary_intents
+                or "scene_image_request" in secondary_intents
+                or is_recent_product_followup(user_message)
+            )
+        )
+        if should_clarify_product_reference:
+            clarification_text = get_localized_static_text(PRODUCT_REFERENCE_CLARIFICATION_MESSAGES, language)
+            stop_typing.set()
+            await typing_task
+            if service_mode == "ai_assist":
+                await stage("creating_ai_draft", "商品引用需确认")
+                await first_response("product_reference_clarification_draft")
+                await create_pending_ai_reply(conversation_id, clarification_text, language)
+                if run_notify_admin and notify_bot and conversation:
+                    await notify_admin(
+                        bot_id,
+                        conversation,
+                        user_message,
+                        notify_bot,
+                        is_followup=(current_status in {ConversationStatus.PENDING_HUMAN, ConversationStatus.HUMAN_HANDLING}),
+                    )
+                await finish("product_reference_clarification_draft", "商品引用无法确定，等待人工确认")
+                return
+            await first_response("product_reference_clarification")
+            await outbound.reply_text(clarification_text)
+            await save_message(conversation_id, MessageRole.ASSISTANT, clarification_text, language)
+            await finish("product_reference_clarification", "商品引用无法确定")
+            return
+
         if scene_state and scene_state.pending_confirmation:
             local_referenced_id = resolve_recommended_product_reference_locally(
                 user_message,
@@ -1901,7 +1975,7 @@ async def process_customer_text_message(
                 all_products,
                 scene_reference_product_ids,
             )
-            referenced_id = local_referenced_id or resolved_ref.get("target_product_id")
+            referenced_id = scene_req.get("target_product_id") or history_target_product_id or local_referenced_id or resolved_ref.get("target_product_id")
             selection_only = is_product_selection_only(user_message)
             is_scene_followup_intent = (
                 bool(scene_req.get("is_scene_request"))
@@ -2067,7 +2141,7 @@ async def process_customer_text_message(
                 await save_scene_state(
                     conversation_id=conversation_id,
                     primary_product_id=context_product.id,
-                    recommended_product_ids=recent_scene_product_ids or [context_product.id],
+                    recommended_product_ids=history_turn_product_ids or latest_recommended_product_ids or [context_product.id],
                     suggested_scene=context_product.space,
                     suggested_style=context_product.style,
                     pending_confirmation=False,
@@ -2109,7 +2183,7 @@ async def process_customer_text_message(
                 scene_reference_product_ids,
             )
             referenced_id = resolved_ref.get("target_product_id")
-            target_id = scene_req.get("target_product_id") or referenced_id or (scene_state.primary_product_id if scene_state else None)
+            target_id = scene_req.get("target_product_id") or history_target_product_id or referenced_id or (scene_state.primary_product_id if scene_state else None)
             if target_id:
                 async with AsyncSessionLocal() as db:
                     primary_product = await db.get(ProductEntry, int(target_id))
@@ -2310,6 +2384,13 @@ async def process_customer_text_message(
                     active_topic="product_recommendation",
                     active_product_id=primary_product["id"],
                     preferences=turn_preferences,
+                )
+                await record_recommendation_turn(
+                    conversation_id=conversation_id,
+                    request_text=user_message,
+                    product_ids=selected_ids,
+                    language=language,
+                    products=selected_products,
                 )
                 logger.info(f"[Bot {bot_id}] Sent {len(selected_products)} product recommendations")
                 await finish("product_recommendation", "商品推荐已发送")

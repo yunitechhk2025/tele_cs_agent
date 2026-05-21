@@ -22,7 +22,7 @@ from app.models import (
     Conversation, Message, KnowledgeEntry, Contract, ContractTemplate, FileEntry, TelegramBot,
     ConversationStatus, MessageRole, ProductEntry, ProductEntryTranslation, ProductImage, SceneGenerationImage, SceneGenerationRecord,
     ConversationSceneState, ConversationOutboundEvent, PendingAIReply,
-    ConversationProcessingState, ConversationTurnMetric, ConversationTurnStepMetric,
+    ConversationProcessingState, ConversationTurnMetric, ConversationTurnStepMetric, ConversationRecommendationTurn,
 )
 from app.schemas import (
     LoginRequest, TokenResponse, ConversationSchema, ConversationDetailSchema,
@@ -635,6 +635,7 @@ async def delete_conversation(
     await db.execute(delete(ConversationOutboundEvent).where(ConversationOutboundEvent.conversation_id == conversation_id))
     await db.execute(delete(PendingAIReply).where(PendingAIReply.conversation_id == conversation_id))
     await db.execute(delete(ConversationSceneState).where(ConversationSceneState.conversation_id == conversation_id))
+    await db.execute(delete(ConversationRecommendationTurn).where(ConversationRecommendationTurn.conversation_id == conversation_id))
     await db.execute(delete(Contract).where(Contract.conversation_id == conversation_id))
     await db.execute(delete(Message).where(Message.conversation_id == conversation_id))
     await db.delete(conversation)

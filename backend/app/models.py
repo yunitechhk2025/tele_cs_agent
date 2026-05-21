@@ -242,6 +242,22 @@ class ConversationMemory(Base):
     active_product = relationship("ProductEntry", foreign_keys=[active_product_id])
 
 
+class ConversationRecommendationTurn(Base):
+    __tablename__ = "conversation_recommendation_turns"
+
+    id = Column(Integer, primary_key=True, index=True)
+    conversation_id = Column(Integer, ForeignKey("conversations.id"), index=True, nullable=False)
+    turn_index = Column(Integer, default=1, nullable=False)
+    request_text = Column(Text, default="")
+    language = Column(String(10), default="en")
+    category_profile_json = Column(Text, default="{}")
+    product_ids_json = Column(Text, default="[]")
+    items_json = Column(Text, default="[]")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    conversation = relationship("Conversation")
+
+
 class ConversationProcessingState(Base):
     __tablename__ = "conversation_processing_states"
 

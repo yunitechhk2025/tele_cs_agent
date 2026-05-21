@@ -19,6 +19,7 @@ from app.models import (
     SystemSetting,
 )
 from app.services import bot_manager
+from app.services.recommendation_memory import record_recommendation_turn
 
 logger = logging.getLogger(__name__)
 
@@ -210,10 +211,11 @@ async def _send_product_recommendation_payload(
     if scene_state:
         from app.telegram_bot import save_scene_state
 
+        scene_state_product_ids = [int(x) for x in (scene_state.get("recommended_product_ids") or [])]
         await save_scene_state(
             conversation_id=conversation.id,
             primary_product_id=scene_state.get("primary_product_id"),
-            recommended_product_ids=[int(x) for x in (scene_state.get("recommended_product_ids") or [])],
+            recommended_product_ids=scene_state_product_ids,
             suggested_scene=scene_state.get("suggested_scene") or "",
             suggested_style=scene_state.get("suggested_style") or "",
             pending_confirmation=bool(scene_state.get("pending_confirmation")),
@@ -222,6 +224,21 @@ async def _send_product_recommendation_payload(
             active_topic=scene_state.get("active_topic") or "",
             active_product_id=scene_state.get("active_product_id"),
             preferences=scene_state.get("preferences") or None,
+        )
+        card_products = [
+            {
+                "id": card.get("product_id"),
+                "name": (card.get("caption") or "").splitlines()[0].replace("*", "").strip(),
+            }
+            for card in cards
+            if card.get("product_id") is not None
+        ]
+        await record_recommendation_turn(
+            conversation_id=conversation.id,
+            request_text=scene_state.get("last_customer_request") or draft.draft_text or "",
+            product_ids=scene_state_product_ids or [int(card["product_id"]) for card in cards if str(card.get("product_id") or "").isdigit()],
+            language=scene_state.get("reply_language") or draft.language,
+            products=card_products,
         )
     return draft.draft_text
 
