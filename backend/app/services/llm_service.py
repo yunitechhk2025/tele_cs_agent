@@ -814,8 +814,12 @@ async def select_scene_bundle_products(
     candidate_products: list[dict[str, Any]],
     scene_name: str,
     style_hint: str,
+    max_products: int = 2,
 ) -> list[int]:
     if not candidate_products:
+        return []
+    max_products = max(0, int(max_products))
+    if max_products == 0:
         return []
     catalog = "\n".join(
         f"ID:{p['id']} | {_product_catalog_alias(p, 180)} | category:{p.get('category', '')}"
@@ -828,7 +832,7 @@ async def select_scene_bundle_products(
                     "role": "system",
                     "content": (
                         "You are selecting complementary furniture products for a styled scene image.\n"
-                        "Choose up to 3 products that match the primary product and scene.\n"
+                        f"Choose up to {max_products} products that match the primary product and scene.\n"
                         "Prioritize products that fit the same room and style and can logically appear together.\n"
                         "Every complementary product MUST be a different product category from the main product.\n"
                         "Never choose another sofa for a sofa, another bed for a bed, another dining table for a dining table, etc.\n"
@@ -858,7 +862,7 @@ async def select_scene_bundle_products(
                 continue
             if val in valid_ids and val not in out:
                 out.append(val)
-        return out[:3]
+        return out[:max_products]
     except Exception as e:
         logger.error(f"Scene bundle product selection failed: {e}")
         return []

@@ -27,6 +27,7 @@ from app.services.conversation_monitoring import set_conversation_stage
 logger = logging.getLogger(__name__)
 settings = get_settings()
 SCENE_OUTPUT_COUNT = 1
+DEFAULT_SCENE_RELATED_PRODUCT_COUNT = 2
 CUSTOMER_SCENE_TIMEOUT_SECONDS = 300
 BACKEND_SCENE_TIMEOUT_SECONDS = 600
 MAX_DASHSCOPE_PROMPT_CHARS = 2400
@@ -134,11 +135,15 @@ def _filter_distinct_category_related_ids(
     primary_product: ProductEntry,
     candidate_ids: list[int],
     all_products_map: dict[int, dict[str, Any]],
+    max_products: int = 3,
 ) -> list[int]:
     primary_category = _infer_product_category(primary_product)
+    max_products = max(0, int(max_products))
     out: list[int] = []
     seen_categories: set[str] = set()
     for product_id in candidate_ids:
+        if len(out) >= max_products:
+            break
         if int(product_id) == primary_product.id:
             continue
         product = all_products_map.get(int(product_id))
@@ -151,8 +156,6 @@ def _filter_distinct_category_related_ids(
             continue
         out.append(int(product_id))
         seen_categories.add(category)
-        if len(out) >= 3:
-            break
     return out
 
 
@@ -1068,6 +1071,11 @@ async def _run_scene_generation_for_record(
         ][:30]
 
     selected_related_ids: list[int] | None = related_product_ids
+    related_product_limit = (
+        DEFAULT_SCENE_RELATED_PRODUCT_COUNT
+        if selected_related_ids is None
+        else len(selected_related_ids)
+    )
     if selected_related_ids is None:
         bundle_start = time.perf_counter()
         try:
@@ -1088,6 +1096,7 @@ async def _run_scene_generation_for_record(
                     candidate_products=shortlist,
                     scene_name=scene_name,
                     style_hint=style_hint,
+                    max_products=DEFAULT_SCENE_RELATED_PRODUCT_COUNT,
                 ),
                 timeout=SCENE_BUNDLE_SELECTION_TIMEOUT_SECONDS,
             )
@@ -1107,8 +1116,9 @@ async def _run_scene_generation_for_record(
             )
     selected_related_ids = _filter_distinct_category_related_ids(
         primary_product=primary_product,
-        candidate_ids=selected_related_ids or [int(p["id"]) for p in shortlist[:3]],
+        candidate_ids=selected_related_ids or [int(p["id"]) for p in shortlist[:DEFAULT_SCENE_RELATED_PRODUCT_COUNT]],
         all_products_map=all_products_map,
+        max_products=related_product_limit,
     )
 
     related_products = await _load_products(selected_related_ids)
