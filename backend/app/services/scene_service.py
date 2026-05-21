@@ -172,7 +172,7 @@ def _mime_type_from_filename(name: str) -> str:
 def _product_image_reference_value(image: ProductImage | None) -> str:
     if not image:
         return ""
-    if image.source_url:
+    if _is_public_http_url(image.source_url):
         return image.source_url
 
     path = image.local_path or ""
@@ -186,6 +186,46 @@ def _product_image_reference_value(image: ProductImage | None) -> str:
     with open(full_path, "rb") as fh:
         encoded = base64.b64encode(fh.read()).decode("ascii")
     return f"data:{mime_type};base64,{encoded}"
+
+
+def _is_public_http_url(value: str | None) -> bool:
+    raw = (value or "").strip()
+    if not raw:
+        return False
+    parsed = urlparse(raw)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return False
+    host = (parsed.hostname or "").lower()
+    return host not in {"localhost", "127.0.0.1", "0.0.0.0", "::1", "backend", "frontend"}
+
+
+def _public_asset_base_url() -> str:
+    for raw in (settings.BACKEND_URL, settings.FRONTEND_URL):
+        base = (raw or "").strip().rstrip("/")
+        if _is_public_http_url(base):
+            return base
+    return ""
+
+
+def _public_product_image_url(image: ProductImage) -> str:
+    base = _public_asset_base_url()
+    if not base:
+        return ""
+    return f"{base}/api/products/{image.product_entry_id}/images/{image.display_order}"
+
+
+def _normalize_dashscope_image_reference(value: str) -> str:
+    reference = (value or "").strip()
+    if _is_public_http_url(reference):
+        return reference
+    if reference.startswith("data:image/") and ";base64," in reference:
+        _, encoded = reference.split(",", 1)
+        try:
+            base64.b64decode(encoded, validate=True)
+        except Exception:
+            return ""
+        return reference
+    return ""
 
 
 def _compact_text(value: str | None, limit: int) -> str:
@@ -382,9 +422,21 @@ async def _generate_dashscope_kling_images(
 
     content: list[dict[str, str]] = [{"text": prompt}]
     if reference_image_urls:
+        reference_count = 0
+        skipped_reference_count = 0
         for url in reference_image_urls[:5]:
-            content.append({"image": url})
-        if "omni" not in model:
+            image_reference = _normalize_dashscope_image_reference(url)
+            if not image_reference:
+                skipped_reference_count += 1
+                continue
+            content.append({"image": image_reference})
+            reference_count += 1
+        if skipped_reference_count:
+            logger.info(
+                "Skipped %d invalid DashScope reference image(s)",
+                skipped_reference_count,
+            )
+        if reference_count and "omni" not in model:
             model = model.replace("kling-v3-image-generation", "kling-v3-omni-image-generation")
             logger.info("Switched to omni model for multi-image reference: %s", model)
 

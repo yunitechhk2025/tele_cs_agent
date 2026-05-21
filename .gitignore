@@ -19,7 +19,11 @@ frontend/dist/
 /package.json
 
 # External repos
-Furniture-Crawler/
+# Keep Furniture-Crawler data in repo for one-step ECS deployment
+!Furniture-Crawler/
+!Furniture-Crawler/Furniture-Crawler/
+!Furniture-Crawler/Furniture-Crawler/**
+Furniture-Crawler/__MACOSX/
 
 # Env & secrets
 .env
