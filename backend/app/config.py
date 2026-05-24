@@ -10,6 +10,10 @@ class Settings(BaseSettings):
     OPENAI_BASE_URL: str = "https://api.openai.com/v1"
     OPENAI_MODEL: str = "gpt-4o"
     EMBEDDING_MODEL: str = "text-embedding-3-small"
+    PROFILE_LLM_API_KEY: str = ""
+    PROFILE_LLM_BASE_URL: str = ""
+    PROFILE_LLM_MODEL: str = ""
+    PROFILE_LLM_PROVIDER: str = ""
 
     DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@db:5432/cs_agent"
 

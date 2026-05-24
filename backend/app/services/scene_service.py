@@ -23,6 +23,7 @@ from app.services.llm_service import (
     select_scene_bundle_products,
 )
 from app.services.conversation_monitoring import set_conversation_stage
+from app.services.product_taxonomy import product_category_values
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -111,6 +112,9 @@ def _resolution_from_size(size: str) -> str:
 
 def _infer_product_category(product: ProductEntry | dict[str, Any]) -> str:
     if isinstance(product, dict):
+        categories = product_category_values(product)
+        if categories:
+            return categories[0]
         fields = [
             str(product.get("name") or ""),
             str(product.get("series") or ""),
@@ -118,6 +122,9 @@ def _infer_product_category(product: ProductEntry | dict[str, Any]) -> str:
             str(product.get("space") or ""),
         ]
     else:
+        primary_category = (getattr(product, "primary_category", "") or "").strip()
+        if primary_category:
+            return primary_category
         fields = [
             product.product_name or "",
             getattr(product, "series_name", "") or "",

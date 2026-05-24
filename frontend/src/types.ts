@@ -185,6 +185,13 @@ export interface LLMSettings {
   image_size: string;
   image_quality: string;
   image_style: string;
+  profile_provider: string;
+  profile_api_key: string;
+  profile_base_url: string;
+  profile_model: string;
+  profile_temperature: number;
+  profile_max_tokens: number;
+  profile_timeout_seconds: number;
   temperature: number;
   max_tokens: number;
 }
