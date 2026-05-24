@@ -56,6 +56,11 @@ const MODEL_PLACEHOLDERS: Record<string, string> = {
   custom: '你的模型名称',
 };
 
+const PROFILE_PROVIDER_OPTIONS = [
+  { value: '', label: '复用主模型配置' },
+  ...PROVIDER_OPTIONS,
+] as const;
+
 function buildLLMPayload(values: LLMSettings): Partial<LLMSettings> {
   const payload: Partial<LLMSettings> = {
     provider: values.provider,
@@ -68,6 +73,12 @@ function buildLLMPayload(values: LLMSettings): Partial<LLMSettings> {
     image_size: values.image_size,
     image_quality: values.image_quality,
     image_style: values.image_style,
+    profile_provider: values.profile_provider,
+    profile_base_url: values.profile_base_url,
+    profile_model: values.profile_model,
+    profile_temperature: values.profile_temperature,
+    profile_max_tokens: values.profile_max_tokens,
+    profile_timeout_seconds: values.profile_timeout_seconds,
     temperature: values.temperature,
     max_tokens: values.max_tokens,
   };
@@ -79,6 +90,9 @@ function buildLLMPayload(values: LLMSettings): Partial<LLMSettings> {
   }
   if (values.image_api_key && !values.image_api_key.includes('****')) {
     payload.image_api_key = values.image_api_key;
+  }
+  if (values.profile_api_key && !values.profile_api_key.includes('****')) {
+    payload.profile_api_key = values.profile_api_key;
   }
   return payload;
 }
@@ -95,6 +109,7 @@ export default function Settings() {
   const [testingLLM, setTestingLLM] = useState(false);
   const [testingEmbedding, setTestingEmbedding] = useState(false);
   const [testingImage, setTestingImage] = useState(false);
+  const [testingProfile, setTestingProfile] = useState(false);
   const [testResult, setTestResult] = useState<{
     open: boolean;
     ok: boolean;
@@ -103,6 +118,7 @@ export default function Settings() {
   }>({ open: false, ok: false, text: '', title: '' });
 
   const provider = Form.useWatch('provider', form) as string | undefined;
+  const profileProvider = Form.useWatch('profile_provider', form) as string | undefined;
   const temperature = Form.useWatch('temperature', form) as number | undefined;
 
   const baseUrlHint = useMemo(
@@ -113,6 +129,16 @@ export default function Settings() {
   const modelPlaceholder = useMemo(
     () => (provider ? MODEL_PLACEHOLDERS[provider] ?? MODEL_PLACEHOLDERS.custom : ''),
     [provider],
+  );
+
+  const profileBaseUrlHint = useMemo(
+    () => (profileProvider ? BASE_URL_HINTS[profileProvider] ?? BASE_URL_HINTS.custom : '留空则复用主模型接口地址'),
+    [profileProvider],
+  );
+
+  const profileModelPlaceholder = useMemo(
+    () => (profileProvider ? MODEL_PLACEHOLDERS[profileProvider] ?? MODEL_PLACEHOLDERS.custom : '留空则复用主模型；推荐 qwen3.6-flash'),
+    [profileProvider],
   );
 
   const loadSettings = useCallback(async () => {
@@ -192,6 +218,21 @@ export default function Settings() {
       message.error('生图模型测试失败');
     } finally {
       setTestingImage(false);
+    }
+  };
+
+  const handleTestProfile = async () => {
+    try {
+      const values = await form.validateFields();
+      setTestingProfile(true);
+      const res = await settingsApi.testProfile(buildLLMPayload(values));
+      const { ok, message: msg } = res.data;
+      setTestResult({ open: true, ok, text: msg, title: ok ? '需求解析小模型连接成功' : '需求解析小模型连接失败' });
+    } catch (e) {
+      if (e && typeof e === 'object' && 'errorFields' in e) return;
+      message.error('需求解析小模型测试失败');
+    } finally {
+      setTestingProfile(false);
     }
   };
 
@@ -317,6 +358,10 @@ export default function Settings() {
               disabled={loading}
               initialValues={{
                 provider: 'openai',
+                profile_provider: '',
+                profile_temperature: 0,
+                profile_max_tokens: 500,
+                profile_timeout_seconds: 4,
                 temperature: 0.7,
                 max_tokens: 2048,
               }}
@@ -370,6 +415,83 @@ export default function Settings() {
                   disabled={loading}
                 >
                   测试主模型
+                </Button>
+              </Form.Item>
+
+              <Divider orientation="left" plain>
+                需求解析小模型
+              </Divider>
+
+              <Alert
+                type="info"
+                showIcon
+                style={{ marginBottom: 16 }}
+                message="用于把客户原话解析为商品推荐/场景图生成的结构化 profile。字段留空时复用主模型配置；推荐使用 DashScope Qwen 小模型，例如 qwen3.6-flash。"
+              />
+
+              <Form.Item
+                label="服务商"
+                name="profile_provider"
+                extra={<Text type="secondary">留空表示复用上方主模型服务商。</Text>}
+              >
+                <Select options={[...PROFILE_PROVIDER_OPTIONS]} placeholder="复用主模型配置" />
+              </Form.Item>
+
+              <Form.Item label="API 密钥" name="profile_api_key">
+                <Input.Password
+                  placeholder="可选 — 不填则复用主 API 密钥"
+                  autoComplete="off"
+                />
+              </Form.Item>
+
+              <Form.Item
+                label="接口地址"
+                name="profile_base_url"
+                extra={<Text type="secondary">提示：{profileBaseUrlHint}</Text>}
+              >
+                <Input placeholder={profileBaseUrlHint} />
+              </Form.Item>
+
+              <Form.Item
+                label="模型名称"
+                name="profile_model"
+                extra={<Text type="secondary">推荐：qwen3.6-flash；也可使用 qwen-flash-latest / qwen-turbo-latest。</Text>}
+              >
+                <Input placeholder={profileModelPlaceholder} />
+              </Form.Item>
+
+              <Form.Item
+                label="温度"
+                name="profile_temperature"
+                extra="结构化 JSON 解析建议保持 0。"
+              >
+                <InputNumber min={0} max={1} step={0.1} style={{ width: 180 }} />
+              </Form.Item>
+
+              <Form.Item
+                label="最大令牌数"
+                name="profile_max_tokens"
+                extra="只用于短 JSON，通常 300-800 足够。"
+              >
+                <InputNumber min={100} max={2000} style={{ width: 180 }} />
+              </Form.Item>
+
+              <Form.Item
+                label="超时秒数"
+                name="profile_timeout_seconds"
+                extra="解析超时会自动回退到本地多语言规则。"
+              >
+                <InputNumber min={1} max={30} step={0.5} style={{ width: 180 }} />
+              </Form.Item>
+
+              <Form.Item wrapperCol={{ offset: 6, span: 14 }}>
+                <Button
+                  icon={<ThunderboltOutlined />}
+                  onClick={() => void handleTestProfile()}
+                  loading={testingProfile}
+                  disabled={loading}
+                >
+                  测试需求解析小模型
                 </Button>
               </Form.Item>
 

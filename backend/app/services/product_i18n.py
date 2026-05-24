@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Iterable
 
 from app.services.i18n import SUPPORTED_LANGUAGE_SET, normalize_language_code, to_traditional_chinese
+from app.services.product_taxonomy import infer_product_metadata
 
 
 PRODUCT_TRANSLATABLE_FIELDS = (
@@ -152,7 +153,31 @@ def product_entry_to_payload(entry: Any) -> dict[str, Any]:
         "detail_url": getattr(entry, "detail_url", "") or "",
         "image_paths": [getattr(img, "local_path", "") for img in images if getattr(img, "local_path", "")],
         "translations": translation_map_from_entries(getattr(entry, "translations", []) or []),
+        "primary_category": getattr(entry, "primary_category", "") or "",
+        "secondary_categories_json": getattr(entry, "secondary_categories_json", "") or "[]",
+        "normalized_brand": getattr(entry, "normalized_brand", "") or "",
+        "normalized_space": getattr(entry, "normalized_space", "") or "",
+        "normalized_style": getattr(entry, "normalized_style", "") or "",
+        "normalized_color": getattr(entry, "normalized_color", "") or "",
+        "normalized_materials_json": getattr(entry, "normalized_materials_json", "") or "[]",
+        "category_confidence": getattr(entry, "category_confidence", 0.0) or 0.0,
+        "classification_source": getattr(entry, "classification_source", "") or "",
+        "classification_reason": getattr(entry, "classification_reason", "") or "",
     }
+    if not payload["primary_category"]:
+        inferred = infer_product_metadata(payload)
+        payload.update({
+            "primary_category": inferred["primary_category"],
+            "secondary_categories": inferred["secondary_categories"],
+            "normalized_brand": inferred["normalized_brand"],
+            "normalized_space": inferred["normalized_space"],
+            "normalized_style": inferred["normalized_style"],
+            "normalized_color": inferred["normalized_color"],
+            "normalized_materials": inferred["normalized_materials"],
+            "category_confidence": inferred["category_confidence"],
+            "classification_source": inferred["classification_source"],
+            "classification_reason": inferred["classification_reason"],
+        })
     payload["search_text"] = product_search_text(payload)
     return payload
 
@@ -181,6 +206,12 @@ def product_search_text(product: dict[str, Any]) -> str:
         "description_text",
         "detail_content",
         "detail_content_text",
+        "primary_category",
+        "normalized_brand",
+        "normalized_space",
+        "normalized_style",
+        "normalized_color",
+        "normalized_materials_json",
     ):
         add(product.get(key))
 

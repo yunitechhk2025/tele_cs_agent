@@ -96,6 +96,46 @@ def _run_migrations(conn):
             "conversation_scene_states", "preferences_json",
             "ALTER TABLE conversation_scene_states ADD COLUMN preferences_json TEXT DEFAULT '{}'"
         ),
+        (
+            "product_entries", "primary_category",
+            "ALTER TABLE product_entries ADD COLUMN primary_category VARCHAR(100) DEFAULT ''"
+        ),
+        (
+            "product_entries", "secondary_categories_json",
+            "ALTER TABLE product_entries ADD COLUMN secondary_categories_json TEXT DEFAULT '[]'"
+        ),
+        (
+            "product_entries", "normalized_brand",
+            "ALTER TABLE product_entries ADD COLUMN normalized_brand VARCHAR(100) DEFAULT ''"
+        ),
+        (
+            "product_entries", "normalized_space",
+            "ALTER TABLE product_entries ADD COLUMN normalized_space VARCHAR(100) DEFAULT ''"
+        ),
+        (
+            "product_entries", "normalized_style",
+            "ALTER TABLE product_entries ADD COLUMN normalized_style VARCHAR(100) DEFAULT ''"
+        ),
+        (
+            "product_entries", "normalized_color",
+            "ALTER TABLE product_entries ADD COLUMN normalized_color VARCHAR(100) DEFAULT ''"
+        ),
+        (
+            "product_entries", "normalized_materials_json",
+            "ALTER TABLE product_entries ADD COLUMN normalized_materials_json TEXT DEFAULT '[]'"
+        ),
+        (
+            "product_entries", "category_confidence",
+            "ALTER TABLE product_entries ADD COLUMN category_confidence FLOAT DEFAULT 0"
+        ),
+        (
+            "product_entries", "classification_source",
+            "ALTER TABLE product_entries ADD COLUMN classification_source VARCHAR(100) DEFAULT ''"
+        ),
+        (
+            "product_entries", "classification_reason",
+            "ALTER TABLE product_entries ADD COLUMN classification_reason TEXT DEFAULT ''"
+        ),
     ]
     for table, column, ddl in migrations:
         result = conn.execute(text(
@@ -133,6 +173,11 @@ def _run_migrations(conn):
         "CREATE INDEX IF NOT EXISTS ix_product_entry_translations_language "
         "ON product_entry_translations(language)"
     ))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_product_entries_primary_category ON product_entries(primary_category)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_product_entries_normalized_brand ON product_entries(normalized_brand)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_product_entries_normalized_space ON product_entries(normalized_space)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_product_entries_normalized_style ON product_entries(normalized_style)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_product_entries_normalized_color ON product_entries(normalized_color)"))
 
 
 async def init_db():

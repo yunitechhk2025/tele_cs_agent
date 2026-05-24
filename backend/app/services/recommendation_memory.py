@@ -430,6 +430,7 @@ async def record_recommendation_turn(
     product_ids: list[int],
     language: str,
     products: list[dict[str, Any]] | None = None,
+    category_profile: dict[str, Any] | None = None,
 ) -> None:
     clean_ids = [int(product_id) for product_id in product_ids if str(product_id).isdigit()]
     if not clean_ids:
@@ -472,7 +473,10 @@ async def record_recommendation_turn(
             turn_index=int(last_index or 0) + 1,
             request_text=request_text or "",
             language=language or "en",
-            category_profile_json=json.dumps(extract_recommendation_profile(request_text), ensure_ascii=False),
+            category_profile_json=json.dumps(
+                category_profile or extract_recommendation_profile(request_text),
+                ensure_ascii=False,
+            ),
             product_ids_json=product_ids_json,
             items_json=json.dumps(items, ensure_ascii=False),
         ))

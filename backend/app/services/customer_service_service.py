@@ -239,6 +239,7 @@ async def _send_product_recommendation_payload(
             product_ids=scene_state_product_ids or [int(card["product_id"]) for card in cards if str(card.get("product_id") or "").isdigit()],
             language=scene_state.get("reply_language") or draft.language,
             products=card_products,
+            category_profile=scene_state.get("category_profile") or None,
         )
     return draft.draft_text
 

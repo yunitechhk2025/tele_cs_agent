@@ -19,6 +19,9 @@ from app.services.i18n import (
     to_traditional_chinese,
 )
 from app.services.product_i18n import product_search_text
+from app.services.product_taxonomy import (
+    match_normalized_product_value,
+)
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -39,6 +42,13 @@ LLM_SETTING_KEYS = {
     "image_size": "1024x1024",
     "image_quality": "high",
     "image_style": "natural",
+    "profile_llm_provider": settings.PROFILE_LLM_PROVIDER,
+    "profile_llm_api_key": settings.PROFILE_LLM_API_KEY,
+    "profile_llm_base_url": settings.PROFILE_LLM_BASE_URL,
+    "profile_llm_model": settings.PROFILE_LLM_MODEL,
+    "profile_llm_temperature": "0",
+    "profile_llm_max_tokens": "500",
+    "profile_llm_timeout_seconds": "4",
 }
 
 _settings_cache: dict[str, str] = {}
@@ -62,7 +72,11 @@ async def load_llm_settings() -> dict[str, str]:
                 select(SystemSetting).where(SystemSetting.key.like("image_%"))
             )
             rows3 = result3.scalars().all()
-            db_settings = {r.key: r.value for r in list(rows) + list(rows2) + list(rows3)}
+            result4 = await db.execute(
+                select(SystemSetting).where(SystemSetting.key.like("profile_llm_%"))
+            )
+            rows4 = result4.scalars().all()
+            db_settings = {r.key: r.value for r in list(rows) + list(rows2) + list(rows3) + list(rows4)}
 
         merged = {}
         for key, default in LLM_SETTING_KEYS.items():
@@ -140,6 +154,31 @@ async def _chat_completion(
         return await _anthropic_chat(cfg, messages, model, mt, temp)
     else:
         return await _openai_chat(cfg, messages, model, mt, temp, disable_thinking=disable_thinking)
+
+
+async def profile_chat_completion(
+    messages: list[dict],
+    max_tokens: int | None = None,
+    temperature: float | None = None,
+) -> str:
+    """Low-latency structured profile parser chat call.
+
+    Uses profile_llm_* settings when configured; otherwise falls back to the
+    existing llm_* settings so current deployments keep working.
+    """
+    cfg = await get_llm_settings()
+    profile_cfg = dict(cfg)
+    profile_cfg["llm_provider"] = cfg.get("profile_llm_provider") or cfg.get("llm_provider", "openai")
+    profile_cfg["llm_api_key"] = cfg.get("profile_llm_api_key") or cfg.get("llm_api_key", "")
+    profile_cfg["llm_base_url"] = cfg.get("profile_llm_base_url") or cfg.get("llm_base_url", "")
+    profile_cfg["llm_model"] = cfg.get("profile_llm_model") or cfg.get("llm_model", "gpt-4o")
+    provider = profile_cfg.get("llm_provider", "openai").lower()
+    model = profile_cfg.get("llm_model", "gpt-4o")
+    temp = temperature if temperature is not None else float(cfg.get("profile_llm_temperature") or 0)
+    mt = max_tokens or int(cfg.get("profile_llm_max_tokens") or 500)
+    if provider == "anthropic":
+        return await _anthropic_chat(profile_cfg, messages, model, mt, temp)
+    return await _openai_chat(profile_cfg, messages, model, mt, temp, disable_thinking=True)
 
 
 async def _openai_chat(
@@ -822,7 +861,7 @@ async def select_scene_bundle_products(
     if max_products == 0:
         return []
     catalog = "\n".join(
-        f"ID:{p['id']} | {_product_catalog_alias(p, 180)} | category:{p.get('category', '')}"
+        f"ID:{p['id']} | {_product_catalog_alias(p, 180)} | category:{p.get('primary_category') or p.get('category', '')}"
         for p in candidate_products[:50]
     )
     try:
@@ -877,7 +916,7 @@ PRODUCT_CATEGORY_TERMS = {
     "dining_chair": ["餐椅", "饭椅", "dining chair", "silla de comedor", "chaise de salle a manger", "ダイニングチェア", "食卓椅", "식탁 의자"],
     "bed": ["床", "双人床", "单人床", "bed", "cama", "lit", "ベッド", "침대"],
     "nightstand": ["床头柜", "床頭櫃", "nightstand", "bedside table", "mesita de noche", "mesa de noche", "table de chevet", "ナイトテーブル", "ベッドサイド", "협탁"],
-    "coffee_table": ["茶几", "茶桌", "茶台", "边几", "角几", "tea table", "coffee table", "side table", "end table", "mesa de centro", "mesa auxiliar", "table basse", "table d'appoint", "ローテーブル", "サイドテーブル", "커피 테이블", "사이드 테이블"],
+    "coffee_table": ["茶几", "茶桌", "茶台", "边几", "邊几", "边幾", "邊幾", "角几", "花几", "方几", "大方几", "休闲几", "圆几", "圓几", "圓幾", "异形几", "異形几", "異形幾", "背几", "背幾", "tea table", "coffee table", "side table", "end table", "mesa de centro", "mesa auxiliar", "table basse", "table d'appoint", "ローテーブル", "サイドテーブル", "커피 테이블", "사이드 테이블"],
     "tv_cabinet": ["电视柜", "電視櫃", "电视机柜", "tv cabinet", "tv stand", "media console", "mueble tv", "meuble tv", "テレビ台", "tvボード", "거실장", "tv장"],
     "cabinet": ["柜", "櫃", "储物柜", "儲物櫃", "收纳柜", "收納櫃", "边柜", "邊櫃", "斗柜", "斗櫃", "cabinet", "storage cabinet", "commode", "dresser", "aparador", "armario", "buffet", "rangement", "キャビネット", "収納", "수납장", "서랍장"],
     "wardrobe": ["衣柜", "衣櫃", "wardrobe", "closet", "armoire", "armario ropero", "クローゼット", "ワードローブ", "옷장"],
@@ -885,6 +924,11 @@ PRODUCT_CATEGORY_TERMS = {
     "bookshelf": ["书柜", "書櫃", "书架", "書架", "书橱", "書櫥", "bookcase", "bookshelf", "bibliotheque", "estanteria", "本棚", "書棚", "책장", "책꽂이"],
     "bar": ["吧台", "吧椅", "bar table", "bar stool", "barra", "taburete", "table de bar", "bar", "バーテーブル", "바 테이블", "바 의자"],
     "chair": ["椅", "椅子", "休闲椅", "单椅", "chair", "armchair", "silla", "fauteuil", "chaise", "チェア", "椅子", "의자"],
+    "mattress": ["床垫", "床墊", "mattress", "matelas", "colchon", "マットレス", "매트리스"],
+    "bedding": ["床品", "床上用品", "bedding", "bed linen", "linge de lit", "ropa de cama", "寝具", "침구"],
+    "dressing_table": ["梳妆台", "梳妝台", "妆台", "妝台", "dressing table", "vanity table", "tocador", "coiffeuse", "ドレッサー", "화장대"],
+    "coat_rack": ["衣帽架", "coat rack", "coat stand", "porte manteau", "perchero", "コートラック", "옷걸이"],
+    "magazine_rack": ["杂志架", "雜誌架", "饰架", "飾架", "magazine rack", "display rack", "porte revues", "revistero", "マガジンラック", "잡지꽂이"],
 }
 
 PRODUCT_CATEGORY_PRODUCT_TERMS = {
@@ -909,6 +953,14 @@ PRODUCT_CATEGORY_EXCLUSION_TERMS = {
         "desk chair", "office chair", "study chair", "silla", "chaise",
         "チェア", "椅子", "의자",
     ],
+    "bed": [
+        "床头柜", "床頭櫃", "床垫", "床墊", "mattress", "nightstand",
+    ],
+    "cabinet": [
+        "电视柜", "電視櫃", "床头柜", "床頭櫃", "书柜", "書櫃", "衣柜", "衣櫃",
+    ],
+    "dining_table": ["餐椅", "dining chair"],
+    "chair": ["餐桌", "dining table"],
 }
 
 PRODUCT_CATEGORY_STRONG_ALLOW_TERMS = {
@@ -1000,6 +1052,9 @@ PRODUCT_CATEGORY_PRUNE_RULES = {
     "dining_chair": {"chair", "dining_table"},
     "coffee_table": {"dining_table"},
     "desk": {"chair"},
+    "mattress": {"bed"},
+    "bedding": {"bed"},
+    "dressing_table": {"dining_table", "desk"},
 }
 
 PRODUCT_MATCH_WEIGHTS = {
@@ -1026,6 +1081,11 @@ PRODUCT_MATCH_VALUE_LABELS = {
         "bookshelf": {"zh": "书柜", "en": "bookcase", "ja": "本棚", "ko": "책장", "es": "estantería", "fr": "bibliothèque"},
         "bar": {"zh": "吧台/吧椅", "en": "bar furniture", "ja": "バーファニチャー", "ko": "바 가구", "es": "mueble de bar", "fr": "meuble de bar"},
         "chair": {"zh": "椅子", "en": "chair", "ja": "チェア", "ko": "의자", "es": "silla", "fr": "chaise"},
+        "mattress": {"zh": "床垫", "en": "mattress", "ja": "マットレス", "ko": "매트리스", "es": "colchón", "fr": "matelas"},
+        "bedding": {"zh": "床品", "en": "bedding", "ja": "寝具", "ko": "침구", "es": "ropa de cama", "fr": "linge de lit"},
+        "dressing_table": {"zh": "梳妆台", "en": "dressing table", "ja": "ドレッサー", "ko": "화장대", "es": "tocador", "fr": "coiffeuse"},
+        "coat_rack": {"zh": "衣帽架", "en": "coat rack", "ja": "コートラック", "ko": "옷걸이", "es": "perchero", "fr": "porte-manteau"},
+        "magazine_rack": {"zh": "杂志架", "en": "magazine rack", "ja": "マガジンラック", "ko": "잡지꽂이", "es": "revistero", "fr": "porte-revues"},
     },
     "spaces": {
         "living_room": {"zh": "客厅", "en": "living-room", "ja": "リビング", "ko": "거실", "es": "sala de estar", "fr": "salon"},
@@ -1087,7 +1147,18 @@ def _normalize_match_text(value: Any) -> str:
 
 
 def _contains_any(text: str, terms: list[str]) -> bool:
-    return any(_normalize_match_text(term) in text for term in terms if term)
+    return any(_contains_match_term(text, _normalize_match_text(term)) for term in terms if term)
+
+
+def _contains_match_term(normalized_text: str, normalized_term: str) -> bool:
+    if not normalized_text or not normalized_term:
+        return False
+    # Latin tokens must match on token boundaries. This avoids false positives
+    # such as English "couch" matching French "coucher" in translated room names.
+    if re.fullmatch(r"[a-z0-9 ]+", normalized_term):
+        pattern = rf"(?<![a-z0-9]){re.escape(normalized_term)}(?![a-z0-9])"
+        return re.search(pattern, normalized_text) is not None
+    return normalized_term in normalized_text
 
 
 def _extract_product_query_profile(user_message: str) -> dict[str, set[str]]:
@@ -1097,6 +1168,36 @@ def _extract_product_query_profile(user_message: str) -> dict[str, set[str]]:
         for key, terms in table.items():
             if _contains_any(text, terms):
                 profile[dimension].add(key)
+    categories = profile.get("categories") or set()
+    for specific, broad_values in PRODUCT_CATEGORY_PRUNE_RULES.items():
+        if specific in categories:
+            categories.difference_update(broad_values)
+    return profile
+
+
+def _coerce_product_request_profile(
+    user_message: str,
+    request_profile: dict[str, Any] | None = None,
+) -> dict[str, set[str]]:
+    if not request_profile:
+        return _extract_product_query_profile(user_message)
+    profile: dict[str, set[str]] = {dimension: set() for dimension in PRODUCT_MATCH_TABLES}
+    for dimension in PRODUCT_MATCH_TABLES:
+        raw_values = request_profile.get(dimension) or []
+        if isinstance(raw_values, str):
+            raw_iterable = [raw_values]
+        elif isinstance(raw_values, (list, tuple, set)):
+            raw_iterable = raw_values
+        else:
+            raw_iterable = []
+        allowed_values = set(PRODUCT_MATCH_TABLES[dimension].keys())
+        profile[dimension] = {
+            str(value)
+            for value in raw_iterable
+            if str(value) in allowed_values
+        }
+    if not any(profile.values()):
+        return _extract_product_query_profile(user_message)
     categories = profile.get("categories") or set()
     for specific, broad_values in PRODUCT_CATEGORY_PRUNE_RULES.items():
         if specific in categories:
@@ -1125,6 +1226,31 @@ def _product_match_text(product: dict[str, Any]) -> str:
     return _normalize_match_text(product_search_text(product))
 
 
+def _product_dimension_text(product: dict[str, Any], dimension: str) -> str:
+    if dimension != "colors":
+        return _product_match_text(product)
+
+    parts: list[str] = []
+
+    def add(value: Any) -> None:
+        text = str(value or "").strip()
+        if text and text not in parts:
+            parts.append(text)
+
+    # Treat color as the visible main-product color. Do not use material/detail
+    # fields here; "black metal legs" should not make a whole sofa a black sofa.
+    for key in ("color", "normalized_color", "name", "product_name", "series", "series_name"):
+        add(product.get(key))
+    translations = product.get("translations") or {}
+    if isinstance(translations, dict):
+        for values in translations.values():
+            if not isinstance(values, dict):
+                continue
+            for key in ("color", "name", "product_name", "series", "series_name"):
+                add(values.get(key))
+    return _normalize_match_text("\n".join(parts))
+
+
 def _product_category_match_text(product: dict[str, Any]) -> str:
     parts: list[str] = []
 
@@ -1146,6 +1272,9 @@ def _product_category_match_text(product: dict[str, Any]) -> str:
 
 
 def _matches_product_category(product: dict[str, Any], value: str) -> bool:
+    normalized_match = match_normalized_product_value(product, "categories", value)
+    if normalized_match is not None:
+        return normalized_match
     category_text = _product_category_match_text(product)
     if not category_text:
         return False
@@ -1158,9 +1287,13 @@ def _matches_product_category(product: dict[str, Any], value: str) -> bool:
 
 
 def _matches_product_profile_value(product: dict[str, Any], product_text: str, dimension: str, value: str) -> bool:
+    normalized_match = match_normalized_product_value(product, dimension, value)
+    if normalized_match is not None:
+        return normalized_match
     if dimension == "categories":
         return _matches_product_category(product, value)
-    return _contains_any(product_text, PRODUCT_MATCH_TABLES[dimension].get(value, []))
+    dimension_text = _product_dimension_text(product, dimension)
+    return _contains_any(dimension_text or product_text, PRODUCT_MATCH_TABLES[dimension].get(value, []))
 
 
 def _matches_profile_value(product_text: str, dimension: str, value: str) -> bool:
@@ -1273,10 +1406,11 @@ def build_product_constraint_notice(
     user_message: str,
     products: list[dict],
     language: str = "en",
+    request_profile: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return a localized notice when explicit product constraints are only partially satisfiable."""
     lang = _match_language(language)
-    profile = _extract_product_query_profile(user_message)
+    profile = _coerce_product_request_profile(user_message, request_profile)
     if not profile.get("categories"):
         return {"has_notice": False}
 
@@ -1382,8 +1516,9 @@ def _local_product_candidates(
     user_message: str,
     products: list[dict],
     limit: int = PRODUCT_MATCH_CANDIDATE_LIMIT,
+    request_profile: dict[str, Any] | None = None,
 ) -> list[tuple[dict, int]]:
-    profile = _extract_product_query_profile(user_message)
+    profile = _coerce_product_request_profile(user_message, request_profile)
     query_terms = _extract_product_query_terms(user_message)
     scored = [(product, _score_product_candidate(product, profile, query_terms)) for product in products]
     scored.sort(key=lambda item: (-item[1], int(item[0].get("id") or 0)))
@@ -1418,6 +1553,95 @@ def _fallback_product_ids(candidates: list[tuple[dict, int]], count: int = 3) ->
         if len(ids) >= count:
             break
     return ids
+
+
+def _satisfiable_profile_constraints(
+    candidates: list[tuple[dict, int]],
+    profile: dict[str, set[str]],
+) -> dict[str, set[str]]:
+    constraints: dict[str, set[str]] = {}
+    for dimension in ("categories", *PRODUCT_MATCH_STRICT_DIMENSIONS):
+        values = profile.get(dimension) or set()
+        if not values:
+            continue
+        matched_values = {
+            value
+            for value in values
+            if any(
+                _matches_product_profile_value(product, _product_match_text(product), dimension, value)
+                for product, _score in candidates
+            )
+        }
+        if matched_values:
+            constraints[dimension] = matched_values
+    return constraints
+
+
+def _product_satisfies_profile_constraints(
+    product: dict[str, Any],
+    constraints: dict[str, set[str]],
+) -> bool:
+    if not constraints:
+        return True
+    product_text = _product_match_text(product)
+    return all(
+        any(_matches_product_profile_value(product, product_text, dimension, value) for value in values)
+        for dimension, values in constraints.items()
+    )
+
+
+def _product_constraint_match_count(
+    product: dict[str, Any],
+    profile: dict[str, set[str]],
+) -> int:
+    product_text = _product_match_text(product)
+    count = 0
+    for dimension in ("categories", *PRODUCT_MATCH_STRICT_DIMENSIONS):
+        values = profile.get(dimension) or set()
+        if values and any(_matches_product_profile_value(product, product_text, dimension, value) for value in values):
+            count += 1
+    return count
+
+
+def _reconcile_product_selection(
+    selected_ids: list[int],
+    candidates: list[tuple[dict, int]],
+    fallback_ids: list[int],
+    profile: dict[str, set[str]],
+    count: int = 3,
+) -> list[int]:
+    candidate_by_id: dict[int, dict[str, Any]] = {}
+    score_by_id: dict[int, int] = {}
+    for product, score in candidates:
+        try:
+            pid = int(product.get("id"))
+        except (TypeError, ValueError):
+            continue
+        candidate_by_id[pid] = product
+        score_by_id[pid] = score
+
+    ordered_ids: list[int] = []
+    for pid in [*selected_ids, *fallback_ids]:
+        if pid in candidate_by_id and pid not in ordered_ids:
+            ordered_ids.append(pid)
+
+    constraints = _satisfiable_profile_constraints(candidates, profile)
+    constrained_ids = [
+        pid for pid in ordered_ids
+        if _product_satisfies_profile_constraints(candidate_by_id[pid], constraints)
+    ]
+    if constrained_ids:
+        ordered_ids = constrained_ids
+
+    original_index = {pid: idx for idx, pid in enumerate(ordered_ids)}
+    ordered_ids.sort(
+        key=lambda pid: (
+            -_product_constraint_match_count(candidate_by_id[pid], profile),
+            -score_by_id.get(pid, 0),
+            original_index.get(pid, 9999),
+        )
+    )
+    return ordered_ids[:count]
 
 
 def _protected_exact_product_ids(
@@ -1478,12 +1702,13 @@ async def ai_select_products(
     user_message: str,
     products: list[dict],
     conversation_memory: str = "",
+    request_profile: dict[str, Any] | None = None,
 ) -> list[int]:
     """Select product recommendations with local recall, LLM rerank, and deterministic fallback."""
     if not products:
         return []
-    profile = _extract_product_query_profile(user_message)
-    candidates = _local_product_candidates(user_message, products)
+    profile = _coerce_product_request_profile(user_message, request_profile)
+    candidates = _local_product_candidates(user_message, products, request_profile=request_profile)
     query_terms = _extract_product_query_terms(user_message)
     protected_ids = _protected_exact_product_ids(candidates, query_terms)
     fallback_ids = _fallback_product_ids(candidates)
@@ -1556,7 +1781,8 @@ async def ai_select_products(
                 out.append(pid)
             if len(out) >= 3:
                 break
-        return out[:3] or fallback_ids
+        reconciled = _reconcile_product_selection(out, candidates, fallback_ids, profile)
+        return reconciled or fallback_ids
     except asyncio.TimeoutError:
         logger.warning(
             "Product AI selection timed out after %ss; falling back to local ranking ids=%s",
@@ -1748,6 +1974,51 @@ async def test_llm_connection(provider: str, api_key: str, base_url: str, model:
                 messages=[{"role": "user", "content": "Hi"}],
             )
             return {"ok": True, "message": f"Connected. Response: {resp.choices[0].message.content[:50]}"}
+    except Exception as e:
+        return {"ok": False, "message": str(e)}
+
+
+async def test_profile_llm_connection(provider: str, api_key: str, base_url: str, model: str) -> dict:
+    """Test the profile parser model with a strict JSON extraction prompt."""
+    try:
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "Return ONLY compact JSON with keys ok and category. "
+                    "For the user request, set category to the canonical furniture category."
+                ),
+            },
+            {"role": "user", "content": "给我推荐一款书桌"},
+        ]
+        if provider == "anthropic":
+            client = AsyncAnthropic(api_key=api_key)
+            resp = await client.messages.create(
+                model=model,
+                max_tokens=80,
+                temperature=0,
+                system=messages[0]["content"],
+                messages=[messages[1]],
+            )
+            raw = resp.content[0].text.strip()
+        else:
+            client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+            kwargs: dict[str, Any] = {
+                "model": model,
+                "max_tokens": 80,
+                "temperature": 0,
+                "messages": messages,
+            }
+            if "dashscope" in (base_url or "").lower():
+                kwargs["extra_body"] = {"enable_thinking": False}
+            resp = await client.chat.completions.create(**kwargs)
+            raw = resp.choices[0].message.content.strip()
+        match = re.search(r"\{.*\}", raw, flags=re.DOTALL)
+        data = json.loads(match.group(0) if match else raw)
+        return {
+            "ok": True,
+            "message": f"Profile parser OK — model: {model}, response: {json.dumps(data, ensure_ascii=False)[:120]}",
+        }
     except Exception as e:
         return {"ok": False, "message": str(e)}
 

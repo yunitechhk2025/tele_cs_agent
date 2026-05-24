@@ -31,6 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from sqlalchemy import select
 from app.database import AsyncSessionLocal, engine, Base
 from app.models import ProductEntry, ProductEntryTranslation, ProductImage
+from app.services.product_taxonomy import apply_inferred_metadata
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -116,7 +117,7 @@ def _normalize_row(row: dict[str, str], csv_path: Path) -> tuple[str, dict[str, 
             buy_url=row.get("buy_url", "").strip(),
             detail_url=row.get("detail_url", "").strip(),
         )
-        return product_id_ext, fields
+        return product_id_ext, apply_inferred_metadata(fields)
 
     if brand == "红苹果":
         product_id_ext = _derive_redapple_product_id(row)
@@ -141,7 +142,7 @@ def _normalize_row(row: dict[str, str], csv_path: Path) -> tuple[str, dict[str, 
             buy_url=row.get("detail_url", "").strip(),
             detail_url=row.get("detail_url", "").strip(),
         )
-        return product_id_ext, fields
+        return product_id_ext, apply_inferred_metadata(fields)
 
     if brand == "左右家居":
         product_id_ext = row.get("product_id", "").strip()
@@ -168,7 +169,7 @@ def _normalize_row(row: dict[str, str], csv_path: Path) -> tuple[str, dict[str, 
             buy_url=row.get("detail_url", "").strip(),
             detail_url=row.get("detail_url", "").strip(),
         )
-        return product_id_ext, fields
+        return product_id_ext, apply_inferred_metadata(fields)
 
     raise ValueError(f"Unsupported brand in {csv_path}: {brand or '(empty)'}")
 
