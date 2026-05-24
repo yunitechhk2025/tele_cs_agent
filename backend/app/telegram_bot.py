@@ -25,6 +25,10 @@ from app.services.llm_service import (
     resolve_recent_product_reference, analyze_scene_image_request, build_product_constraint_notice,
     PRODUCT_SPACE_TERMS, PRODUCT_STYLE_TERMS,
 )
+from app.services.profile_parser_service import (
+    parse_product_request_profile,
+    parse_scene_request_profile,
+)
 from app.services.i18n import (
     DEFAULT_LANGUAGE,
     SUPPORTED_LANGUAGE_SET,
@@ -1056,6 +1060,7 @@ def build_conversation_memory_info(
     memory: ConversationMemory | None,
     scene_state: ConversationSceneState | None = None,
     products_by_id: dict[int, dict[str, Any]] | None = None,
+    include_preferences: bool = True,
 ) -> str:
     recent_ids = parse_memory_product_ids(memory.recent_product_ids_json if memory else None)
     if not recent_ids and scene_state:
@@ -1098,7 +1103,7 @@ def build_conversation_memory_info(
             else:
                 recent_lines.append(f"#{idx}=ID:{product_id}")
         lines.append("recent_products: " + "; ".join(recent_lines))
-    if preferences:
+    if include_preferences and preferences:
         prefs = []
         for key in ["spaces", "styles", "materials", "colors"]:
             values = preferences.get(key) or []
@@ -1838,6 +1843,8 @@ async def process_customer_text_message(
                 scene_state,
                 products_by_id_for_memory,
             )
+        product_request_profile: dict[str, Any] | None = None
+        scene_request_profile: dict[str, Any] | None = None
         scene_reference_product_ids = latest_recommended_product_ids or recent_scene_product_ids
         history_reference = resolve_product_reference_from_history(
             user_message,
@@ -1897,6 +1904,38 @@ async def process_customer_text_message(
         if history_reference_is_relevant:
             scene_req["target_product_id"] = int(history_target_product_id)
         if intent_name in {"scene_image_request", "scene_image_confirmation"} or "scene_image_request" in secondary_intents:
+            recent_profile_products = [
+                products_by_id_for_memory[pid]
+                for pid in scene_reference_product_ids
+                if pid in products_by_id_for_memory
+            ]
+            await stage("parsing_scene_profile")
+            scene_request_profile = await parse_scene_request_profile(
+                user_message,
+                language=language,
+                recent_products=recent_profile_products,
+                conversation_memory=conversation_memory_info,
+            )
+            scene_req["is_scene_request"] = bool(
+                scene_req["is_scene_request"]
+                or scene_request_profile.get("is_scene_request")
+            )
+            slot = scene_request_profile.get("target_product_slot")
+            if slot and not scene_req.get("target_product_id"):
+                try:
+                    slot_index = int(slot) - 1
+                except (TypeError, ValueError):
+                    slot_index = -1
+                if 0 <= slot_index < len(scene_reference_product_ids):
+                    scene_req["target_product_id"] = scene_reference_product_ids[slot_index]
+            if scene_request_profile.get("target_product_id") and not scene_req.get("target_product_id"):
+                scene_req["target_product_id"] = scene_request_profile.get("target_product_id")
+            if scene_request_profile.get("scene_name") and not scene_req["scene_name"]:
+                scene_req["scene_name"] = str(scene_request_profile.get("scene_name") or "")
+            if scene_request_profile.get("style_hint") and not scene_req["style_hint"]:
+                scene_req["style_hint"] = str(scene_request_profile.get("style_hint") or "")
+            if scene_request_profile.get("reason") and not scene_req["reason"]:
+                scene_req["reason"] = str(scene_request_profile.get("reason") or "")
             local_scene_name = infer_requested_scene_name(user_message, turn_preferences)
             local_style_hint = infer_requested_style_hint(user_message, turn_preferences)
             local_target_id = resolve_recommended_product_reference_locally(
@@ -2298,16 +2337,59 @@ async def process_customer_text_message(
         is_product_rec = is_product_recommendation_intent
         logger.info(f"[Bot {bot_id}] Product recommendation: {is_product_rec}")
         if is_product_rec:
+            await stage("parsing_product_profile")
+            product_request_profile = await parse_product_request_profile(
+                user_message,
+                language=language,
+                conversation_memory=build_conversation_memory_info(
+                    conversation_memory,
+                    scene_state,
+                    products_by_id_for_memory,
+                    include_preferences=False,
+                ),
+            )
+            if (
+                product_request_profile.get("needs_human")
+                and float(product_request_profile.get("confidence") or 0.0) < 0.55
+            ):
+                async with AsyncSessionLocal() as db:
+                    conv = await db.get(Conversation, conversation_id)
+                    if conv:
+                        conv.status = ConversationStatus.PENDING_HUMAN
+                        conv.quote_language = language
+                        await db.commit()
+                handoff_msg = get_localized_static_text(MANUAL_ONLY_WAIT_MESSAGES, language)
+                await first_response("profile_handoff")
+                await save_message(conversation_id, MessageRole.ASSISTANT, handoff_msg, language)
+                stop_typing.set()
+                await typing_task
+                await outbound.reply_text(handoff_msg)
+                if run_notify_admin and notify_bot and conversation:
+                    await notify_admin(
+                        bot_id,
+                        conversation,
+                        user_message,
+                        notify_bot,
+                        is_followup=(current_status in {ConversationStatus.PENDING_HUMAN, ConversationStatus.HUMAN_HANDLING}),
+                    )
+                await finish("profile_handoff", "需求解析低置信度已转人工")
+                return
             await stage("product_matching")
             selected_ids = await ai_select_products(
                 user_message,
                 all_products,
                 conversation_memory=conversation_memory_info,
+                request_profile=product_request_profile,
             ) if all_products else []
             products_by_id = {p["id"]: p for p in all_products}
             selected_products = [products_by_id[pid] for pid in selected_ids if pid in products_by_id]
             intro = get_localized_static_text(PRODUCT_REC_INTRO, language)
-            constraint_notice = build_product_constraint_notice(user_message, all_products, language)
+            constraint_notice = build_product_constraint_notice(
+                user_message,
+                all_products,
+                language,
+                request_profile=product_request_profile,
+            )
             recommendation_intro = (
                 f"{constraint_notice['text']}\n\n{intro}"
                 if constraint_notice.get("has_notice")
@@ -2337,6 +2419,11 @@ async def process_customer_text_message(
                         "active_topic": "product_recommendation",
                         "active_product_id": primary_product["id"],
                         "preferences": turn_preferences,
+                        "category_profile": {
+                            key: product_request_profile.get(key, [])
+                            for key in ["categories", "spaces", "styles", "colors", "materials", "brands"]
+                            if product_request_profile and product_request_profile.get(key)
+                        },
                     }
                     preview_lines = [recommendation_intro]
                     if constraint_notice.get("has_notice"):
@@ -2391,6 +2478,11 @@ async def process_customer_text_message(
                     product_ids=selected_ids,
                     language=language,
                     products=selected_products,
+                    category_profile={
+                        key: product_request_profile.get(key, [])
+                        for key in ["categories", "spaces", "styles", "colors", "materials", "brands"]
+                        if product_request_profile and product_request_profile.get(key)
+                    },
                 )
                 logger.info(f"[Bot {bot_id}] Sent {len(selected_products)} product recommendations")
                 await finish("product_recommendation", "商品推荐已发送")

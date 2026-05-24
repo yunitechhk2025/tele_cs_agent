@@ -52,7 +52,7 @@ from app.services.contract_service import (
 )
 from app.services.llm_service import (
     get_llm_settings, save_llm_settings, invalidate_llm_cache,
-    test_llm_connection, test_embedding_connection, test_image_connection,
+    test_llm_connection, test_embedding_connection, test_image_connection, test_profile_llm_connection,
     LLM_SETTING_KEYS, translate_text, detect_language,
 )
 from app.services.i18n import DEFAULT_LANGUAGE, get_localized_static_dict, get_localized_static_text, normalize_language_code
@@ -1313,6 +1313,9 @@ async def get_settings_llm(_: str = Depends(get_current_user)):
     masked_image_key = cfg.get("image_api_key", "")
     if len(masked_image_key) > 8:
         masked_image_key = masked_image_key[:4] + "****" + masked_image_key[-4:]
+    masked_profile_key = cfg.get("profile_llm_api_key", "")
+    if len(masked_profile_key) > 8:
+        masked_profile_key = masked_profile_key[:4] + "****" + masked_profile_key[-4:]
 
     return LLMSettingsSchema(
         provider=cfg.get("llm_provider", "openai"),
@@ -1328,6 +1331,13 @@ async def get_settings_llm(_: str = Depends(get_current_user)):
         image_size=cfg.get("image_size", "1024x1024"),
         image_quality=cfg.get("image_quality", "high"),
         image_style=cfg.get("image_style", "natural"),
+        profile_provider=cfg.get("profile_llm_provider", ""),
+        profile_api_key=masked_profile_key,
+        profile_base_url=cfg.get("profile_llm_base_url", ""),
+        profile_model=cfg.get("profile_llm_model", ""),
+        profile_temperature=float(cfg.get("profile_llm_temperature", "0") or 0),
+        profile_max_tokens=int(cfg.get("profile_llm_max_tokens", "500") or 500),
+        profile_timeout_seconds=float(cfg.get("profile_llm_timeout_seconds", "4") or 4),
         temperature=float(cfg.get("llm_temperature", "0.7")),
         max_tokens=int(cfg.get("llm_max_tokens", "1000")),
     )
@@ -1362,6 +1372,20 @@ async def update_settings_llm(req: LLMSettingsUpdateRequest, _: str = Depends(ge
         updates["image_quality"] = req.image_quality
     if req.image_style is not None:
         updates["image_style"] = req.image_style
+    if req.profile_provider is not None:
+        updates["profile_llm_provider"] = req.profile_provider
+    if req.profile_api_key is not None and "****" not in req.profile_api_key:
+        updates["profile_llm_api_key"] = req.profile_api_key
+    if req.profile_base_url is not None:
+        updates["profile_llm_base_url"] = req.profile_base_url
+    if req.profile_model is not None:
+        updates["profile_llm_model"] = req.profile_model
+    if req.profile_temperature is not None:
+        updates["profile_llm_temperature"] = str(req.profile_temperature)
+    if req.profile_max_tokens is not None:
+        updates["profile_llm_max_tokens"] = str(req.profile_max_tokens)
+    if req.profile_timeout_seconds is not None:
+        updates["profile_llm_timeout_seconds"] = str(req.profile_timeout_seconds)
     if req.temperature is not None:
         updates["llm_temperature"] = str(req.temperature)
     if req.max_tokens is not None:
@@ -1381,6 +1405,21 @@ async def test_llm_endpoint(req: LLMSettingsUpdateRequest, _: str = Depends(get_
     base_url = req.base_url or cfg.get("llm_base_url", "")
     model = req.model or cfg.get("llm_model", "gpt-4o")
     return await test_llm_connection(provider, api_key, base_url, model)
+
+
+@router.post("/settings/llm/test-profile")
+async def test_profile_llm_endpoint(req: LLMSettingsUpdateRequest, _: str = Depends(get_current_user)):
+    cfg = await get_llm_settings()
+    provider = req.profile_provider or cfg.get("profile_llm_provider", "") or req.provider or cfg.get("llm_provider", "openai")
+    api_key = (
+        req.profile_api_key
+        if (req.profile_api_key and "****" not in req.profile_api_key)
+        else cfg.get("profile_llm_api_key", "")
+        or (req.api_key if (req.api_key and "****" not in req.api_key) else cfg.get("llm_api_key", ""))
+    )
+    base_url = req.profile_base_url or cfg.get("profile_llm_base_url", "") or req.base_url or cfg.get("llm_base_url", "")
+    model = req.profile_model or cfg.get("profile_llm_model", "") or req.model or cfg.get("llm_model", "gpt-4o")
+    return await test_profile_llm_connection(provider, api_key, base_url, model)
 
 
 @router.post("/settings/llm/test-embedding")
@@ -1756,6 +1795,13 @@ async def list_products(
             serial_number=e.serial_number,
             description_text=e.description_text,
             buy_url=e.buy_url,
+            primary_category=e.primary_category,
+            normalized_brand=e.normalized_brand,
+            normalized_space=e.normalized_space,
+            normalized_style=e.normalized_style,
+            normalized_color=e.normalized_color,
+            normalized_materials_json=e.normalized_materials_json,
+            category_confidence=e.category_confidence or 0.0,
             translations=translation_map_from_entries(e.translations),
             first_image_path=first_img,
             created_at=e.created_at,
@@ -1799,6 +1845,16 @@ async def get_product(
         detail_content_text=entry.detail_content_text,
         buy_url=entry.buy_url,
         detail_url=entry.detail_url,
+        primary_category=entry.primary_category,
+        secondary_categories_json=entry.secondary_categories_json,
+        normalized_brand=entry.normalized_brand,
+        normalized_space=entry.normalized_space,
+        normalized_style=entry.normalized_style,
+        normalized_color=entry.normalized_color,
+        normalized_materials_json=entry.normalized_materials_json,
+        category_confidence=entry.category_confidence or 0.0,
+        classification_source=entry.classification_source,
+        classification_reason=entry.classification_reason,
         translations=translation_map_from_entries(entry.translations),
         created_at=entry.created_at,
         updated_at=entry.updated_at,

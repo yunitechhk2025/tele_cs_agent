@@ -121,6 +121,8 @@ export const settingsApi = {
     api.post<{ ok: boolean; message: string }>('/settings/llm/test-embedding', data),
   testImage: (data: Partial<LLMSettings>) =>
     api.post<{ ok: boolean; message: string }>('/settings/llm/test-image', data),
+  testProfile: (data: Partial<LLMSettings>) =>
+    api.post<{ ok: boolean; message: string }>('/settings/llm/test-profile', data),
 };
 
 export const fileApi = {

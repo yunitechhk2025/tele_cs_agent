@@ -270,6 +270,13 @@ class LLMSettingsSchema(BaseModel):
     image_size: str = "1024x1024"
     image_quality: str = "high"
     image_style: str = "natural"
+    profile_provider: str = ""
+    profile_api_key: str = ""
+    profile_base_url: str = ""
+    profile_model: str = ""
+    profile_temperature: float = 0.0
+    profile_max_tokens: int = 500
+    profile_timeout_seconds: float = 4.0
     temperature: float = 0.7
     max_tokens: int = 1000
 
@@ -288,6 +295,13 @@ class LLMSettingsUpdateRequest(BaseModel):
     image_size: Optional[str] = None
     image_quality: Optional[str] = None
     image_style: Optional[str] = None
+    profile_provider: Optional[str] = None
+    profile_api_key: Optional[str] = None
+    profile_base_url: Optional[str] = None
+    profile_model: Optional[str] = None
+    profile_temperature: Optional[float] = None
+    profile_max_tokens: Optional[int] = None
+    profile_timeout_seconds: Optional[float] = None
     temperature: Optional[float] = None
     max_tokens: Optional[int] = None
 
@@ -382,6 +396,16 @@ class ProductEntrySchema(BaseModel):
     detail_content_text: str
     buy_url: str
     detail_url: str
+    primary_category: str = ""
+    secondary_categories_json: str = "[]"
+    normalized_brand: str = ""
+    normalized_space: str = ""
+    normalized_style: str = ""
+    normalized_color: str = ""
+    normalized_materials_json: str = "[]"
+    category_confidence: float = 0.0
+    classification_source: str = ""
+    classification_reason: str = ""
     translations: dict[str, dict[str, str]] = Field(default_factory=dict)
     created_at: datetime
     updated_at: datetime
@@ -406,6 +430,13 @@ class ProductEntryListSchema(BaseModel):
     serial_number: str
     description_text: str
     buy_url: str
+    primary_category: str = ""
+    normalized_brand: str = ""
+    normalized_space: str = ""
+    normalized_style: str = ""
+    normalized_color: str = ""
+    normalized_materials_json: str = "[]"
+    category_confidence: float = 0.0
     translations: dict[str, dict[str, str]] = Field(default_factory=dict)
     first_image_path: Optional[str] = None
     created_at: datetime
