@@ -14,6 +14,7 @@ from app.services.llm_service import (
     _extract_product_query_profile,
     _normalize_match_text,
 )
+from app.services.product_reference_parser import parse_product_reference
 
 
 def _safe_json_list(raw: str | None) -> list[Any]:
@@ -58,54 +59,6 @@ def _normalize_message(text: str) -> str:
         "＃": "#",
         "﹟": "#",
     })))
-
-
-def _extract_slot_index(user_message: str) -> int | None:
-    normalized = _normalize_message(user_message)
-    compact = re.sub(r"\s+", "", normalized)
-
-    if re.fullmatch(r"#?[1-9]", compact):
-        return int(compact.replace("#", ""))
-
-    explicit_match = re.search(
-        r"(?:#|编号|編號|商品|产品|產品|第|no\.?|number|num|nº)\s*([1-9])",
-        normalized,
-        flags=re.IGNORECASE,
-    )
-    if explicit_match:
-        return int(explicit_match.group(1))
-    numeric_ordinal_match = re.search(r"([1-9])\s*(?:番目|번째)", normalized)
-    if numeric_ordinal_match:
-        return int(numeric_ordinal_match.group(1))
-
-    single_words = {
-        "一": 1, "壹": 1,
-        "二": 2, "两": 2, "兩": 2, "贰": 2, "貳": 2,
-        "三": 3, "叁": 3, "參": 3,
-    }
-    if compact in single_words:
-        return single_words[compact]
-
-    ordinal_words = {
-        "第一": 1, "第一个": 1, "第一個": 1, "第一款": 1,
-        "第二": 2, "第二个": 2, "第二個": 2, "第二款": 2,
-        "第三": 3, "第三个": 3, "第三個": 3, "第三款": 3,
-        "first": 1, "1st": 1,
-        "second": 2, "2nd": 2,
-        "third": 3, "3rd": 3,
-        "primero": 1, "primera": 1,
-        "segundo": 2, "segunda": 2,
-        "tercero": 3, "tercera": 3,
-        "premier": 1, "premiere": 1,
-        "deuxieme": 2, "second": 2,
-        "troisieme": 3,
-        "一番目": 1, "二番目": 2, "三番目": 3,
-        "첫번째": 1, "두번째": 2, "세번째": 3,
-    }
-    for word, index in ordinal_words.items():
-        if _normalize_message(word).replace(" ", "") in compact:
-            return index
-    return None
 
 
 def _turn_categories(turn: dict[str, Any]) -> set[str]:
@@ -198,6 +151,12 @@ def _pick_turn_slot(turn: dict[str, Any], slot: int) -> dict[str, Any] | None:
     return None
 
 
+def _turn_item_count(turn: dict[str, Any]) -> int:
+    product_ids = [item for item in (turn.get("product_ids") or []) if str(item).isdigit()]
+    items = [item for item in (turn.get("items") or []) if isinstance(item, dict)]
+    return max(len(product_ids), len(items))
+
+
 def _match_product_name(
     user_message: str,
     turns: list[dict[str, Any]],
@@ -261,10 +220,10 @@ def resolve_product_reference_from_history(
     if name_match:
         return {**empty, **name_match}
 
-    slot = _extract_slot_index(user_message)
+    reference = parse_product_reference(user_message)
     profile = extract_recommendation_profile(user_message)
     requested_categories = set(profile.get("categories") or [])
-    if slot is None:
+    if not (reference.slot or reference.relative_kind):
         return empty
 
     if requested_categories:
@@ -272,7 +231,7 @@ def resolve_product_reference_from_history(
         if not candidate_turns:
             return {
                 **empty,
-                "slot": slot,
+                "slot": reference.slot,
                 "needs_clarification": True,
                 "reason": "no_recommendation_turn_matches_requested_category",
             }
@@ -280,6 +239,20 @@ def resolve_product_reference_from_history(
         candidate_turns = valid_turns
 
     selected_turn = sorted(candidate_turns, key=_turn_sort_key, reverse=True)[0]
+    resolved_reference = parse_product_reference(
+        user_message,
+        item_count=_turn_item_count(selected_turn),
+    )
+    slot = resolved_reference.slot or reference.slot
+    if slot is None:
+        return {
+            **empty,
+            "turn_id": selected_turn.get("id"),
+            "turn_index": selected_turn.get("turn_index"),
+            "turn_product_ids": selected_turn.get("product_ids") or [],
+            "needs_clarification": True,
+            "reason": "ambiguous_relative_product_reference",
+        }
     item = _pick_turn_slot(selected_turn, slot)
     if not item:
         return {

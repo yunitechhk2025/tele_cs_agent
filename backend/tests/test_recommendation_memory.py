@@ -88,6 +88,52 @@ class RecommendationMemoryTests(unittest.TestCase):
         self.assertEqual(result["turn_index"], 3)
         self.assertEqual(result["slot"], 2)
 
+    def test_spanish_relative_references_use_latest_matching_sofa_turn(self):
+        turns = [
+            {
+                "id": 1,
+                "turn_index": 1,
+                "request_text": "recommend a white sofa",
+                "category_profile": {"categories": ["sofa"]},
+                "product_ids": [101, 102, 103],
+                "items": [
+                    {"slot": 1, "product_id": 101, "name": "White Sofa A"},
+                    {"slot": 2, "product_id": 102, "name": "White Sofa B"},
+                    {"slot": 3, "product_id": 103, "name": "Zuoyou Select | JSQ0014A"},
+                ],
+            },
+            {
+                "id": 2,
+                "turn_index": 2,
+                "request_text": "¿Sofás con detalles de cuero auténtico?",
+                "category_profile": {"categories": ["sofa"]},
+                "product_ids": [201, 202, 203],
+                "items": [
+                    {"slot": 1, "product_id": 201, "name": "Sofá de cuero A"},
+                    {"slot": 2, "product_id": 202, "name": "Sillón de cuero B"},
+                    {"slot": 3, "product_id": 203, "name": "Sofá de Cuero Lianbang"},
+                ],
+            },
+        ]
+
+        examples = [
+            (
+                "Me gustaría ver cómo queda el tercer sofá en un salón de estilo moderno y minimalista.",
+                203,
+                3,
+            ),
+            ("Quiero ver el último sofá en un salón moderno.", 203, 3),
+            ("Muéstrame el penúltimo sofá.", 202, 2),
+            ("Me interesa el del medio.", 202, 2),
+        ]
+
+        for message, product_id, slot in examples:
+            with self.subTest(message=message):
+                result = resolve_product_reference_from_history(message, turns)
+                self.assertEqual(result["target_product_id"], product_id)
+                self.assertEqual(result["turn_index"], 2)
+                self.assertEqual(result["slot"], slot)
+
     def test_turn_request_category_beats_product_title_fallback(self):
         turns = [
             {

@@ -12,6 +12,7 @@ from app.services.product_taxonomy import (
     contains_any,
     normalize_text,
 )
+from app.services.product_reference_parser import parse_product_reference
 
 logger = logging.getLogger(__name__)
 
@@ -52,42 +53,6 @@ SCENE_NAME_ALIASES = {
     "foyer": "玄关",
     "玄关": "玄关",
     "玄關": "玄关",
-}
-
-ORDINAL_SLOT_WORDS = {
-    "一": 1,
-    "第一": 1,
-    "第一个": 1,
-    "第一款": 1,
-    "first": 1,
-    "1st": 1,
-    "primero": 1,
-    "primera": 1,
-    "premier": 1,
-    "一番目": 1,
-    "첫번째": 1,
-    "二": 2,
-    "第二": 2,
-    "第二个": 2,
-    "第二款": 2,
-    "second": 2,
-    "2nd": 2,
-    "segundo": 2,
-    "segunda": 2,
-    "deuxieme": 2,
-    "二番目": 2,
-    "두번째": 2,
-    "三": 3,
-    "第三": 3,
-    "第三个": 3,
-    "第三款": 3,
-    "third": 3,
-    "3rd": 3,
-    "tercero": 3,
-    "tercera": 3,
-    "troisieme": 3,
-    "三番目": 3,
-    "세번째": 3,
 }
 
 GENERIC_TABLE_CATEGORY_TERMS = [
@@ -299,19 +264,8 @@ async def parse_product_request_profile(
         return fallback
 
 
-def _infer_slot_from_text(user_message: str) -> int | None:
-    normalized = (user_message or "").strip().lower().translate(str.maketrans({
-        "１": "1", "２": "2", "３": "3", "４": "4", "５": "5",
-        "６": "6", "７": "7", "８": "8", "９": "9", "＃": "#",
-    }))
-    compact = re.sub(r"\s+", "", normalized)
-    direct = re.search(r"(?:#|第|no\.?|number|num|nº)?\s*([1-9])(?:个|款|件|号)?", normalized)
-    if direct:
-        return int(direct.group(1))
-    for word, slot in ORDINAL_SLOT_WORDS.items():
-        if word in compact:
-            return slot
-    return None
+def _infer_slot_from_text(user_message: str, recent_product_count: int | None = None) -> int | None:
+    return parse_product_reference(user_message, item_count=recent_product_count).slot
 
 
 def _canonical_scene_name(value: Any) -> str:
@@ -327,6 +281,7 @@ def normalize_scene_request_profile(
     *,
     user_message: str,
     fallback_language: str = DEFAULT_LANGUAGE,
+    recent_product_count: int | None = None,
 ) -> dict[str, Any]:
     data = _coerce_json_object(raw_profile)
     slot = data.get("target_product_slot")
@@ -335,7 +290,7 @@ def normalize_scene_request_profile(
     except (TypeError, ValueError):
         slot = None
     if slot is None:
-        slot = _infer_slot_from_text(user_message)
+        slot = _infer_slot_from_text(user_message, recent_product_count)
     target_id = data.get("target_product_id")
     try:
         target_id = int(target_id) if target_id is not None and str(target_id).strip() else None
@@ -386,10 +341,12 @@ async def parse_scene_request_profile(
         f"Recent products:\n{catalog or '(none)'}"
     )
     start = time.perf_counter()
+    recent_product_count = len(recent_products or [])
     fallback = normalize_scene_request_profile(
         {"is_scene_request": True, "confidence": 0.5, "language": language},
         user_message=user_message,
         fallback_language=language,
+        recent_product_count=recent_product_count,
     )
     try:
         raw = await asyncio.wait_for(
@@ -403,7 +360,12 @@ async def parse_scene_request_profile(
             ),
             timeout=timeout,
         )
-        profile = normalize_scene_request_profile(raw, user_message=user_message, fallback_language=language)
+        profile = normalize_scene_request_profile(
+            raw,
+            user_message=user_message,
+            fallback_language=language,
+            recent_product_count=recent_product_count,
+        )
         profile["source"] = "profile_llm"
         logger.info(
             "Scene profile parsed source=profile_llm confidence=%.2f elapsed_ms=%d profile=%s",

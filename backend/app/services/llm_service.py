@@ -22,6 +22,7 @@ from app.services.product_i18n import product_search_text
 from app.services.product_taxonomy import (
     match_normalized_product_value,
 )
+from app.services.product_reference_parser import is_product_selection_only_text
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -371,19 +372,7 @@ def _fast_intent_from_rules(text: str, *, has_pending_scene_confirmation: bool =
     ]):
         return _intent_result("quote_handoff", 0.95, source="rules", needs_human=True, reason="pricing or quotation keyword")
 
-    if has_pending_scene_confirmation and (
-        re.fullmatch(r"#?[1-9]", compact)
-        or re.fullmatch(r"第?#?[1-9](?:个|款|件|号)?", compact)
-        or re.fullmatch(r"第?[一二三四五六七八九](?:个|款|件|号)?", compact)
-        or re.fullmatch(r"(?:no\.?|number|num|nº)[1-9]", compact)
-        or compact in {
-            "first", "1st", "second", "2nd", "third", "3rd",
-            "primero", "primera", "segundo", "segunda", "tercero", "tercera",
-            "premier", "premiere", "deuxieme", "troisieme",
-            "첫번째", "두번째", "세번째",
-            "一番目", "二番目", "三番目",
-        }
-    ):
+    if has_pending_scene_confirmation and is_product_selection_only_text(text):
         return _intent_result("scene_image_confirmation", 0.9, source="rules", reason="product selection after recommendation")
 
     if has_pending_scene_confirmation and has_any([

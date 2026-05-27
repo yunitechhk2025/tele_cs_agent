@@ -43,6 +43,10 @@ from app.services.product_i18n import (
 )
 from app.services.rag_service import search_knowledge_for_bot
 from app.services.scene_service import CUSTOMER_SCENE_TIMEOUT_SECONDS, build_scene_record_response, generate_scene_images
+from app.services.product_reference_parser import (
+    is_product_selection_only_text,
+    parse_product_reference,
+)
 from app.services.customer_service_service import (
     create_pending_ai_delivery,
     get_customer_service_settings,
@@ -865,63 +869,9 @@ def resolve_recommended_product_reference_locally(
     if not recommended_product_ids:
         return None
 
-    normalized = (user_message or "").strip().lower().translate(str.maketrans({
-        "１": "1",
-        "２": "2",
-        "３": "3",
-        "４": "4",
-        "５": "5",
-        "６": "6",
-        "７": "7",
-        "８": "8",
-        "９": "9",
-        "＃": "#",
-        "﹟": "#",
-    }))
-    compact = re.sub(r"\s+", "", normalized)
-
-    def pick(index: int | None) -> int | None:
-        if index is None or index < 1 or index > len(recommended_product_ids):
-            return None
-        return recommended_product_ids[index - 1]
-
-    if re.fullmatch(r"#?[1-9]", compact):
-        return pick(int(compact.replace("#", "")))
-
-    explicit_match = re.search(
-        r"(?:#|编号|商品|产品|第|no\.?|number|num|nº)\s*([1-9])",
-        normalized,
-        flags=re.IGNORECASE,
-    )
-    if explicit_match:
-        return pick(int(explicit_match.group(1)))
-
-    single_ordinal_words = {
-        "一": 1, "壹": 1,
-        "二": 2, "两": 2, "贰": 2,
-        "三": 3, "叁": 3,
-    }
-    if compact in single_ordinal_words:
-        return pick(single_ordinal_words[compact])
-
-    ordinal_words = {
-        "第一": 1, "第一个": 1, "第一款": 1,
-        "第二": 2, "第二个": 2, "第二款": 2,
-        "第三": 3, "第三个": 3, "第三款": 3,
-        "first": 1, "1st": 1,
-        "second": 2, "2nd": 2,
-        "third": 3, "3rd": 3,
-        "primero": 1, "primera": 1,
-        "segundo": 2, "segunda": 2,
-        "tercero": 3, "tercera": 3,
-        "premier": 1, "premiere": 1,
-        "deuxieme": 2, "troisieme": 3,
-        "一番目": 1, "二番目": 2, "三番目": 3,
-        "첫번째": 1, "두번째": 2, "세번째": 3,
-    }
-    for word, index in ordinal_words.items():
-        if word in compact:
-            return pick(index)
+    result = parse_product_reference(user_message, item_count=len(recommended_product_ids))
+    if result.slot and 1 <= result.slot <= len(recommended_product_ids):
+        return recommended_product_ids[result.slot - 1]
     return None
 
 
@@ -943,6 +893,10 @@ def _context_text(user_message: str) -> str:
 
 def is_recent_product_followup(user_message: str) -> bool:
     """Detect likely references to products shown earlier in the same conversation."""
+    parsed = parse_product_reference(user_message)
+    if parsed.slot or parsed.relative_kind or parsed.is_active_product_reference:
+        return True
+
     normalized = _context_text(user_message)
     compact = re.sub(r"\s+", "", normalized)
     if not compact:
@@ -985,22 +939,7 @@ def is_recent_product_followup(user_message: str) -> bool:
 
 
 def is_product_selection_only(user_message: str) -> bool:
-    normalized = _context_text(user_message)
-    compact = re.sub(r"\s+", "", normalized)
-    if not compact:
-        return False
-    return bool(
-        re.fullmatch(r"#?[1-9]", compact)
-        or re.fullmatch(r"第?#?[1-9](?:个|款|件|号)?", compact)
-        or re.fullmatch(r"第?[一二三四五六七八九](?:个|款|件|号)?", compact)
-        or compact in {
-            "first", "1st", "second", "2nd", "third", "3rd",
-            "primero", "primera", "segundo", "segunda", "tercero", "tercera",
-            "premier", "premiere", "deuxieme", "troisieme",
-            "첫번째", "두번째", "세번째",
-            "一番目", "二番目", "三番目",
-        }
-    )
+    return is_product_selection_only_text(user_message)
 
 
 def resolve_context_product_reference_locally(
@@ -1013,6 +952,7 @@ def resolve_context_product_reference_locally(
         return None
     normalized = _context_text(user_message)
     compact = re.sub(r"\s+", "", normalized)
+    parsed = parse_product_reference(user_message, item_count=len(recommended_product_ids) or None)
 
     direct = resolve_recommended_product_reference_locally(user_message, recommended_product_ids)
     if direct is not None and (is_product_selection_only(user_message) or is_recent_product_followup(user_message)):
@@ -1020,9 +960,9 @@ def resolve_context_product_reference_locally(
 
     if not is_recent_product_followup(user_message):
         return None
-    if primary_product_id and any(term in compact for term in ["这款", "这件", "这个", "它", "thisone", "it", "この商品", "이제품", "esteproducto", "ceproduit"]):
+    if primary_product_id and parsed.is_active_product_reference:
         return primary_product_id
-    if primary_product_id and not re.search(r"(?:第|#)?[1-9]|[一二三四五六七八九]", compact):
+    if primary_product_id and not (parsed.slot or parsed.relative_kind) and not re.search(r"(?:第|#)?[1-9]|[一二三四五六七八九]", compact):
         return primary_product_id
     return None
 

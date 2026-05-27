@@ -125,6 +125,51 @@ class ProfileParserServiceTests(unittest.TestCase):
         self.assertEqual(profile["style_hint"], "中式复古")
         self.assertEqual(profile["confidence"], 0.88)
 
+    def test_scene_profile_fallback_extracts_spanish_apocopated_ordinal(self):
+        profile = normalize_scene_request_profile(
+            {
+                "language": "es",
+                "is_scene_request": True,
+                "target_product_slot": None,
+                "target_product_id": None,
+                "scene_name": "living_room",
+                "style_hint": "moderno y minimalista",
+                "confidence": 0.5,
+            },
+            user_message="Me gustaría ver cómo queda el tercer sofá en un salón de estilo moderno y minimalista.",
+            fallback_language="es",
+        )
+
+        self.assertEqual(profile["target_product_slot"], 3)
+        self.assertIsNone(profile["target_product_id"])
+
+    def test_scene_profile_fallback_extracts_relative_slots_with_recent_count(self):
+        examples = [
+            ("show me the last one in a living room", 3),
+            ("Muéstrame el penúltimo sofá", 2),
+            ("celui du milieu dans un salon", 2),
+            ("後ろから2番目の商品をリビングで見たい", 2),
+            ("뒤에서 두 번째 제품을 거실에서 보고 싶어요", 2),
+        ]
+
+        for message, slot in examples:
+            with self.subTest(message=message):
+                profile = normalize_scene_request_profile(
+                    {
+                        "language": "en",
+                        "is_scene_request": True,
+                        "target_product_slot": None,
+                        "target_product_id": None,
+                        "scene_name": "living_room",
+                        "style_hint": "",
+                        "confidence": 0.5,
+                    },
+                    user_message=message,
+                    fallback_language="en",
+                    recent_product_count=3,
+                )
+                self.assertEqual(profile["target_product_slot"], slot)
+
 
 if __name__ == "__main__":
     unittest.main()
