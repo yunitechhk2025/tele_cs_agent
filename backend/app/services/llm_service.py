@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 import unicodedata
 from typing import Any
 
@@ -23,6 +24,7 @@ from app.services.product_taxonomy import (
     match_normalized_product_value,
 )
 from app.services.product_reference_parser import is_product_selection_only_text
+from app.services.observability_service import record_llm_call, timed_llm_call
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -143,6 +145,7 @@ async def _chat_completion(
     max_tokens: int | None = None,
     temperature: float | None = None,
     disable_thinking: bool = False,
+    operation: str = "general_response",
 ) -> str:
     """Unified chat completion that routes to the correct provider."""
     cfg = await get_llm_settings()
@@ -151,10 +154,17 @@ async def _chat_completion(
     temp = temperature if temperature is not None else float(cfg.get("llm_temperature", "0.7"))
     mt = max_tokens or int(cfg.get("llm_max_tokens", "1000"))
 
-    if provider == "anthropic":
-        return await _anthropic_chat(cfg, messages, model, mt, temp)
-    else:
+    async def call():
+        if provider == "anthropic":
+            return await _anthropic_chat(cfg, messages, model, mt, temp)
         return await _openai_chat(cfg, messages, model, mt, temp, disable_thinking=disable_thinking)
+
+    return await timed_llm_call(
+        operation=operation,
+        provider=provider,
+        model=model,
+        call=call,
+    )
 
 
 async def profile_chat_completion(
@@ -177,9 +187,17 @@ async def profile_chat_completion(
     model = profile_cfg.get("llm_model", "gpt-4o")
     temp = temperature if temperature is not None else float(cfg.get("profile_llm_temperature") or 0)
     mt = max_tokens or int(cfg.get("profile_llm_max_tokens") or 500)
-    if provider == "anthropic":
-        return await _anthropic_chat(profile_cfg, messages, model, mt, temp)
-    return await _openai_chat(profile_cfg, messages, model, mt, temp, disable_thinking=True)
+    async def call():
+        if provider == "anthropic":
+            return await _anthropic_chat(profile_cfg, messages, model, mt, temp)
+        return await _openai_chat(profile_cfg, messages, model, mt, temp, disable_thinking=True)
+
+    return await timed_llm_call(
+        operation="profile_parser",
+        provider=provider,
+        model=model,
+        call=call,
+    )
 
 
 async def _openai_chat(
@@ -230,10 +248,28 @@ async def get_embedding(text: str) -> list[float]:
     client = _build_embedding_client(cfg)
     base_url = cfg.get("embedding_base_url") or cfg.get("llm_base_url", "https://api.openai.com/v1")
     model = _resolve_embedding_model(base_url, cfg.get("embedding_model"))
+    started = time.perf_counter()
     try:
         response = await client.embeddings.create(model=model, input=text)
-        return response.data[0].embedding
+        embedding = response.data[0].embedding
+        await record_llm_call(
+            operation="rag_embedding",
+            provider="openai-compatible",
+            model=model,
+            duration_ms=int((time.perf_counter() - started) * 1000),
+            success=bool(embedding),
+        )
+        return embedding
     except Exception as e:
+        await record_llm_call(
+            operation="rag_embedding",
+            provider="openai-compatible",
+            model=model,
+            duration_ms=int((time.perf_counter() - started) * 1000),
+            success=False,
+            error_type=type(e).__name__,
+            error_message=str(e),
+        )
         logger.error(f"Embedding generation failed: {e}")
         return []
 
@@ -534,6 +570,7 @@ async def classify_customer_intent(
             max_tokens=220,
             temperature=0,
             disable_thinking=True,
+            operation="intent_classification",
         )
         data = _extract_json_object(raw)
         slots = data.get("slots") if isinstance(data.get("slots"), dict) else {}
@@ -582,6 +619,7 @@ async def detect_language(text: str) -> str:
             max_tokens=5,
             temperature=0,
             disable_thinking=True,
+            operation="intent_classification",
         )
         return normalize_language_code(result.strip(), text=text) or DEFAULT_LANGUAGE
     except Exception as e:
@@ -606,6 +644,7 @@ async def check_is_quote_related(text: str) -> bool:
             max_tokens=20,
             temperature=0,
             disable_thinking=True,
+            operation="intent_classification",
         )
         parsed = json.loads(result)
         return parsed.get("is_quote", False)
@@ -640,6 +679,7 @@ async def check_file_request(text: str, available_files: list[dict]) -> list[int
             max_tokens=50,
             temperature=0,
             disable_thinking=True,
+            operation="intent_classification",
         )
         return json.loads(result)
     except Exception as e:
@@ -670,6 +710,7 @@ async def check_is_product_recommendation(text: str) -> bool:
             max_tokens=20,
             temperature=0,
             disable_thinking=True,
+            operation="intent_classification",
         )
         return json.loads(result).get("is_product_rec", False)
     except Exception as e:
@@ -698,6 +739,7 @@ async def check_is_scene_image_confirmation(text: str) -> bool:
             max_tokens=20,
             temperature=0,
             disable_thinking=True,
+            operation="intent_classification",
         )
         return json.loads(result).get("is_confirmed", False)
     except Exception as e:
@@ -746,6 +788,7 @@ async def resolve_recent_product_reference(
             max_tokens=120,
             temperature=0,
             disable_thinking=True,
+            operation="intent_classification",
         )
         data = json.loads(raw)
         target_id = data.get("target_product_id")
@@ -810,6 +853,7 @@ async def analyze_scene_image_request(
             max_tokens=200,
             temperature=0,
             disable_thinking=True,
+            operation="intent_classification",
         )
         data = json.loads(raw)
         target_id = data.get("target_product_id")
@@ -877,6 +921,7 @@ async def select_scene_bundle_products(
             max_tokens=120,
             temperature=0,
             disable_thinking=True,
+            operation="scene_image",
         )
         ids = json.loads(result)
         if not isinstance(ids, list):
@@ -1755,6 +1800,7 @@ async def ai_select_products(
                 max_tokens=100,
                 temperature=0,
                 disable_thinking=True,
+                operation="product_matcher",
             ),
             timeout=PRODUCT_MATCH_LLM_TIMEOUT_SECONDS,
         )
@@ -1861,7 +1907,7 @@ async def generate_response(
     messages.append({"role": "user", "content": user_message})
 
     try:
-        return await _chat_completion(messages=messages)
+        return await _chat_completion(messages=messages, operation="general_response")
     except Exception as e:
         logger.error(f"Response generation failed: {e}")
         error_messages = {
@@ -1940,6 +1986,7 @@ async def generate_contract(
             ],
             max_tokens=4000,
             temperature=0.3,
+            operation="contract_generation",
         )
     except Exception as e:
         logger.error(f"Contract generation failed: {e}")
@@ -2123,6 +2170,7 @@ async def translate_text(text: str, target_language: str) -> str | None:
             ],
             max_tokens=2000,
             temperature=0.3,
+            operation="translation_fill",
         )
         return result.strip()
     except Exception as e:

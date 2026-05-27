@@ -140,6 +140,7 @@ async def record_turn_step(
     completed_at: datetime | None = None,
     success: bool = True,
     error_message: str = "",
+    metadata: dict | None = None,
 ) -> None:
     if not metric_id:
         return
@@ -154,6 +155,7 @@ async def record_turn_step(
                 stage_key=stage_key,
                 stage_label=_label(stage_key),
                 stage_detail=(stage_detail or "")[:1000],
+                metadata_json=json.dumps(metadata or {}, ensure_ascii=False),
                 started_at=started_at,
                 completed_at=completed,
                 duration_ms=max(0, duration_ms),

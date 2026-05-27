@@ -138,6 +138,105 @@ export interface DashboardStats {
   recent_conversations: Conversation[];
 }
 
+export interface ObservabilityKpis {
+  total_turns: number;
+  success_count: number;
+  failed_count: number;
+  success_rate: number;
+  failure_rate: number;
+  first_response_p50_ms: number | null;
+  first_response_p95_ms: number | null;
+  first_response_p99_ms: number | null;
+  total_p50_ms: number | null;
+  total_p95_ms: number | null;
+  total_p99_ms: number | null;
+  text_first_response_p95_ms: number | null;
+  product_recommendation_first_response_p95_ms: number | null;
+  handoff_count: number;
+  handoff_rate: number;
+  profile_handoff_count: number;
+  profile_handoff_rate: number;
+  rag_lookup_count: number;
+  rag_empty_count: number;
+  rag_empty_rate: number;
+  llm_call_count: number;
+  llm_failure_count: number;
+  llm_failure_rate: number;
+  scene_generation_count: number;
+  scene_failure_count: number;
+  scene_failure_rate: number;
+}
+
+export interface ObservabilityStageMetric {
+  stage_key: string;
+  stage_label: string;
+  count: number;
+  avg_ms: number;
+  p50_ms: number | null;
+  p95_ms: number | null;
+  p99_ms: number | null;
+  failed_count: number;
+}
+
+export interface ObservabilityLLMMetric {
+  operation: string;
+  model: string;
+  count: number;
+  failed_count: number;
+  failure_rate: number;
+  avg_ms: number;
+  p50_ms: number | null;
+  p95_ms: number | null;
+  p99_ms: number | null;
+  last_error: string;
+}
+
+export interface ObservabilityFailureSample {
+  source: string;
+  conversation_id: number | null;
+  turn_metric_id: number | null;
+  language: string;
+  primary_intent: string;
+  response_kind: string;
+  error_message: string;
+  created_at: string | null;
+}
+
+export interface ObservabilitySummary {
+  kpis: ObservabilityKpis;
+  stage_metrics: ObservabilityStageMetric[];
+  slowest_stages: ObservabilityStageMetric[];
+  llm_metrics: ObservabilityLLMMetric[];
+  recent_failures: ObservabilityFailureSample[];
+}
+
+export interface ObservabilityAlert {
+  id: number;
+  severity: 'warning' | 'critical' | string;
+  metric_key: string;
+  title: string;
+  message: string;
+  observed_value: number;
+  threshold_value: number;
+  window_start: string;
+  window_end: string;
+  status: 'open' | 'ack' | 'resolved' | string;
+  dedupe_key: string;
+  sent_at: string | null;
+  acknowledged_at: string | null;
+  created_at: string;
+}
+
+export interface ObservabilityAlertSettings {
+  text_first_response_p95_ms: number;
+  product_recommendation_first_response_p95_ms: number;
+  scene_failure_rate: number;
+  llm_failure_rate: number;
+  turn_failure_rate: number;
+  rag_empty_rate: number;
+  profile_handoff_rate: number;
+}
+
 export interface ProductImage {
   id: number;
   product_entry_id: number;

@@ -38,6 +38,8 @@ from app.schemas import (
     ContractTemplateSchema,
     ProductEntrySchema, ProductEntryListSchema, ProductImageSchema, SceneGenerationRequest, SceneGenerationRecordSchema,
     SceneLibraryItemSchema, SceneGeneratorRequest, SceneBatchActionRequest, SceneBatchActionResponse,
+    ObservabilitySummarySchema, ObservabilityStageMetricSchema, ObservabilityLLMMetricSchema,
+    ObservabilityAlertSchema, ObservabilityAlertSettingsSchema,
 )
 from app.services.rag_service import (
     add_to_knowledge_base, remove_from_knowledge_base,
@@ -79,6 +81,15 @@ from app.services.conversation_monitoring import (
     record_turn_step,
     set_conversation_stage,
     start_turn_metric,
+)
+from app.services.observability_service import (
+    acknowledge_alert,
+    list_alerts,
+    load_alert_settings,
+    load_observability_summary,
+    reset_observability_context,
+    save_alert_settings,
+    set_observability_context,
 )
 from app.services import bot_manager
 from app.telegram_bot import (
@@ -326,6 +337,109 @@ async def dashboard_stats(
             ConversationSchema.model_validate(c) for c in recent.scalars().all()
         ],
     )
+
+
+# ─── Observability ───────────────────────────────────────────────────────────
+
+@router.get("/observability/summary", response_model=ObservabilitySummarySchema)
+async def observability_summary(
+    range_key: str = Query("24h", alias="range"),
+    bot_id: Optional[int] = Query(None),
+    language: Optional[str] = Query(None),
+    intent: Optional[str] = Query(None),
+    response_kind: Optional[str] = Query(None),
+    db: AsyncSession = Depends(get_db),
+    _: str = Depends(get_current_user),
+):
+    return await load_observability_summary(
+        db,
+        range_key=range_key,
+        bot_id=bot_id,
+        language=language or None,
+        intent=intent or None,
+        response_kind=response_kind or None,
+    )
+
+
+@router.get("/observability/stages", response_model=list[ObservabilityStageMetricSchema])
+async def observability_stages(
+    range_key: str = Query("24h", alias="range"),
+    bot_id: Optional[int] = Query(None),
+    language: Optional[str] = Query(None),
+    intent: Optional[str] = Query(None),
+    response_kind: Optional[str] = Query(None),
+    db: AsyncSession = Depends(get_db),
+    _: str = Depends(get_current_user),
+):
+    summary = await load_observability_summary(
+        db,
+        range_key=range_key,
+        bot_id=bot_id,
+        language=language or None,
+        intent=intent or None,
+        response_kind=response_kind or None,
+    )
+    return summary["stage_metrics"]
+
+
+@router.get("/observability/llm-calls", response_model=list[ObservabilityLLMMetricSchema])
+async def observability_llm_calls(
+    range_key: str = Query("24h", alias="range"),
+    bot_id: Optional[int] = Query(None),
+    language: Optional[str] = Query(None),
+    intent: Optional[str] = Query(None),
+    response_kind: Optional[str] = Query(None),
+    db: AsyncSession = Depends(get_db),
+    _: str = Depends(get_current_user),
+):
+    summary = await load_observability_summary(
+        db,
+        range_key=range_key,
+        bot_id=bot_id,
+        language=language or None,
+        intent=intent or None,
+        response_kind=response_kind or None,
+    )
+    return summary["llm_metrics"]
+
+
+@router.get("/observability/alerts", response_model=list[ObservabilityAlertSchema])
+async def observability_alerts(
+    status: Optional[str] = Query(None),
+    limit: int = Query(100, ge=1, le=500),
+    db: AsyncSession = Depends(get_db),
+    _: str = Depends(get_current_user),
+):
+    return await list_alerts(db, status=status or None, limit=limit)
+
+
+@router.post("/observability/alerts/{alert_id}/ack", response_model=ObservabilityAlertSchema)
+async def observability_ack_alert(
+    alert_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: str = Depends(get_current_user),
+):
+    alert = await acknowledge_alert(db, alert_id)
+    if not alert:
+        raise HTTPException(status_code=404, detail="Alert not found")
+    return alert
+
+
+@router.get("/observability/alert-settings", response_model=ObservabilityAlertSettingsSchema)
+async def observability_alert_settings(
+    db: AsyncSession = Depends(get_db),
+    _: str = Depends(get_current_user),
+):
+    return await load_alert_settings(db)
+
+
+@router.put("/observability/alert-settings", response_model=ObservabilityAlertSettingsSchema)
+async def observability_update_alert_settings(
+    req: ObservabilityAlertSettingsSchema,
+    db: AsyncSession = Depends(get_db),
+    _: str = Depends(get_current_user),
+):
+    return await save_alert_settings(db, req.model_dump())
 
 
 # ─── Conversations ───────────────────────────────────────────────────────────
@@ -890,10 +1004,13 @@ async def simulator_send_message(
     )
     language_step_started_at = datetime.utcnow()
     await set_conversation_stage(conversation_id, "detecting_language")
+    language_context_tokens = set_observability_context(conversation_id, metric_id)
     try:
         detected_language = await detect_language(user_message)
     except Exception:
         detected_language = conversation.language or "en"
+    finally:
+        reset_observability_context(language_context_tokens)
 
     scene_state = await get_scene_state(conversation_id)
     language = resolve_turn_language(

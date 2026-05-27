@@ -319,6 +319,7 @@ class ConversationTurnStepMetric(Base):
     stage_key = Column(String(100), default="")
     stage_label = Column(String(200), default="")
     stage_detail = Column(Text, default="")
+    metadata_json = Column(Text, default="{}")
     started_at = Column(DateTime, default=datetime.utcnow)
     completed_at = Column(DateTime, nullable=True)
     duration_ms = Column(Integer, nullable=True)
@@ -328,6 +329,47 @@ class ConversationTurnStepMetric(Base):
 
     turn_metric = relationship("ConversationTurnMetric")
     conversation = relationship("Conversation")
+
+
+class LLMCallMetric(Base):
+    __tablename__ = "llm_call_metrics"
+
+    id = Column(Integer, primary_key=True, index=True)
+    operation = Column(String(100), default="", index=True)
+    provider = Column(String(100), default="")
+    model = Column(String(200), default="")
+    duration_ms = Column(Integer, nullable=True)
+    success = Column(Boolean, default=True, index=True)
+    error_type = Column(String(200), default="")
+    error_message = Column(Text, default="")
+    conversation_id = Column(Integer, ForeignKey("conversations.id"), nullable=True, index=True)
+    turn_metric_id = Column(Integer, ForeignKey("conversation_turn_metrics.id"), nullable=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+    conversation = relationship("Conversation")
+    turn_metric = relationship("ConversationTurnMetric")
+
+
+class ObservabilityAlert(Base):
+    __tablename__ = "observability_alerts"
+    __table_args__ = (
+        UniqueConstraint("dedupe_key", name="uq_observability_alerts_dedupe_key"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    severity = Column(String(50), default="warning", index=True)
+    metric_key = Column(String(100), default="", index=True)
+    title = Column(String(500), default="")
+    message = Column(Text, default="")
+    observed_value = Column(Float, default=0.0)
+    threshold_value = Column(Float, default=0.0)
+    window_start = Column(DateTime, nullable=False, index=True)
+    window_end = Column(DateTime, nullable=False, index=True)
+    status = Column(String(50), default="open", index=True)
+    dedupe_key = Column(String(500), nullable=False, unique=True, index=True)
+    sent_at = Column(DateTime, nullable=True)
+    acknowledged_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
 
 
 class PendingAIReply(Base):

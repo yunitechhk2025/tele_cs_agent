@@ -238,6 +238,7 @@ async def _translate_batch(items: list[dict[str, Any]], *, max_tokens: int) -> d
         max_tokens=max_tokens,
         temperature=0,
         disable_thinking=True,
+        operation="translation_fill",
     )
     return parse_translation_response(raw)
 

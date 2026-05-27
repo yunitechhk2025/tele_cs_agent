@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -10,6 +11,7 @@ from app.database import init_db
 from app.api.router import router
 from app.services.llm_service import load_llm_settings
 from app.services.customer_service_service import restore_pending_ai_reply_tasks
+from app.services.observability_service import observability_alert_loop
 from app.services import bot_manager
 
 logging.basicConfig(
@@ -35,9 +37,15 @@ async def lifespan(app: FastAPI):
     logger.info("Pending AI reply tasks restored")
 
     await bot_manager.start_all_active_bots()
+    observability_task = asyncio.create_task(observability_alert_loop())
 
     yield
 
+    observability_task.cancel()
+    try:
+        await observability_task
+    except asyncio.CancelledError:
+        pass
     await bot_manager.stop_all_bots()
     logger.info("All bots stopped")
 

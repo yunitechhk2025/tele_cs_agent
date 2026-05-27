@@ -4,6 +4,8 @@ import type {
   Contract, ContractTemplate, DashboardStats, LLMSettings, CustomerServiceSettings, FileEntry, TelegramBot,
   ProductEntry, SceneGenerationRecord, SceneLibraryItem, SceneLibraryFilters,
   SceneGeneratorRequest, SceneBatchActionResponse, TelegramSimulatorSessionResponse, SimulatorOutgoingEvent,
+  ObservabilitySummary, ObservabilityStageMetric, ObservabilityLLMMetric, ObservabilityAlert,
+  ObservabilityAlertSettings,
 } from './types';
 
 const api = axios.create({ baseURL: '/api' });
@@ -34,6 +36,38 @@ export const authApi = {
 
 export const dashboardApi = {
   getStats: () => api.get<DashboardStats>('/dashboard/stats'),
+};
+
+export const observabilityApi = {
+  getSummary: (params?: {
+    range?: '24h' | '7d' | '30d';
+    bot_id?: number;
+    language?: string;
+    intent?: string;
+    response_kind?: string;
+  }) => api.get<ObservabilitySummary>('/observability/summary', { params }),
+  getStages: (params?: {
+    range?: '24h' | '7d' | '30d';
+    bot_id?: number;
+    language?: string;
+    intent?: string;
+    response_kind?: string;
+  }) => api.get<ObservabilityStageMetric[]>('/observability/stages', { params }),
+  getLLMCalls: (params?: {
+    range?: '24h' | '7d' | '30d';
+    bot_id?: number;
+    language?: string;
+    intent?: string;
+    response_kind?: string;
+  }) => api.get<ObservabilityLLMMetric[]>('/observability/llm-calls', { params }),
+  listAlerts: (params?: { status?: string; limit?: number }) =>
+    api.get<ObservabilityAlert[]>('/observability/alerts', { params }),
+  ackAlert: (id: number) =>
+    api.post<ObservabilityAlert>(`/observability/alerts/${id}/ack`),
+  getAlertSettings: () =>
+    api.get<ObservabilityAlertSettings>('/observability/alert-settings'),
+  updateAlertSettings: (data: ObservabilityAlertSettings) =>
+    api.put<ObservabilityAlertSettings>('/observability/alert-settings', data),
 };
 
 export const conversationApi = {

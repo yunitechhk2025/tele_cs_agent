@@ -23,6 +23,7 @@ from app.services.llm_service import (
     select_scene_bundle_products,
 )
 from app.services.conversation_monitoring import set_conversation_stage
+from app.services.observability_service import record_llm_call
 from app.services.product_taxonomy import product_category_values
 
 logger = logging.getLogger(__name__)
@@ -330,40 +331,74 @@ async def _generate_image_binary(prompt: str, cfg: dict[str, str]) -> bytes:
     size = cfg.get("image_size") or "1024x1024"
     quality = cfg.get("image_quality") or "high"
     style = cfg.get("image_style") or "natural"
-
+    started = time.perf_counter()
     try:
-        response = await client.images.generate(
+        try:
+            response = await client.images.generate(
+                model=model,
+                prompt=prompt,
+                size=size,
+                quality=quality,
+                style=style,
+                response_format="b64_json",
+            )
+            data = response.data[0]
+            if getattr(data, "b64_json", None):
+                binary = base64.b64decode(data.b64_json)
+                await record_llm_call(
+                    operation="scene_image",
+                    provider="openai-compatible",
+                    model=model,
+                    duration_ms=int((time.perf_counter() - started) * 1000),
+                    success=True,
+                )
+                return binary
+        except Exception as first_error:
+            logger.warning("Image generation with b64_json failed, retrying with URL fallback: %s", first_error)
+            response = await client.images.generate(
+                model=model,
+                prompt=prompt,
+                size=size,
+                quality=quality,
+                style=style,
+            )
+            data = response.data[0]
+            if getattr(data, "b64_json", None):
+                binary = base64.b64decode(data.b64_json)
+                await record_llm_call(
+                    operation="scene_image",
+                    provider="openai-compatible",
+                    model=model,
+                    duration_ms=int((time.perf_counter() - started) * 1000),
+                    success=True,
+                )
+                return binary
+            image_url = getattr(data, "url", None)
+            if not image_url:
+                raise
+            async with httpx.AsyncClient(timeout=180) as http_client:
+                image_resp = await http_client.get(image_url)
+                image_resp.raise_for_status()
+                await record_llm_call(
+                    operation="scene_image",
+                    provider="openai-compatible",
+                    model=model,
+                    duration_ms=int((time.perf_counter() - started) * 1000),
+                    success=True,
+                )
+                return image_resp.content
+        raise RuntimeError("Image generation returned no image data")
+    except Exception as exc:
+        await record_llm_call(
+            operation="scene_image",
+            provider="openai-compatible",
             model=model,
-            prompt=prompt,
-            size=size,
-            quality=quality,
-            style=style,
-            response_format="b64_json",
+            duration_ms=int((time.perf_counter() - started) * 1000),
+            success=False,
+            error_type=type(exc).__name__,
+            error_message=str(exc),
         )
-        data = response.data[0]
-        if getattr(data, "b64_json", None):
-            return base64.b64decode(data.b64_json)
-    except Exception as first_error:
-        logger.warning("Image generation with b64_json failed, retrying with URL fallback: %s", first_error)
-        response = await client.images.generate(
-            model=model,
-            prompt=prompt,
-            size=size,
-            quality=quality,
-            style=style,
-        )
-        data = response.data[0]
-        if getattr(data, "b64_json", None):
-            return base64.b64decode(data.b64_json)
-        image_url = getattr(data, "url", None)
-        if not image_url:
-            raise
-        async with httpx.AsyncClient(timeout=180) as http_client:
-            image_resp = await http_client.get(image_url)
-            image_resp.raise_for_status()
-            return image_resp.content
-
-    raise RuntimeError("Image generation returned no image data")
+        raise
 
 
 async def _generate_dashscope_kling_images(
@@ -372,6 +407,7 @@ async def _generate_dashscope_kling_images(
     count: int,
     reference_image_urls: list[str] | None = None,
 ) -> list[bytes]:
+    started = time.perf_counter()
     api_key = cfg.get("image_api_key") or cfg.get("llm_api_key", "")
     base_url = _compatible_root(cfg.get("image_base_url") or cfg.get("llm_base_url", ""))
     if not api_key:
@@ -412,51 +448,70 @@ async def _generate_dashscope_kling_images(
             "watermark": False,
         },
     }
-    async with httpx.AsyncClient(timeout=180) as client:
-        last_error_message = "DashScope image generation timed out"
-        for task_attempt in range(1, 3):
-            create_resp = await client.post(create_url, headers=headers, json=payload)
-            create_resp.raise_for_status()
-            created = create_resp.json()
-            task_id = (((created or {}).get("output") or {}).get("task_id"))
-            if not task_id:
-                raise RuntimeError(created.get("message") or created.get("code") or "DashScope image task creation failed")
+    try:
+        async with httpx.AsyncClient(timeout=180) as client:
+            last_error_message = "DashScope image generation timed out"
+            for task_attempt in range(1, 3):
+                create_resp = await client.post(create_url, headers=headers, json=payload)
+                create_resp.raise_for_status()
+                created = create_resp.json()
+                task_id = (((created or {}).get("output") or {}).get("task_id"))
+                if not task_id:
+                    raise RuntimeError(created.get("message") or created.get("code") or "DashScope image task creation failed")
 
-            query_url = f"{base_url}/api/v1/tasks/{task_id}"
-            last_payload: dict[str, Any] = created
-            for _ in range(36):
-                poll_resp = await client.get(query_url, headers={"Authorization": f"Bearer {api_key}"})
-                poll_resp.raise_for_status()
-                last_payload = poll_resp.json()
-                output = (last_payload or {}).get("output") or {}
-                status = output.get("task_status")
-                if status == "SUCCEEDED":
-                    contents = (((output.get("choices") or [{}])[0].get("message") or {}).get("content") or [])
-                    urls = [item.get("image") for item in contents if item.get("image")]
-                    binaries: list[bytes] = []
-                    for url in urls:
-                        binaries.append(await _download_remote_binary(client, url))
-                    if not binaries:
-                        raise RuntimeError("DashScope task succeeded but returned no image URLs")
-                    return binaries
-                if status == "FAILED":
-                    last_error_message = json.dumps(last_payload, ensure_ascii=False)[:4000]
-                    logger.warning(
-                        "DashScope image task failed on attempt %s/%s: %s",
-                        task_attempt,
-                        2,
-                        last_error_message,
-                    )
-                    break
-                await asyncio.sleep(5)
-            else:
-                last_error_message = f"DashScope image generation timed out after polling task {task_id}"
+                query_url = f"{base_url}/api/v1/tasks/{task_id}"
+                last_payload: dict[str, Any] = created
+                for _ in range(36):
+                    poll_resp = await client.get(query_url, headers={"Authorization": f"Bearer {api_key}"})
+                    poll_resp.raise_for_status()
+                    last_payload = poll_resp.json()
+                    output = (last_payload or {}).get("output") or {}
+                    status = output.get("task_status")
+                    if status == "SUCCEEDED":
+                        contents = (((output.get("choices") or [{}])[0].get("message") or {}).get("content") or [])
+                        urls = [item.get("image") for item in contents if item.get("image")]
+                        binaries: list[bytes] = []
+                        for url in urls:
+                            binaries.append(await _download_remote_binary(client, url))
+                        if not binaries:
+                            raise RuntimeError("DashScope task succeeded but returned no image URLs")
+                        await record_llm_call(
+                            operation="scene_image",
+                            provider="dashscope",
+                            model=model,
+                            duration_ms=int((time.perf_counter() - started) * 1000),
+                            success=True,
+                        )
+                        return binaries
+                    if status == "FAILED":
+                        last_error_message = json.dumps(last_payload, ensure_ascii=False)[:4000]
+                        logger.warning(
+                            "DashScope image task failed on attempt %s/%s: %s",
+                            task_attempt,
+                            2,
+                            last_error_message,
+                        )
+                        break
+                    await asyncio.sleep(5)
+                else:
+                    last_error_message = f"DashScope image generation timed out after polling task {task_id}"
 
-            if task_attempt < 2:
-                await asyncio.sleep(2)
-                continue
+                if task_attempt < 2:
+                    await asyncio.sleep(2)
+                    continue
 
-        raise RuntimeError(last_error_message)
+            raise RuntimeError(last_error_message)
+    except Exception as exc:
+        await record_llm_call(
+            operation="scene_image",
+            provider="dashscope",
+            model=model,
+            duration_ms=int((time.perf_counter() - started) * 1000),
+            success=False,
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+        )
+        raise
 
 
 async def _get_product_image_urls(product_id: int, limit: int = 3) -> list[str]:

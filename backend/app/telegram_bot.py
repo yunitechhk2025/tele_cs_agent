@@ -68,6 +68,10 @@ from app.services.conversation_monitoring import (
     set_conversation_stage,
     start_turn_metric,
 )
+from app.services.observability_service import (
+    reset_observability_context,
+    set_observability_context,
+)
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -1466,10 +1470,12 @@ async def process_customer_text_message(
     current_step_key: str | None = None
     current_step_detail = ""
     current_step_started_at: datetime | None = None
+    current_step_metadata: dict[str, Any] = {}
     step_index = 0
+    observability_context_tokens = set_observability_context(conversation_id, metric_id)
 
     async def stage(stage_key: str, detail: str = "") -> None:
-        nonlocal current_step_key, current_step_detail, current_step_started_at, step_index
+        nonlocal current_step_key, current_step_detail, current_step_started_at, current_step_metadata, step_index
         now = datetime.utcnow()
         if current_step_key and current_step_started_at:
             await record_turn_step(
@@ -1481,15 +1487,17 @@ async def process_customer_text_message(
                 started_at=current_step_started_at,
                 completed_at=now,
                 success=True,
+                metadata=current_step_metadata,
             )
         step_index += 1
         current_step_key = stage_key
         current_step_detail = detail
+        current_step_metadata = {}
         current_step_started_at = now
         await set_conversation_stage(conversation_id, stage_key, stage_detail=detail)
 
     async def close_current_step(success: bool = True, error_message: str = "") -> None:
-        nonlocal current_step_key, current_step_detail, current_step_started_at
+        nonlocal current_step_key, current_step_detail, current_step_started_at, current_step_metadata
         if not current_step_key or not current_step_started_at:
             return
         await record_turn_step(
@@ -1501,10 +1509,19 @@ async def process_customer_text_message(
             started_at=current_step_started_at,
             success=success,
             error_message=error_message,
+            metadata=current_step_metadata,
         )
         current_step_key = None
         current_step_detail = ""
         current_step_started_at = None
+        current_step_metadata = {}
+
+    def annotate_current_step(detail: str | None = None, metadata: dict[str, Any] | None = None) -> None:
+        nonlocal current_step_detail, current_step_metadata
+        if detail is not None:
+            current_step_detail = detail
+        if metadata:
+            current_step_metadata.update(metadata)
 
     async def first_response(response_kind: str) -> None:
         nonlocal first_response_marked
@@ -2022,6 +2039,13 @@ async def process_customer_text_message(
                             conversation_id=conversation_id,
                             timeout_seconds=CUSTOMER_SCENE_TIMEOUT_SECONDS,
                         )
+                        annotate_current_step(
+                            metadata={
+                                "scene_record_id": getattr(record, "id", None),
+                                "status": getattr(record, "status", ""),
+                                "duration_ms": getattr(record, "duration_ms", 0) or 0,
+                            },
+                        )
                     except asyncio.TimeoutError:
                         timeout_text = get_localized_static_text(SCENE_TIMEOUT_MESSAGES, language)
                         await first_response("scene_timeout")
@@ -2185,6 +2209,13 @@ async def process_customer_text_message(
                             conversation_id=conversation_id,
                             timeout_seconds=CUSTOMER_SCENE_TIMEOUT_SECONDS,
                         )
+                        annotate_current_step(
+                            metadata={
+                                "scene_record_id": getattr(record, "id", None),
+                                "status": getattr(record, "status", ""),
+                                "duration_ms": getattr(record, "duration_ms", 0) or 0,
+                            },
+                        )
                     except asyncio.TimeoutError:
                         timeout_text = get_localized_static_text(SCENE_TIMEOUT_MESSAGES, language)
                         await first_response("scene_timeout")
@@ -2323,6 +2354,12 @@ async def process_customer_text_message(
             ) if all_products else []
             products_by_id = {p["id"]: p for p in all_products}
             selected_products = [products_by_id[pid] for pid in selected_ids if pid in products_by_id]
+            annotate_current_step(
+                metadata={
+                    "candidate_product_count": len(all_products or []),
+                    "selected_product_count": len(selected_products),
+                },
+            )
             intro = get_localized_static_text(PRODUCT_REC_INTRO, language)
             constraint_notice = build_product_constraint_notice(
                 user_message,
@@ -2447,7 +2484,10 @@ async def process_customer_text_message(
 
         await stage("knowledge_retrieval")
         kb_context = await search_knowledge_for_bot(user_message)
-        current_step_detail = f"retrieved_chars={len(kb_context or '')}"
+        annotate_current_step(
+            f"retrieved_chars={len(kb_context or '')}",
+            {"retrieved_chars": len(kb_context or "")},
+        )
 
         await stage("file_matching")
         all_files = await get_all_file_entries()
@@ -2550,6 +2590,8 @@ async def process_customer_text_message(
             await outbound.reply_text(get_localized_static_text(fallback, language))
         except Exception:
             logger.error(f"[Bot {bot_id}] Failed to send fallback message", exc_info=True)
+    finally:
+        reset_observability_context(observability_context_tokens)
 
 
 def make_start_handler(bot_id: int):
@@ -2600,12 +2642,15 @@ def make_message_handler(bot_id: int):
         )
         language_step_started_at = datetime.utcnow()
         await set_conversation_stage(conversation.id, "detecting_language")
+        language_context_tokens = set_observability_context(conversation.id, metric_id)
         try:
             detected_language = await detect_language(user_message)
             logger.info(f"[Bot {bot_id}] Detected language: {detected_language}")
         except Exception as e:
             logger.error(f"[Bot {bot_id}] Language detection failed: {e}", exc_info=True)
             detected_language = conversation.language or "en"
+        finally:
+            reset_observability_context(language_context_tokens)
 
         scene_state = await get_scene_state(conversation.id)
         language = resolve_turn_language(

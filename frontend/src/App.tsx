@@ -8,6 +8,7 @@ import Settings from './pages/Settings';
 import Products from './pages/Products';
 import SceneLibrary from './pages/SceneLibrary';
 import TelegramSimulator from './pages/TelegramSimulator';
+import Observability from './pages/Observability';
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const token = localStorage.getItem('token');
@@ -33,6 +34,7 @@ export default function App() {
                 <Route path="/bots" element={<Navigate to="/settings?tab=bots" replace />} />
                 <Route path="/products" element={<Products />} />
                 <Route path="/scenes" element={<SceneLibrary />} />
+                <Route path="/observability" element={<Observability />} />
                 <Route path="/simulator" element={<TelegramSimulator />} />
                 <Route path="/settings" element={<Settings />} />
                 <Route path="*" element={<Navigate to="/" replace />} />

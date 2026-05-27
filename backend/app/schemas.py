@@ -87,6 +87,7 @@ class ConversationTurnStepMetricSchema(BaseModel):
     stage_key: str = ""
     stage_label: str = ""
     stage_detail: str = ""
+    metadata_json: str = "{}"
     started_at: datetime
     completed_at: Optional[datetime] = None
     duration_ms: Optional[int] = None
@@ -96,6 +97,108 @@ class ConversationTurnStepMetricSchema(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class ObservabilityKpisSchema(BaseModel):
+    total_turns: int = 0
+    success_count: int = 0
+    failed_count: int = 0
+    success_rate: float = 0.0
+    failure_rate: float = 0.0
+    first_response_p50_ms: Optional[int] = None
+    first_response_p95_ms: Optional[int] = None
+    first_response_p99_ms: Optional[int] = None
+    total_p50_ms: Optional[int] = None
+    total_p95_ms: Optional[int] = None
+    total_p99_ms: Optional[int] = None
+    text_first_response_p95_ms: Optional[int] = None
+    product_recommendation_first_response_p95_ms: Optional[int] = None
+    handoff_count: int = 0
+    handoff_rate: float = 0.0
+    profile_handoff_count: int = 0
+    profile_handoff_rate: float = 0.0
+    rag_lookup_count: int = 0
+    rag_empty_count: int = 0
+    rag_empty_rate: float = 0.0
+    llm_call_count: int = 0
+    llm_failure_count: int = 0
+    llm_failure_rate: float = 0.0
+    scene_generation_count: int = 0
+    scene_failure_count: int = 0
+    scene_failure_rate: float = 0.0
+
+
+class ObservabilityStageMetricSchema(BaseModel):
+    stage_key: str
+    stage_label: str
+    count: int
+    avg_ms: int
+    p50_ms: Optional[int] = None
+    p95_ms: Optional[int] = None
+    p99_ms: Optional[int] = None
+    failed_count: int = 0
+
+
+class ObservabilityLLMMetricSchema(BaseModel):
+    operation: str
+    model: str
+    count: int
+    failed_count: int
+    failure_rate: float
+    avg_ms: int
+    p50_ms: Optional[int] = None
+    p95_ms: Optional[int] = None
+    p99_ms: Optional[int] = None
+    last_error: str = ""
+
+
+class ObservabilityFailureSampleSchema(BaseModel):
+    source: str = "turn"
+    conversation_id: Optional[int] = None
+    turn_metric_id: Optional[int] = None
+    language: str = ""
+    primary_intent: str = ""
+    response_kind: str = ""
+    error_message: str = ""
+    created_at: Optional[datetime] = None
+
+
+class ObservabilitySummarySchema(BaseModel):
+    kpis: ObservabilityKpisSchema
+    stage_metrics: list[ObservabilityStageMetricSchema] = []
+    slowest_stages: list[ObservabilityStageMetricSchema] = []
+    llm_metrics: list[ObservabilityLLMMetricSchema] = []
+    recent_failures: list[ObservabilityFailureSampleSchema] = []
+
+
+class ObservabilityAlertSchema(BaseModel):
+    id: int
+    severity: str
+    metric_key: str
+    title: str
+    message: str
+    observed_value: float
+    threshold_value: float
+    window_start: datetime
+    window_end: datetime
+    status: str
+    dedupe_key: str
+    sent_at: Optional[datetime] = None
+    acknowledged_at: Optional[datetime] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class ObservabilityAlertSettingsSchema(BaseModel):
+    text_first_response_p95_ms: int = 8000
+    product_recommendation_first_response_p95_ms: int = 12000
+    scene_failure_rate: float = 0.2
+    llm_failure_rate: float = 0.1
+    turn_failure_rate: float = 0.05
+    rag_empty_rate: float = 0.4
+    profile_handoff_rate: float = 0.15
 
 
 class ConversationDetailSchema(ConversationSchema):

@@ -136,6 +136,10 @@ def _run_migrations(conn):
             "product_entries", "classification_reason",
             "ALTER TABLE product_entries ADD COLUMN classification_reason TEXT DEFAULT ''"
         ),
+        (
+            "conversation_turn_step_metrics", "metadata_json",
+            "ALTER TABLE conversation_turn_step_metrics ADD COLUMN metadata_json TEXT DEFAULT '{}'"
+        ),
     ]
     for table, column, ddl in migrations:
         result = conn.execute(text(
@@ -178,6 +182,51 @@ def _run_migrations(conn):
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_product_entries_normalized_space ON product_entries(normalized_space)"))
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_product_entries_normalized_style ON product_entries(normalized_style)"))
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_product_entries_normalized_color ON product_entries(normalized_color)"))
+    conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS llm_call_metrics (
+            id SERIAL PRIMARY KEY,
+            operation VARCHAR(100) DEFAULT '',
+            provider VARCHAR(100) DEFAULT '',
+            model VARCHAR(200) DEFAULT '',
+            duration_ms INTEGER,
+            success BOOLEAN DEFAULT TRUE,
+            error_type VARCHAR(200) DEFAULT '',
+            error_message TEXT DEFAULT '',
+            conversation_id INTEGER REFERENCES conversations(id),
+            turn_metric_id INTEGER REFERENCES conversation_turn_metrics(id),
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_llm_call_metrics_operation ON llm_call_metrics(operation)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_llm_call_metrics_success ON llm_call_metrics(success)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_llm_call_metrics_conversation_id ON llm_call_metrics(conversation_id)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_llm_call_metrics_turn_metric_id ON llm_call_metrics(turn_metric_id)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_llm_call_metrics_created_at ON llm_call_metrics(created_at)"))
+    conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS observability_alerts (
+            id SERIAL PRIMARY KEY,
+            severity VARCHAR(50) DEFAULT 'warning',
+            metric_key VARCHAR(100) DEFAULT '',
+            title VARCHAR(500) DEFAULT '',
+            message TEXT DEFAULT '',
+            observed_value FLOAT DEFAULT 0,
+            threshold_value FLOAT DEFAULT 0,
+            window_start TIMESTAMP NOT NULL,
+            window_end TIMESTAMP NOT NULL,
+            status VARCHAR(50) DEFAULT 'open',
+            dedupe_key VARCHAR(500) NOT NULL UNIQUE,
+            sent_at TIMESTAMP,
+            acknowledged_at TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_observability_alerts_severity ON observability_alerts(severity)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_observability_alerts_metric_key ON observability_alerts(metric_key)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_observability_alerts_status ON observability_alerts(status)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_observability_alerts_window_start ON observability_alerts(window_start)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_observability_alerts_window_end ON observability_alerts(window_end)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_observability_alerts_dedupe_key ON observability_alerts(dedupe_key)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_observability_alerts_created_at ON observability_alerts(created_at)"))
 
 
 async def init_db():
