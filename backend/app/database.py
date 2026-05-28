@@ -202,6 +202,14 @@ def _run_migrations(conn):
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_llm_call_metrics_conversation_id ON llm_call_metrics(conversation_id)"))
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_llm_call_metrics_turn_metric_id ON llm_call_metrics(turn_metric_id)"))
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_llm_call_metrics_created_at ON llm_call_metrics(created_at)"))
+    conn.execute(text(
+        "CREATE INDEX IF NOT EXISTS ix_turn_step_metrics_stage_started "
+        "ON conversation_turn_step_metrics(stage_key, started_at)"
+    ))
+    conn.execute(text(
+        "CREATE INDEX IF NOT EXISTS ix_turn_metrics_intent_started "
+        "ON conversation_turn_metrics(primary_intent, started_at)"
+    ))
     conn.execute(text("""
         CREATE TABLE IF NOT EXISTS observability_alerts (
             id SERIAL PRIMARY KEY,
@@ -215,11 +223,24 @@ def _run_migrations(conn):
             window_end TIMESTAMP NOT NULL,
             status VARCHAR(50) DEFAULT 'open',
             dedupe_key VARCHAR(500) NOT NULL UNIQUE,
+            sample_conversation_ids_json TEXT DEFAULT '[]',
+            sample_count INTEGER DEFAULT 0,
             sent_at TIMESTAMP,
             acknowledged_at TIMESTAMP,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """))
+    for column, ddl in [
+        ("sample_conversation_ids_json", "ALTER TABLE observability_alerts ADD COLUMN sample_conversation_ids_json TEXT DEFAULT '[]'"),
+        ("sample_count", "ALTER TABLE observability_alerts ADD COLUMN sample_count INTEGER DEFAULT 0"),
+    ]:
+        result = conn.execute(text(
+            "SELECT 1 FROM information_schema.columns "
+            "WHERE table_name = 'observability_alerts' AND column_name = :column"
+        ), {"column": column})
+        if result.fetchone() is None:
+            logger.info(f"Running migration: adding observability_alerts.{column}")
+            conn.execute(text(ddl))
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_observability_alerts_severity ON observability_alerts(severity)"))
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_observability_alerts_metric_key ON observability_alerts(metric_key)"))
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_observability_alerts_status ON observability_alerts(status)"))

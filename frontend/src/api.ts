@@ -5,7 +5,7 @@ import type {
   ProductEntry, SceneGenerationRecord, SceneLibraryItem, SceneLibraryFilters,
   SceneGeneratorRequest, SceneBatchActionResponse, TelegramSimulatorSessionResponse, SimulatorOutgoingEvent,
   ObservabilitySummary, ObservabilityStageMetric, ObservabilityLLMMetric, ObservabilityAlert,
-  ObservabilityAlertSettings,
+  ObservabilityAlertSettings, ObservabilityStageTrendResponse,
 } from './types';
 
 const api = axios.create({ baseURL: '/api' });
@@ -53,6 +53,13 @@ export const observabilityApi = {
     intent?: string;
     response_kind?: string;
   }) => api.get<ObservabilityStageMetric[]>('/observability/stages', { params }),
+  getStageTrends: (params?: {
+    range?: '24h' | '7d' | '30d';
+    bot_id?: number;
+    language?: string;
+    intent?: string;
+    response_kind?: string;
+  }) => api.get<ObservabilityStageTrendResponse>('/observability/stage-trends', { params }),
   getLLMCalls: (params?: {
     range?: '24h' | '7d' | '30d';
     bot_id?: number;
@@ -62,6 +69,13 @@ export const observabilityApi = {
   }) => api.get<ObservabilityLLMMetric[]>('/observability/llm-calls', { params }),
   listAlerts: (params?: { status?: string; limit?: number }) =>
     api.get<ObservabilityAlert[]>('/observability/alerts', { params }),
+  exportData: (params?: {
+    range?: '24h' | '7d' | '30d';
+    bot_id?: number;
+    language?: string;
+    intent?: string;
+    response_kind?: string;
+  }) => api.get<Blob>('/observability/export', { params, responseType: 'blob' }),
   ackAlert: (id: number) =>
     api.post<ObservabilityAlert>(`/observability/alerts/${id}/ack`),
   getAlertSettings: () =>

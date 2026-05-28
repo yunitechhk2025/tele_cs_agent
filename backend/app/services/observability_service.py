@@ -1,9 +1,12 @@
 import asyncio
 import contextvars
+import csv
 import html
+import io
 import json
 import logging
 import time
+import zipfile
 from collections import defaultdict
 from datetime import datetime, timedelta
 from typing import Any
@@ -24,6 +27,7 @@ from app.models import (
     SystemSetting,
     TelegramBot,
 )
+from app.services.conversation_monitoring import STAGE_LABELS
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -45,6 +49,20 @@ HANDOFF_RESPONSE_KINDS = {
     "profile_handoff",
     "complaint_handoff",
     "human_only_wait",
+}
+
+INTENT_LABELS = {
+    "general_question": "普通问答",
+    "product_recommendation": "商品推荐",
+    "product_intro": "商品详情",
+    "scene_image_request": "场景图",
+    "scene_image_confirmation": "场景图确认",
+    "file_request": "文件请求",
+    "human_handoff": "转人工",
+    "quote_handoff": "报价转人工",
+    "complaint": "投诉",
+    "unknown": "未知意图",
+    "": "未识别意图",
 }
 
 _context_conversation_id: contextvars.ContextVar[int | None] = contextvars.ContextVar(
@@ -126,6 +144,62 @@ def _duration_values(rows: list[dict[str, Any]], field: str) -> list[int | None]
     return [_get(row, field) for row in rows]
 
 
+def _stage_label(stage_key: str, fallback: str = "") -> str:
+    if stage_key in STAGE_LABELS:
+        return STAGE_LABELS[stage_key]
+    return fallback or stage_key
+
+
+def _intent_label(intent: str) -> str:
+    return INTENT_LABELS.get(intent or "", intent or "未识别意图")
+
+
+def _unique_conversation_ids(rows: list[dict[str, Any]], *, limit: int = 10) -> list[int]:
+    ids: list[int] = []
+    seen: set[int] = set()
+    for row in rows:
+        value = _get(row, "conversation_id")
+        if value is None:
+            continue
+        try:
+            conversation_id = int(value)
+        except (TypeError, ValueError):
+            continue
+        if conversation_id in seen:
+            continue
+        seen.add(conversation_id)
+        ids.append(conversation_id)
+        if len(ids) >= limit:
+            break
+    return ids
+
+
+def _slowest_conversation_ids(
+    rows: list[dict[str, Any]],
+    field: str,
+    *,
+    limit: int = 10,
+) -> list[int]:
+    sortable = [row for row in rows if _get(row, field) is not None and _get(row, "conversation_id") is not None]
+    sortable.sort(key=lambda row: int(_get(row, field) or 0), reverse=True)
+    return _unique_conversation_ids(sortable, limit=limit)
+
+
+def _rag_empty_steps(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    empty_steps: list[dict[str, Any]] = []
+    for step in steps:
+        if str(_get(step, "stage_key", "")) != "knowledge_retrieval":
+            continue
+        metadata = _safe_json_dict(_get(step, "metadata_json", "{}"))
+        try:
+            retrieved_chars = int(metadata.get("retrieved_chars") or 0)
+        except (TypeError, ValueError):
+            retrieved_chars = 0
+        if retrieved_chars <= 0:
+            empty_steps.append(step)
+    return empty_steps
+
+
 def build_observability_summary(
     turns: list[dict[str, Any]],
     steps: list[dict[str, Any]],
@@ -154,15 +228,8 @@ def build_observability_summary(
     profile_handoff_count = sum(1 for row in turns if str(_get(row, "response_kind", "")) == "profile_handoff")
 
     rag_steps = [step for step in steps if str(_get(step, "stage_key", "")) == "knowledge_retrieval"]
-    rag_empty_count = 0
-    for step in rag_steps:
-        metadata = _safe_json_dict(_get(step, "metadata_json", "{}"))
-        try:
-            retrieved_chars = int(metadata.get("retrieved_chars") or 0)
-        except (TypeError, ValueError):
-            retrieved_chars = 0
-        if retrieved_chars <= 0:
-            rag_empty_count += 1
+    rag_empty_rows = _rag_empty_steps(steps)
+    rag_empty_count = len(rag_empty_rows)
 
     llm_failure_count = sum(1 for row in llm_calls if not bool(_get(row, "success", True)))
     scene_failure_count = sum(1 for row in scenes if str(_get(row, "status", "")) == "failed")
@@ -176,7 +243,7 @@ def build_observability_summary(
         labels = [str(_get(row, "stage_label", "")) for row in rows if str(_get(row, "stage_label", ""))]
         stage_metrics.append({
             "stage_key": stage_key,
-            "stage_label": labels[0] if labels else stage_key,
+            "stage_label": _stage_label(stage_key, labels[0] if labels else ""),
             "count": len(rows),
             "avg_ms": _avg(durations),
             "p50_ms": percentile(durations, 50),
@@ -240,6 +307,31 @@ def build_observability_summary(
         })
     recent_failures.sort(key=lambda item: item.get("created_at") or datetime.min, reverse=True)
 
+    text_turns = [
+        row for row in turns
+        if str(_get(row, "response_kind", "")) in {"text", "text_draft"}
+    ]
+    product_turns = [
+        row for row in turns
+        if str(_get(row, "primary_intent", "")) == "product_recommendation"
+        or str(_get(row, "response_kind", "")).startswith("product_recommendation")
+    ]
+    alert_samples = {
+        "text_first_response_p95_ms": _slowest_conversation_ids(text_turns, "first_response_ms"),
+        "product_recommendation_first_response_p95_ms": _slowest_conversation_ids(product_turns, "first_response_ms"),
+        "turn_failure_rate": _unique_conversation_ids([row for row in turns if not bool(_get(row, "success", True))]),
+        "profile_handoff_rate": _unique_conversation_ids([
+            row for row in turns if str(_get(row, "response_kind", "")) == "profile_handoff"
+        ]),
+        "rag_empty_rate": _unique_conversation_ids(rag_empty_rows),
+        "llm_failure_rate": _unique_conversation_ids([
+            row for row in llm_calls if not bool(_get(row, "success", True))
+        ]),
+        "scene_failure_rate": _unique_conversation_ids([
+            row for row in scenes if str(_get(row, "status", "")) == "failed"
+        ]),
+    }
+
     kpis = {
         "total_turns": total_turns,
         "success_count": success_count,
@@ -274,6 +366,7 @@ def build_observability_summary(
         "slowest_stages": stage_metrics[:5],
         "llm_metrics": llm_metrics,
         "recent_failures": recent_failures[:20],
+        "alert_samples": alert_samples,
     }
 
 
@@ -291,7 +384,9 @@ def _alert(
     window_start: datetime,
     window_end: datetime,
     scope_key: str,
+    sample_conversation_ids: list[int] | None = None,
 ) -> dict[str, Any]:
+    samples = [int(item) for item in (sample_conversation_ids or [])[:10]]
     return {
         "severity": severity,
         "metric_key": metric_key,
@@ -303,6 +398,8 @@ def _alert(
         "window_end": window_end,
         "status": "open",
         "dedupe_key": f"{metric_key}:{_window_key(window_start)}:{_window_key(window_end)}:{scope_key}",
+        "sample_conversation_ids_json": json.dumps(samples, ensure_ascii=False),
+        "sample_count": len(samples),
     }
 
 
@@ -316,6 +413,7 @@ def evaluate_alert_candidates(
 ) -> list[dict[str, Any]]:
     settings_map = {**DEFAULT_ALERT_SETTINGS, **(alert_settings or {})}
     kpis = summary.get("kpis") or {}
+    alert_samples = summary.get("alert_samples") or {}
     checks = [
         (
             "text_first_response_p95_ms",
@@ -384,6 +482,7 @@ def evaluate_alert_candidates(
         except (TypeError, ValueError):
             continue
         if observed_num > threshold_num:
+            sample_ids = alert_samples.get(metric_key) or []
             alerts.append(_alert(
                 metric_key,
                 severity,
@@ -394,8 +493,184 @@ def evaluate_alert_candidates(
                 window_start,
                 window_end,
                 scope_key,
+                sample_ids,
             ))
     return alerts
+
+
+def _trend_granularity(range_key: str | None) -> str:
+    return "hour" if str(range_key or "24h") == "24h" else "day"
+
+
+def _bucket_start(dt: datetime, granularity: str) -> datetime:
+    if granularity == "hour":
+        return dt.replace(minute=0, second=0, microsecond=0)
+    return dt.replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def _bucket_label(dt: datetime, granularity: str) -> str:
+    return dt.strftime("%m-%d %H:00") if granularity == "hour" else dt.strftime("%m-%d")
+
+
+def build_observability_stage_trends(
+    steps: list[dict[str, Any]],
+    *,
+    range_key: str = "24h",
+    window_start: datetime | None = None,
+    window_end: datetime | None = None,
+) -> dict[str, Any]:
+    granularity = _trend_granularity(range_key)
+    grouped: dict[str, dict[str, dict[datetime, list[int]]]] = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
+    for step in steps:
+        started_at = _dt(_get(step, "started_at"))
+        duration = _get(step, "duration_ms")
+        if started_at is None or duration is None:
+            continue
+        if window_start and started_at < window_start:
+            continue
+        if window_end and started_at > window_end:
+            continue
+        try:
+            duration_ms = int(duration)
+        except (TypeError, ValueError):
+            continue
+        intent = str(_get(step, "primary_intent", "") or "unknown")
+        stage_key = str(_get(step, "stage_key", "") or "unknown")
+        grouped[intent][stage_key][_bucket_start(started_at, granularity)].append(duration_ms)
+
+    intent_groups: list[dict[str, Any]] = []
+    for intent, stage_map in grouped.items():
+        stages: list[dict[str, Any]] = []
+        for stage_key, bucket_map in stage_map.items():
+            all_values = [value for values in bucket_map.values() for value in values]
+            points = []
+            for bucket, values in sorted(bucket_map.items(), key=lambda item: item[0]):
+                points.append({
+                    "bucket_start": bucket,
+                    "bucket_label": _bucket_label(bucket, granularity),
+                    "count": len(values),
+                    "avg_ms": _avg(values),
+                    "p50_ms": percentile(values, 50),
+                    "p95_ms": percentile(values, 95),
+                    "p99_ms": percentile(values, 99),
+                })
+            stages.append({
+                "stage_key": stage_key,
+                "stage_label": _stage_label(stage_key),
+                "count": len(all_values),
+                "avg_ms": _avg(all_values),
+                "p50_ms": percentile(all_values, 50),
+                "p95_ms": percentile(all_values, 95),
+                "p99_ms": percentile(all_values, 99),
+                "points": points,
+            })
+        stages.sort(key=lambda item: (item.get("p95_ms") or 0, item.get("count") or 0), reverse=True)
+        intent_groups.append({
+            "intent": intent,
+            "intent_label": _intent_label(intent),
+            "stages": stages,
+        })
+    intent_groups.sort(key=lambda item: sum(stage["count"] for stage in item["stages"]), reverse=True)
+    return {
+        "granularity": granularity,
+        "window_start": window_start,
+        "window_end": window_end,
+        "intents": intent_groups,
+    }
+
+
+def _csv_text(headers: list[str], rows: list[dict[str, Any]]) -> str:
+    out = io.StringIO()
+    writer = csv.DictWriter(out, fieldnames=headers, extrasaction="ignore")
+    writer.writeheader()
+    for row in rows:
+        writer.writerow({key: _export_value(row.get(key)) for key in headers})
+    return out.getvalue()
+
+
+def _export_value(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, datetime):
+        return value.isoformat(sep=" ", timespec="seconds")
+    if isinstance(value, (list, dict)):
+        return json.dumps(value, ensure_ascii=False)
+    return str(value)
+
+
+def build_observability_export_zip(
+    summary: dict[str, Any],
+    alerts: list[Any],
+) -> bytes:
+    kpis = summary.get("kpis") or {}
+    kpi_rows = [{"metric": key, "value": value} for key, value in kpis.items()]
+    alert_rows = []
+    for alert in alerts:
+        alert_rows.append({
+            "id": _get(alert, "id"),
+            "severity": _get(alert, "severity", ""),
+            "metric_key": _get(alert, "metric_key", ""),
+            "title": _get(alert, "title", ""),
+            "message": _get(alert, "message", ""),
+            "observed_value": _get(alert, "observed_value", ""),
+            "threshold_value": _get(alert, "threshold_value", ""),
+            "status": _get(alert, "status", ""),
+            "sample_conversation_ids_json": _get(alert, "sample_conversation_ids_json", "[]"),
+            "sample_count": _get(alert, "sample_count", 0),
+            "window_start": _get(alert, "window_start"),
+            "window_end": _get(alert, "window_end"),
+            "created_at": _get(alert, "created_at"),
+        })
+
+    files = {
+        "kpis.csv": _csv_text(["metric", "value"], kpi_rows),
+        "stage_metrics.csv": _csv_text(
+            ["stage_key", "stage_label", "count", "avg_ms", "p50_ms", "p95_ms", "p99_ms", "failed_count"],
+            summary.get("stage_metrics") or [],
+        ),
+        "llm_metrics.csv": _csv_text(
+            ["operation", "model", "count", "failed_count", "failure_rate", "avg_ms", "p50_ms", "p95_ms", "p99_ms", "last_error"],
+            summary.get("llm_metrics") or [],
+        ),
+        "alerts.csv": _csv_text(
+            [
+                "id", "severity", "metric_key", "title", "message", "observed_value", "threshold_value",
+                "status", "sample_conversation_ids_json", "sample_count", "window_start", "window_end", "created_at",
+            ],
+            alert_rows,
+        ),
+        "recent_failures.csv": _csv_text(
+            ["source", "conversation_id", "turn_metric_id", "language", "primary_intent", "response_kind", "error_message", "created_at"],
+            summary.get("recent_failures") or [],
+        ),
+    }
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for filename, text in files.items():
+            zf.writestr(filename, text.encode("utf-8-sig"))
+    return out.getvalue()
+
+
+def build_observability_export_filename(
+    *,
+    range_key: str,
+    bot_id: int | None = None,
+    language: str | None = None,
+    intent: str | None = None,
+    response_kind: str | None = None,
+) -> str:
+    parts = ["observability", range_key]
+    if bot_id is not None:
+        parts.append(f"bot-{bot_id}")
+    if language:
+        parts.append(language)
+    if intent:
+        parts.append(intent)
+    if response_kind:
+        parts.append(response_kind)
+    parts.append(datetime.utcnow().strftime("%Y%m%d%H%M%S"))
+    safe = ["".join(ch if ch.isalnum() or ch in {"-", "_"} else "-" for ch in part) for part in parts]
+    return "-".join(safe) + ".zip"
 
 
 def resolve_time_range(range_key: str | None) -> tuple[datetime, datetime]:
@@ -442,11 +717,14 @@ def _turn_to_row(metric: ConversationTurnMetric, bot_id: int | None, language: s
 
 def _step_to_row(step: ConversationTurnStepMetric) -> dict[str, Any]:
     return {
+        "turn_metric_id": step.turn_metric_id,
+        "conversation_id": step.conversation_id,
         "stage_key": step.stage_key or "",
-        "stage_label": step.stage_label or "",
+        "stage_label": _stage_label(step.stage_key or "", step.stage_label or ""),
         "duration_ms": step.duration_ms,
         "success": step.success,
         "metadata_json": step.metadata_json or "{}",
+        "started_at": step.started_at,
     }
 
 
@@ -458,6 +736,8 @@ def _llm_to_row(call: LLMCallMetric) -> dict[str, Any]:
         "success": call.success,
         "error_type": call.error_type or "",
         "error_message": call.error_message or "",
+        "conversation_id": call.conversation_id,
+        "turn_metric_id": call.turn_metric_id,
         "created_at": call.created_at,
     }
 
@@ -540,6 +820,47 @@ async def load_observability_summary(
     scene_result = await db.execute(scene_stmt.order_by(SceneGenerationRecord.created_at))
     scenes = [_scene_to_row(scene) for scene in scene_result.scalars().all()]
     return build_observability_summary(turns, steps, llm_calls, scenes)
+
+
+async def load_observability_stage_trends(
+    db: AsyncSession,
+    *,
+    range_key: str = "24h",
+    bot_id: int | None = None,
+    language: str | None = None,
+    intent: str | None = None,
+    response_kind: str | None = None,
+) -> dict[str, Any]:
+    window_start, window_end = resolve_time_range(range_key)
+    stmt = (
+        select(ConversationTurnStepMetric, ConversationTurnMetric.primary_intent)
+        .join(ConversationTurnMetric, ConversationTurnMetric.id == ConversationTurnStepMetric.turn_metric_id)
+        .join(Conversation, Conversation.id == ConversationTurnMetric.conversation_id)
+        .where(
+            ConversationTurnStepMetric.started_at >= window_start,
+            ConversationTurnStepMetric.started_at <= window_end,
+        )
+    )
+    if bot_id is not None:
+        stmt = stmt.where(Conversation.bot_id == bot_id)
+    if language:
+        stmt = stmt.where(Conversation.language == language)
+    if intent:
+        stmt = stmt.where(ConversationTurnMetric.primary_intent == intent)
+    if response_kind:
+        stmt = stmt.where(ConversationTurnMetric.response_kind == response_kind)
+    result = await db.execute(stmt.order_by(ConversationTurnStepMetric.started_at))
+    rows: list[dict[str, Any]] = []
+    for step, primary_intent in result.all():
+        row = _step_to_row(step)
+        row["primary_intent"] = primary_intent or "unknown"
+        rows.append(row)
+    return build_observability_stage_trends(
+        rows,
+        range_key=range_key,
+        window_start=window_start,
+        window_end=window_end,
+    )
 
 
 async def load_alert_settings(db: AsyncSession) -> dict[str, Any]:
@@ -696,6 +1017,16 @@ async def _send_alert_to_telegram(alert: ObservabilityAlert) -> bool:
             return False
 
         severity = "CRITICAL" if alert.severity == "critical" else "WARNING"
+        sample_ids = []
+        try:
+            parsed_samples = json.loads(alert.sample_conversation_ids_json or "[]")
+            if isinstance(parsed_samples, list):
+                sample_ids = [int(item) for item in parsed_samples[:3]]
+        except Exception:
+            sample_ids = []
+        sample_line = ""
+        if sample_ids:
+            sample_line = "\nSamples: " + ", ".join(f"<code>#{item}</code>" for item in sample_ids)
         text = (
             f"<b>{html.escape(severity)} observability alert</b>\n"
             f"Metric: <code>{html.escape(alert.metric_key)}</code>\n"
@@ -705,6 +1036,7 @@ async def _send_alert_to_telegram(alert: ObservabilityAlert) -> bool:
             f"Threshold: <code>{alert.threshold_value:.4f}</code>\n"
             f"Window: <code>{alert.window_start:%Y-%m-%d %H:%M}</code> - "
             f"<code>{alert.window_end:%Y-%m-%d %H:%M}</code>"
+            f"{sample_line}"
         )
         sent = False
         seen: set[tuple[int, str]] = set()

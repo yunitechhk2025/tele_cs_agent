@@ -139,6 +139,40 @@ class ObservabilityStageMetricSchema(BaseModel):
     failed_count: int = 0
 
 
+class ObservabilityStageTrendPointSchema(BaseModel):
+    bucket_start: datetime
+    bucket_label: str
+    count: int
+    avg_ms: int
+    p50_ms: Optional[int] = None
+    p95_ms: Optional[int] = None
+    p99_ms: Optional[int] = None
+
+
+class ObservabilityStageTrendSeriesSchema(BaseModel):
+    stage_key: str
+    stage_label: str
+    count: int
+    avg_ms: int
+    p50_ms: Optional[int] = None
+    p95_ms: Optional[int] = None
+    p99_ms: Optional[int] = None
+    points: list[ObservabilityStageTrendPointSchema] = []
+
+
+class ObservabilityIntentStageTrendSchema(BaseModel):
+    intent: str
+    intent_label: str
+    stages: list[ObservabilityStageTrendSeriesSchema] = []
+
+
+class ObservabilityStageTrendResponseSchema(BaseModel):
+    granularity: str
+    window_start: Optional[datetime] = None
+    window_end: Optional[datetime] = None
+    intents: list[ObservabilityIntentStageTrendSchema] = []
+
+
 class ObservabilityLLMMetricSchema(BaseModel):
     operation: str
     model: str
@@ -183,6 +217,8 @@ class ObservabilityAlertSchema(BaseModel):
     window_end: datetime
     status: str
     dedupe_key: str
+    sample_conversation_ids_json: str = "[]"
+    sample_count: int = 0
     sent_at: Optional[datetime] = None
     acknowledged_at: Optional[datetime] = None
     created_at: datetime

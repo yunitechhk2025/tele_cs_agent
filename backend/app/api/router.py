@@ -39,7 +39,7 @@ from app.schemas import (
     ProductEntrySchema, ProductEntryListSchema, ProductImageSchema, SceneGenerationRequest, SceneGenerationRecordSchema,
     SceneLibraryItemSchema, SceneGeneratorRequest, SceneBatchActionRequest, SceneBatchActionResponse,
     ObservabilitySummarySchema, ObservabilityStageMetricSchema, ObservabilityLLMMetricSchema,
-    ObservabilityAlertSchema, ObservabilityAlertSettingsSchema,
+    ObservabilityAlertSchema, ObservabilityAlertSettingsSchema, ObservabilityStageTrendResponseSchema,
 )
 from app.services.rag_service import (
     add_to_knowledge_base, remove_from_knowledge_base,
@@ -84,9 +84,12 @@ from app.services.conversation_monitoring import (
 )
 from app.services.observability_service import (
     acknowledge_alert,
+    build_observability_export_filename,
+    build_observability_export_zip,
     list_alerts,
     load_alert_settings,
     load_observability_summary,
+    load_observability_stage_trends,
     reset_observability_context,
     save_alert_settings,
     set_observability_context,
@@ -382,6 +385,26 @@ async def observability_stages(
     return summary["stage_metrics"]
 
 
+@router.get("/observability/stage-trends", response_model=ObservabilityStageTrendResponseSchema)
+async def observability_stage_trends(
+    range_key: str = Query("24h", alias="range"),
+    bot_id: Optional[int] = Query(None),
+    language: Optional[str] = Query(None),
+    intent: Optional[str] = Query(None),
+    response_kind: Optional[str] = Query(None),
+    db: AsyncSession = Depends(get_db),
+    _: str = Depends(get_current_user),
+):
+    return await load_observability_stage_trends(
+        db,
+        range_key=range_key,
+        bot_id=bot_id,
+        language=language or None,
+        intent=intent or None,
+        response_kind=response_kind or None,
+    )
+
+
 @router.get("/observability/llm-calls", response_model=list[ObservabilityLLMMetricSchema])
 async def observability_llm_calls(
     range_key: str = Query("24h", alias="range"),
@@ -401,6 +424,39 @@ async def observability_llm_calls(
         response_kind=response_kind or None,
     )
     return summary["llm_metrics"]
+
+
+@router.get("/observability/export")
+async def observability_export(
+    range_key: str = Query("24h", alias="range"),
+    bot_id: Optional[int] = Query(None),
+    language: Optional[str] = Query(None),
+    intent: Optional[str] = Query(None),
+    response_kind: Optional[str] = Query(None),
+    db: AsyncSession = Depends(get_db),
+    _: str = Depends(get_current_user),
+):
+    summary = await load_observability_summary(
+        db,
+        range_key=range_key,
+        bot_id=bot_id,
+        language=language or None,
+        intent=intent or None,
+        response_kind=response_kind or None,
+    )
+    alerts = await list_alerts(db, limit=500)
+    filename = build_observability_export_filename(
+        range_key=range_key,
+        bot_id=bot_id,
+        language=language or None,
+        intent=intent or None,
+        response_kind=response_kind or None,
+    )
+    return Response(
+        content=build_observability_export_zip(summary, alerts),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.get("/observability/alerts", response_model=list[ObservabilityAlertSchema])

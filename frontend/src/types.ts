@@ -178,6 +178,40 @@ export interface ObservabilityStageMetric {
   failed_count: number;
 }
 
+export interface ObservabilityStageTrendPoint {
+  bucket_start: string;
+  bucket_label: string;
+  count: number;
+  avg_ms: number;
+  p50_ms: number | null;
+  p95_ms: number | null;
+  p99_ms: number | null;
+}
+
+export interface ObservabilityStageTrendSeries {
+  stage_key: string;
+  stage_label: string;
+  count: number;
+  avg_ms: number;
+  p50_ms: number | null;
+  p95_ms: number | null;
+  p99_ms: number | null;
+  points: ObservabilityStageTrendPoint[];
+}
+
+export interface ObservabilityIntentStageTrend {
+  intent: string;
+  intent_label: string;
+  stages: ObservabilityStageTrendSeries[];
+}
+
+export interface ObservabilityStageTrendResponse {
+  granularity: 'hour' | 'day' | string;
+  window_start: string | null;
+  window_end: string | null;
+  intents: ObservabilityIntentStageTrend[];
+}
+
 export interface ObservabilityLLMMetric {
   operation: string;
   model: string;
@@ -222,6 +256,8 @@ export interface ObservabilityAlert {
   window_end: string;
   status: 'open' | 'ack' | 'resolved' | string;
   dedupe_key: string;
+  sample_conversation_ids_json: string;
+  sample_count: number;
   sent_at: string | null;
   acknowledged_at: string | null;
   created_at: string;

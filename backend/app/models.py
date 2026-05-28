@@ -367,6 +367,8 @@ class ObservabilityAlert(Base):
     window_end = Column(DateTime, nullable=False, index=True)
     status = Column(String(50), default="open", index=True)
     dedupe_key = Column(String(500), nullable=False, unique=True, index=True)
+    sample_conversation_ids_json = Column(Text, default="[]")
+    sample_count = Column(Integer, default=0)
     sent_at = Column(DateTime, nullable=True)
     acknowledged_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, index=True)

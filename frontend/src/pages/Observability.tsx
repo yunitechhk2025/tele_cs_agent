@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Alert,
   Button,
@@ -7,6 +7,7 @@ import {
   Empty,
   Progress,
   Row,
+  Segmented,
   Select,
   Space,
   Statistic,
@@ -16,13 +17,16 @@ import {
   message,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import { CheckOutlined, ReloadOutlined } from '@ant-design/icons';
+import { CheckOutlined, DownloadOutlined, ReloadOutlined } from '@ant-design/icons';
 import { botApi, observabilityApi } from '../api';
+import StageTrendChart, { type StageTrendMetricKey } from '../components/StageTrendChart';
 import type {
   ObservabilityAlert,
   ObservabilityFailureSample,
+  ObservabilityIntentStageTrend,
   ObservabilityLLMMetric,
   ObservabilityStageMetric,
+  ObservabilityStageTrendResponse,
   ObservabilitySummary,
   TelegramBot,
 } from '../types';
@@ -93,18 +97,56 @@ function statusTag(status: string) {
   return <Tag>{status}</Tag>;
 }
 
+function formatDateTime(value: string | null | undefined) {
+  if (!value) return '-';
+  return value.replace('T', ' ').slice(0, 19);
+}
+
+function parseSampleConversationIds(raw: string | null | undefined) {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .map((item) => Number(item))
+      .filter((item) => Number.isInteger(item) && item > 0);
+  } catch {
+    return [];
+  }
+}
+
+function normalizeRange(value: string | null): '24h' | '7d' | '30d' {
+  return value === '7d' || value === '30d' ? value : '24h';
+}
+
+const TREND_METRIC_OPTIONS = [
+  { label: '平均', value: 'avg_ms' },
+  { label: 'P50', value: 'p50_ms' },
+  { label: 'P95', value: 'p95_ms' },
+  { label: 'P99', value: 'p99_ms' },
+] as const;
+
 export default function Observability() {
   const navigate = useNavigate();
-  const [range, setRange] = useState<'24h' | '7d' | '30d'>('24h');
-  const [botId, setBotId] = useState<number | undefined>();
-  const [language, setLanguage] = useState('');
-  const [intent, setIntent] = useState('');
-  const [responseKind, setResponseKind] = useState('');
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [range, setRange] = useState<'24h' | '7d' | '30d'>(() => normalizeRange(searchParams.get('range')));
+  const [botId, setBotId] = useState<number | undefined>(() => {
+    const raw = searchParams.get('bot_id');
+    const value = raw ? Number(raw) : undefined;
+    return value && Number.isInteger(value) ? value : undefined;
+  });
+  const [language, setLanguage] = useState(() => searchParams.get('language') || '');
+  const [intent, setIntent] = useState(() => searchParams.get('intent') || '');
+  const [responseKind, setResponseKind] = useState(() => searchParams.get('response_kind') || '');
+  const [trendMetric, setTrendMetric] = useState<StageTrendMetricKey>('p95_ms');
   const [bots, setBots] = useState<TelegramBot[]>([]);
   const [summary, setSummary] = useState<ObservabilitySummary | null>(null);
+  const [trends, setTrends] = useState<ObservabilityStageTrendResponse | null>(null);
+  const [stageSelections, setStageSelections] = useState<Record<string, string[]>>({});
   const [alerts, setAlerts] = useState<ObservabilityAlert[]>([]);
   const [loading, setLoading] = useState(false);
   const [alertLoading, setAlertLoading] = useState(false);
+  const [exportLoading, setExportLoading] = useState(false);
 
   const params = useMemo(() => ({
     range,
@@ -117,12 +159,20 @@ export default function Observability() {
   const loadData = async () => {
     setLoading(true);
     try {
-      const [{ data: summaryData }, { data: alertData }] = await Promise.all([
+      const [{ data: summaryData }, { data: alertData }, { data: trendData }] = await Promise.all([
         observabilityApi.getSummary(params),
         observabilityApi.listAlerts({ limit: 100 }),
+        observabilityApi.getStageTrends(params),
       ]);
       setSummary(summaryData);
       setAlerts(alertData);
+      setTrends(trendData);
+      setStageSelections(Object.fromEntries(
+        trendData.intents.map((group) => [
+          group.intent,
+          group.stages.slice(0, 5).map((stage) => stage.stage_key),
+        ]),
+      ));
     } catch (err) {
       console.error(err);
       message.error('监控数据加载失败');
@@ -145,6 +195,16 @@ export default function Observability() {
   }, []);
 
   useEffect(() => {
+    const next = new URLSearchParams();
+    next.set('range', range);
+    if (botId) next.set('bot_id', String(botId));
+    if (language) next.set('language', language);
+    if (intent) next.set('intent', intent);
+    if (responseKind) next.set('response_kind', responseKind);
+    setSearchParams(next, { replace: true });
+  }, [botId, intent, language, range, responseKind, setSearchParams]);
+
+  useEffect(() => {
     loadData();
   }, [params]);
 
@@ -162,12 +222,37 @@ export default function Observability() {
     }
   };
 
+  const exportData = async () => {
+    setExportLoading(true);
+    try {
+      const response = await observabilityApi.exportData(params);
+      const disposition = response.headers['content-disposition'] || '';
+      const match = /filename="([^"]+)"/.exec(disposition);
+      const filename = match?.[1] || `observability-${range}.zip`;
+      const blob = new Blob([response.data], { type: 'application/zip' });
+      const href = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = href;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(href);
+      message.success('导出已开始');
+    } catch (err) {
+      console.error(err);
+      message.error('导出失败');
+    } finally {
+      setExportLoading(false);
+    }
+  };
+
   const stageColumns: ColumnsType<ObservabilityStageMetric> = [
     {
       title: '阶段',
       dataIndex: 'stage_label',
       render: (value, row) => (
-        <Space direction="vertical" size={0}>
+        <Space direction="vertical" size={2}>
           <Text strong>{value || row.stage_key}</Text>
           <Text type="secondary" style={{ fontSize: 12 }}>{row.stage_key}</Text>
         </Space>
@@ -212,7 +297,24 @@ export default function Observability() {
     { title: '指标', dataIndex: 'metric_key', width: 210 },
     { title: '观测值', dataIndex: 'observed_value', width: 100, render: (value) => value.toFixed(4) },
     { title: '阈值', dataIndex: 'threshold_value', width: 100, render: (value) => value.toFixed(4) },
+    {
+      title: '关联会话',
+      dataIndex: 'sample_conversation_ids_json',
+      width: 180,
+      render: (value) => {
+        const ids = parseSampleConversationIds(value);
+        if (!ids.length) return '-';
+        return (
+          <Space size={4} wrap>
+            {ids.slice(0, 5).map((id) => (
+              <Button key={id} type="link" size="small" onClick={() => navigate(`/conversations/${id}`)}>#{id}</Button>
+            ))}
+          </Space>
+        );
+      },
+    },
     { title: '状态', dataIndex: 'status', width: 100, render: statusTag },
+    { title: '创建时间', dataIndex: 'created_at', width: 170, render: formatDateTime },
     {
       title: '操作',
       width: 110,
@@ -235,6 +337,7 @@ export default function Observability() {
     { title: '语言', dataIndex: 'language', width: 100, render: (value) => value || '-' },
     { title: '意图', dataIndex: 'primary_intent', width: 180, render: (value) => value || '-' },
     { title: '回复类型', dataIndex: 'response_kind', width: 180, render: (value) => value || '-' },
+    { title: '时间', dataIndex: 'created_at', width: 170, render: formatDateTime },
     { title: '错误', dataIndex: 'error_message', ellipsis: true, render: (value) => value || '-' },
   ];
 
@@ -248,7 +351,10 @@ export default function Observability() {
           <Title level={3} style={{ margin: 0 }}>监控看板</Title>
           <Text type="secondary">客服响应质量、链路耗时、模型调用和告警事件</Text>
         </div>
-        <Button icon={<ReloadOutlined />} onClick={loadData} loading={loading}>刷新</Button>
+        <Space>
+          <Button icon={<DownloadOutlined />} onClick={exportData} loading={exportLoading}>导出</Button>
+          <Button icon={<ReloadOutlined />} onClick={loadData} loading={loading}>刷新</Button>
+        </Space>
       </div>
 
       {openAlertCount > 0 ? (
@@ -320,6 +426,53 @@ export default function Observability() {
           </div>
         </Col>
       </Row>
+
+      <div style={{ background: '#fff', borderRadius: 8, padding: 16 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap', marginBottom: 12 }}>
+          <div>
+            <Title level={5} style={{ margin: 0 }}>阶段耗时趋势</Title>
+            <Text type="secondary">按意图查看各阶段在当前时间范围内的耗时变化</Text>
+          </div>
+          <Segmented
+            value={trendMetric}
+            onChange={(value) => setTrendMetric(value as StageTrendMetricKey)}
+            options={[...TREND_METRIC_OPTIONS]}
+          />
+        </div>
+        {trends?.intents?.length ? (
+          <Space direction="vertical" size={18} style={{ width: '100%' }}>
+            {trends.intents.map((group: ObservabilityIntentStageTrend) => {
+              const selectedKeys = stageSelections[group.intent] || group.stages.slice(0, 5).map((stage) => stage.stage_key);
+              return (
+                <div key={group.intent} style={{ borderTop: '1px solid #f0f0f0', paddingTop: 14 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap', marginBottom: 8 }}>
+                    <Space direction="vertical" size={0}>
+                      <Text strong>{group.intent_label}</Text>
+                      <Text type="secondary" style={{ fontSize: 12 }}>共 {group.stages.reduce((sum, stage) => sum + stage.count, 0)} 个阶段样本</Text>
+                    </Space>
+                    <Select
+                      mode="multiple"
+                      maxTagCount="responsive"
+                      value={selectedKeys}
+                      onChange={(values) => setStageSelections((prev) => ({ ...prev, [group.intent]: values }))}
+                      options={group.stages.map((stage) => ({ label: stage.stage_label || stage.stage_key, value: stage.stage_key }))}
+                      style={{ minWidth: 280, maxWidth: 520 }}
+                      placeholder="选择阶段"
+                    />
+                  </div>
+                  {selectedKeys.length ? (
+                    <StageTrendChart stages={group.stages} selectedStageKeys={selectedKeys} metricKey={trendMetric} />
+                  ) : (
+                    <Empty description="请选择至少一个阶段" />
+                  )}
+                </div>
+              );
+            })}
+          </Space>
+        ) : (
+          <Empty description="暂无阶段趋势数据" />
+        )}
+      </div>
 
       <div style={{ background: '#fff', borderRadius: 8, padding: 16 }}>
         <Title level={5} style={{ marginTop: 0 }}>阶段耗时</Title>
