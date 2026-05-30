@@ -1,0 +1,63 @@
+[tool.black]
+line-length = 100
+target-version = ["py312"]
+include = '\.pyi?$'
+extend-exclude = '''
+/(
+  \.git
+  | \.venv
+  | venv
+  | build
+  | dist
+  | frontend
+  | Furniture-Crawler
+)/
+'''
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["backend"]
+extend-exclude = [
+  "Furniture-Crawler",
+  "frontend",
+  "backend/chroma_data",
+  "backend/uploads",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM"]
+ignore = [
+  # Prompt templates and localized product text often exceed a mechanical line limit.
+  "E501",
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app", "scripts", "tests"]
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+strict = false
+show_error_codes = true
+warn_unused_ignores = true
+exclude = [
+  "Furniture-Crawler/",
+  "frontend/",
+  "backend/chroma_data/",
+  "backend/uploads/",
+]
+
+[tool.pydocstyle]
+convention = "google"
+add-ignore = [
+  # First-stage documentation governance focuses on public/core behavior,
+  # not forcing every existing module and package to receive a docstring at once.
+  "D100",
+  "D104",
+  "D107",
+]
+
+[tool.radon]
+cc_min = "B"
+exclude = "Furniture-Crawler,frontend,backend/chroma_data,backend/uploads"

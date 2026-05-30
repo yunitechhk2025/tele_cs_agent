@@ -194,7 +194,7 @@ export default function Contracts() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `${editTitle.replace(/[^\w\-]+/g, '_') || 'contract'}.txt`;
+    a.download = `${editTitle.replace(/[^\w-]+/g, '_') || 'contract'}.txt`;
     a.click();
     URL.revokeObjectURL(url);
     message.success('下载已开始');

@@ -712,7 +712,7 @@ export default function SceneLibrary() {
                       src={`/api/products/${selected.primary_product_id}/images/0`}
                       alt={selected.primary_product_name}
                       style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
-                      onError={(e) => { (e.target as HTMLImageElement).src = 'data:image/svg+xml,<svg xmlns=\"http://www.w3.org/2000/svg\"/>'; }}
+                      onError={(e) => { (e.target as HTMLImageElement).src = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg"/>'; }}
                     />
                   </div>
                   <Tag color="geekblue" style={{ fontSize: 11 }}>主产品</Tag>
@@ -728,7 +728,7 @@ export default function SceneLibrary() {
                         src={`/api/products/${rp.id}/images/0`}
                         alt={rp.product_name}
                         style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
-                        onError={(e) => { (e.target as HTMLImageElement).src = 'data:image/svg+xml,<svg xmlns=\"http://www.w3.org/2000/svg\"/>'; }}
+                        onError={(e) => { (e.target as HTMLImageElement).src = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg"/>'; }}
                       />
                     </div>
                     <div style={{ marginBottom: 2 }}>

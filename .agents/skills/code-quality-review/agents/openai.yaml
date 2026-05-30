@@ -1,0 +1,4 @@
+interface:
+  display_name: "Code Quality Review"
+  short_description: "Review comments, style, static checks, and safe quality fixes."
+  default_prompt: "Use code-quality-review to inspect relevant code, add useful comments, run checks, and report risks."
