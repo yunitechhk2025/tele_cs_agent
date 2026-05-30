@@ -5,6 +5,7 @@ import os
 from datetime import datetime, timedelta
 from typing import Any
 
+from telegram import Bot
 from sqlalchemy import select, update
 
 from app.database import AsyncSessionLocal
@@ -17,8 +18,14 @@ from app.models import (
     PendingAIReply,
     SceneGenerationRecord,
     SystemSetting,
+    TelegramBot,
 )
 from app.services import bot_manager
+from app.services.background_job_service import (
+    PENDING_AI_AUTOSEND_MAX_ATTEMPTS,
+    cancel_jobs_for_entity,
+    enqueue_job,
+)
 from app.services.recommendation_memory import record_recommendation_turn
 
 logger = logging.getLogger(__name__)
@@ -35,7 +42,6 @@ CUSTOMER_SERVICE_MODES = {
 DEFAULT_CUSTOMER_SERVICE_MODE = "ai_auto"
 DEFAULT_AUTO_SEND_SECONDS = 10
 
-ACTIVE_PENDING_AI_REPLY_TASKS: dict[int, asyncio.Task[Any]] = {}
 PENDING_AI_REPLY_SEND_LOCKS: dict[int, asyncio.Lock] = {}
 
 
@@ -59,6 +65,37 @@ def _load_payload(raw: str | None) -> dict[str, Any]:
         return data if isinstance(data, dict) else {}
     except Exception:
         return {}
+
+
+async def _resolve_bot_for_conversation(db, conversation: Conversation) -> Bot | None:
+    if conversation.bot_id:
+        bot_instance = bot_manager.get_bot_instance(conversation.bot_id)
+        if bot_instance:
+            return bot_instance
+
+    bot_instance = bot_manager.get_any_bot_instance()
+    if bot_instance:
+        return bot_instance
+
+    bot_record = None
+    if conversation.bot_id:
+        bot_record = await db.get(TelegramBot, conversation.bot_id)
+    if bot_record is None:
+        result = await db.execute(
+            select(TelegramBot)
+            .where(
+                TelegramBot.is_active == True,
+                TelegramBot.token != "",
+                TelegramBot.token != "your_bot_token_here",
+            )
+            .order_by(TelegramBot.id)
+        )
+        bot_record = result.scalars().first()
+
+    token = (getattr(bot_record, "token", "") or "").strip()
+    if not token or token == "your_bot_token_here":
+        return None
+    return Bot(token=token)
 
 
 async def _append_outbound_event(
@@ -105,10 +142,7 @@ async def _send_product_recommendation_payload(
 
     bot_instance = None
     if not is_simulator:
-        if conversation.bot_id:
-            bot_instance = bot_manager.get_bot_instance(conversation.bot_id)
-        if not bot_instance:
-            bot_instance = bot_manager.get_any_bot_instance()
+        bot_instance = await _resolve_bot_for_conversation(db, conversation)
         if not bot_instance or not conversation.telegram_chat_id:
             draft.status = "pending"
             draft.error_message = "Telegram bot not available"
@@ -262,10 +296,7 @@ async def _send_scene_result_payload(
 
     bot_instance = None
     if not is_simulator:
-        if conversation.bot_id:
-            bot_instance = bot_manager.get_bot_instance(conversation.bot_id)
-        if not bot_instance:
-            bot_instance = bot_manager.get_any_bot_instance()
+        bot_instance = await _resolve_bot_for_conversation(db, conversation)
         if not bot_instance or not conversation.telegram_chat_id:
             draft.status = "pending"
             draft.error_message = "Telegram bot not available"
@@ -434,9 +465,7 @@ async def pause_pending_ai_reply(conversation_id: int) -> PendingAIReply | None:
     existing = await get_pending_ai_reply(conversation_id)
     if not existing:
         return None
-    task = ACTIVE_PENDING_AI_REPLY_TASKS.pop(existing.id, None)
-    if task:
-        task.cancel()
+    await cancel_jobs_for_entity("pending_ai_reply", existing.id)
     async with AsyncSessionLocal() as db:
         current = await db.get(PendingAIReply, existing.id)
         if not current or current.status != "pending":
@@ -452,9 +481,7 @@ async def cancel_pending_ai_reply(conversation_id: int) -> PendingAIReply | None
     existing = await get_pending_ai_reply(conversation_id)
     if not existing:
         return None
-    task = ACTIVE_PENDING_AI_REPLY_TASKS.pop(existing.id, None)
-    if task:
-        task.cancel()
+    await cancel_jobs_for_entity("pending_ai_reply", existing.id)
     async with AsyncSessionLocal() as db:
         current = await db.get(PendingAIReply, existing.id)
         if not current or current.status != "pending":
@@ -559,11 +586,7 @@ async def _send_pending_ai_reply_record_unlocked(
                         language=draft.language,
                     ))
                 else:
-                    bot_instance = None
-                    if conversation.bot_id:
-                        bot_instance = bot_manager.get_bot_instance(conversation.bot_id)
-                    if not bot_instance:
-                        bot_instance = bot_manager.get_any_bot_instance()
+                    bot_instance = await _resolve_bot_for_conversation(db, conversation)
                     if not bot_instance or not conversation.telegram_chat_id:
                         draft.status = "pending"
                         draft.error_message = "Telegram bot not available"
@@ -602,7 +625,7 @@ async def send_pending_ai_reply(
     existing = await get_pending_ai_reply(conversation_id)
     if not existing:
         return None
-    ACTIVE_PENDING_AI_REPLY_TASKS.pop(existing.id, None)
+    await cancel_jobs_for_entity("pending_ai_reply", existing.id)
     return await _send_pending_ai_reply_record(
         existing.id,
         content_override=content_override,
@@ -611,31 +634,30 @@ async def send_pending_ai_reply(
     )
 
 
-def _schedule_pending_ai_reply_task(record_id: int, auto_send_at: datetime) -> None:
-    existing = ACTIVE_PENDING_AI_REPLY_TASKS.pop(record_id, None)
-    if existing:
-        existing.cancel()
-
-    async def _job():
-        try:
-            delay = max(0.0, (auto_send_at - datetime.utcnow()).total_seconds())
-            if delay > 0:
-                await asyncio.sleep(delay)
-            await _send_pending_ai_reply_record(record_id)
-        except asyncio.CancelledError:
-            return
-        except Exception:
-            logger.exception("Pending AI reply autosend failed for record %s", record_id)
-        finally:
-            ACTIVE_PENDING_AI_REPLY_TASKS.pop(record_id, None)
-
-    ACTIVE_PENDING_AI_REPLY_TASKS[record_id] = asyncio.create_task(_job())
+async def _schedule_pending_ai_reply_task(
+    record_id: int,
+    auto_send_at: datetime,
+    *,
+    dedupe_prefix: str | None = None,
+) -> None:
+    dedupe_key = f"{dedupe_prefix}:pending_ai_autosend:{record_id}" if dedupe_prefix else f"pending_ai_autosend:{record_id}"
+    await enqueue_job(
+        job_type="pending_ai_autosend",
+        entity_type="pending_ai_reply",
+        entity_id=record_id,
+        dedupe_key=dedupe_key,
+        payload={"pending_ai_reply_id": record_id},
+        run_after=auto_send_at,
+        max_attempts=PENDING_AI_AUTOSEND_MAX_ATTEMPTS,
+    )
 
 
 async def create_pending_ai_reply(
     conversation_id: int,
     draft_text: str,
     language: str,
+    *,
+    dedupe_prefix: str | None = None,
 ) -> PendingAIReply:
     return await create_pending_ai_delivery(
         conversation_id=conversation_id,
@@ -643,6 +665,7 @@ async def create_pending_ai_reply(
         language=language,
         content_kind="text",
         payload=None,
+        dedupe_prefix=dedupe_prefix,
     )
 
 
@@ -653,6 +676,7 @@ async def create_pending_ai_delivery(
     *,
     content_kind: str = "text",
     payload: dict[str, Any] | None = None,
+    dedupe_prefix: str | None = None,
 ) -> PendingAIReply:
     cfg = await get_customer_service_settings()
     auto_send_at = datetime.utcnow() + timedelta(seconds=cfg["auto_send_seconds"])
@@ -682,7 +706,7 @@ async def create_pending_ai_delivery(
         await db.commit()
         await db.refresh(draft)
 
-    _schedule_pending_ai_reply_task(draft.id, auto_send_at)
+    await _schedule_pending_ai_reply_task(draft.id, auto_send_at, dedupe_prefix=dedupe_prefix)
     return draft
 
 
@@ -698,7 +722,7 @@ async def dispatch_due_pending_ai_replies() -> int:
         )
         due_ids = [row[0] for row in rows.all()]
     for record_id in due_ids:
-        await _send_pending_ai_reply_record(record_id)
+        await _schedule_pending_ai_reply_task(record_id, now)
     return len(due_ids)
 
 
@@ -713,4 +737,4 @@ async def restore_pending_ai_reply_tasks() -> None:
         )
         drafts = rows.scalars().all()
     for draft in drafts:
-        _schedule_pending_ai_reply_task(draft.id, draft.auto_send_at)
+        await _schedule_pending_ai_reply_task(draft.id, draft.auto_send_at)

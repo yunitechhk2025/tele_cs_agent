@@ -59,7 +59,6 @@ from app.services.llm_service import (
 )
 from app.services.i18n import DEFAULT_LANGUAGE, get_localized_static_dict, get_localized_static_text, normalize_language_code
 from app.services.scene_service import (
-    generate_scene_images,
     build_scene_record_response,
     start_scene_generation,
     _get_selected_reference_items,
@@ -2108,7 +2107,7 @@ async def create_product_scene_images(
         }
         for e in entries
     ]
-    record = await generate_scene_images(
+    record = await start_scene_generation(
         primary_product=product,
         all_products=all_products,
         user_request=req.user_request or "",
@@ -2228,6 +2227,7 @@ async def scene_generator_generate(
         style_hint=req.style_hint or "",
         related_product_ids=related_ids or None,
         reference_image_items=reference_items,
+        reference_image_refs=unique_refs,
         allow_reuse=False,
     )
     return _record_to_schema(await build_scene_record_response(record))

@@ -248,6 +248,36 @@ def _run_migrations(conn):
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_observability_alerts_window_end ON observability_alerts(window_end)"))
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_observability_alerts_dedupe_key ON observability_alerts(dedupe_key)"))
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_observability_alerts_created_at ON observability_alerts(created_at)"))
+    conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS background_jobs (
+            id SERIAL PRIMARY KEY,
+            job_type VARCHAR(100) NOT NULL,
+            entity_type VARCHAR(100) DEFAULT '',
+            entity_id INTEGER,
+            dedupe_key VARCHAR(500) NOT NULL UNIQUE,
+            payload_json TEXT DEFAULT '{}',
+            status VARCHAR(50) DEFAULT 'queued',
+            run_after TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            attempts INTEGER DEFAULT 0,
+            max_attempts INTEGER DEFAULT 1,
+            locked_by VARCHAR(200) DEFAULT '',
+            locked_at TIMESTAMP,
+            last_error TEXT DEFAULT '',
+            finished_at TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_background_jobs_job_type ON background_jobs(job_type)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_background_jobs_entity_type ON background_jobs(entity_type)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_background_jobs_entity_id ON background_jobs(entity_id)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_background_jobs_dedupe_key ON background_jobs(dedupe_key)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_background_jobs_status ON background_jobs(status)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_background_jobs_run_after ON background_jobs(run_after)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_background_jobs_locked_by ON background_jobs(locked_by)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_background_jobs_locked_at ON background_jobs(locked_at)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_background_jobs_finished_at ON background_jobs(finished_at)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_background_jobs_created_at ON background_jobs(created_at)"))
 
 
 async def init_db():

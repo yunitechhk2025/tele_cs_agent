@@ -42,7 +42,7 @@ from app.services.product_i18n import (
     product_entry_to_payload,
 )
 from app.services.rag_service import search_knowledge_for_bot
-from app.services.scene_service import CUSTOMER_SCENE_TIMEOUT_SECONDS, build_scene_record_response, generate_scene_images
+from app.services.scene_service import build_scene_record_response, start_scene_generation
 from app.services.product_reference_parser import (
     is_product_selection_only_text,
     parse_product_reference,
@@ -2028,89 +2028,34 @@ async def process_customer_text_message(
                         await first_response("scene_generating_notice")
                         await outbound.reply_text(generating)
                         await save_message(conversation_id, MessageRole.ASSISTANT, generating, language)
-                    try:
-                        await stage("scene_image_generation", default_scene or primary_product.space or "")
-                        record = await generate_scene_images(
-                            primary_product=primary_product,
-                            all_products=all_products,
-                            user_request=user_message if (referenced_id or scene_req.get("is_scene_request")) else (scene_state.last_customer_request or user_message),
-                            scene_name=default_scene or primary_product.space,
-                            style_hint=default_style or primary_product.style,
-                            conversation_id=conversation_id,
-                            timeout_seconds=CUSTOMER_SCENE_TIMEOUT_SECONDS,
+                    await stage("scene_image_generation", default_scene or primary_product.space or "")
+                    record = await start_scene_generation(
+                        primary_product=primary_product,
+                        all_products=all_products,
+                        user_request=user_message if (referenced_id or scene_req.get("is_scene_request")) else (scene_state.last_customer_request or user_message),
+                        scene_name=default_scene or primary_product.space,
+                        style_hint=default_style or primary_product.style,
+                        conversation_id=conversation_id,
+                        deliver_to_customer=True,
+                        reply_language=language,
+                        delivery_context={"scene_state_action": "clear"},
+                    )
+                    annotate_current_step(
+                        metadata={
+                            "scene_record_id": getattr(record, "id", None),
+                            "status": getattr(record, "status", ""),
+                            "duration_ms": getattr(record, "duration_ms", 0) or 0,
+                        },
+                    )
+                    if run_notify_admin and notify_bot and conversation and service_mode == "ai_assist":
+                        await notify_admin(
+                            bot_id,
+                            conversation,
+                            user_message,
+                            notify_bot,
+                            is_followup=(current_status in {ConversationStatus.PENDING_HUMAN, ConversationStatus.HUMAN_HANDLING}),
                         )
-                        annotate_current_step(
-                            metadata={
-                                "scene_record_id": getattr(record, "id", None),
-                                "status": getattr(record, "status", ""),
-                                "duration_ms": getattr(record, "duration_ms", 0) or 0,
-                            },
-                        )
-                    except asyncio.TimeoutError:
-                        timeout_text = get_localized_static_text(SCENE_TIMEOUT_MESSAGES, language)
-                        await first_response("scene_timeout")
-                        if service_mode == "ai_assist":
-                            await create_pending_ai_reply(conversation_id, timeout_text, language)
-                        else:
-                            await outbound.reply_text(timeout_text)
-                            await save_message(conversation_id, MessageRole.ASSISTANT, timeout_text, language)
-                        await clear_scene_state(conversation_id)
-                        await close_current_step(success=False, error_message="Scene generation timed out")
-                        await complete_turn_metric(metric_id, response_kind="scene_timeout", success=False, error_message="Scene generation timed out")
-                        await mark_conversation_failed(conversation_id, "场景图生成超时")
-                        return
-                    if service_mode == "ai_assist":
-                        if record.status != "completed":
-                            failed_text = get_localized_static_text(SCENE_FAILED_MESSAGES, language)
-                            await first_response("scene_failed")
-                            await create_pending_ai_reply(conversation_id, failed_text, language)
-                            await clear_scene_state(conversation_id)
-                            if run_notify_admin and notify_bot and conversation:
-                                await notify_admin(
-                                    bot_id,
-                                    conversation,
-                                    user_message,
-                                    notify_bot,
-                                    is_followup=(current_status in {ConversationStatus.PENDING_HUMAN, ConversationStatus.HUMAN_HANDLING}),
-                                )
-                            await close_current_step(success=False, error_message=record.error_message or "Scene generation failed")
-                            await complete_turn_metric(metric_id, response_kind="scene_failed", success=False, error_message=record.error_message or "Scene generation failed")
-                            await mark_conversation_failed(conversation_id, "场景图生成失败")
-                            return
-                        async with AsyncSessionLocal() as db:
-                            current_record = await db.get(type(record), record.id)
-                            if current_record:
-                                current_record.deferred_delivery = True
-                                await db.commit()
-                        scene_delivery = await build_scene_result_delivery(record, language)
-                        scene_delivery["record_id"] = record.id
-                        scene_delivery["scene_state_action"] = "clear"
-                        preview_text = f"{scene_delivery.get('intro_text', '')}\n\n{scene_delivery.get('preview_line', '')}".strip()
-                        await stage("creating_ai_draft", "场景图待确认")
-                        await first_response("scene_result_draft")
-                        await create_pending_ai_delivery(
-                            conversation_id=conversation_id,
-                            draft_text=preview_text,
-                            language=language,
-                            content_kind="scene_result",
-                            payload=scene_delivery,
-                        )
-                        await clear_scene_state(conversation_id)
-                        if run_notify_admin and notify_bot and conversation:
-                            await notify_admin(
-                                bot_id,
-                                conversation,
-                                user_message,
-                                notify_bot,
-                                is_followup=(current_status in {ConversationStatus.PENDING_HUMAN, ConversationStatus.HUMAN_HANDLING}),
-                            )
-                        await finish("scene_result_draft", "场景图已生成，等待人工确认")
-                        return
-                    await first_response("scene_result")
-                    await stage("sending_response", "发送场景图")
-                    await send_scene_generation_result(language, record, outbound)
-                    await clear_scene_state(conversation_id)
-                    await finish("scene_result", "场景图已发送")
+                    await finish("scene_generation_queued", "场景图生成已入队")
                     return
 
         product_detail_request = (
@@ -2198,110 +2143,48 @@ async def process_customer_text_message(
                         await first_response("scene_generating_notice")
                         await outbound.reply_text(generating)
                         await save_message(conversation_id, MessageRole.ASSISTANT, generating, language)
-                    try:
-                        await stage("scene_image_generation", scene_req.get("scene_name") or primary_product.space or "")
-                        record = await generate_scene_images(
-                            primary_product=primary_product,
-                            all_products=all_products,
-                            user_request=user_message,
-                            scene_name=scene_req.get("scene_name") or primary_product.space,
-                            style_hint=scene_req.get("style_hint") or primary_product.style,
-                            conversation_id=conversation_id,
-                            timeout_seconds=CUSTOMER_SCENE_TIMEOUT_SECONDS,
-                        )
-                        annotate_current_step(
-                            metadata={
-                                "scene_record_id": getattr(record, "id", None),
-                                "status": getattr(record, "status", ""),
-                                "duration_ms": getattr(record, "duration_ms", 0) or 0,
-                            },
-                        )
-                    except asyncio.TimeoutError:
-                        timeout_text = get_localized_static_text(SCENE_TIMEOUT_MESSAGES, language)
-                        await first_response("scene_timeout")
-                        if service_mode == "ai_assist":
-                            await create_pending_ai_reply(conversation_id, timeout_text, language)
-                        else:
-                            await outbound.reply_text(timeout_text)
-                            await save_message(conversation_id, MessageRole.ASSISTANT, timeout_text, language)
-                        await close_current_step(success=False, error_message="Scene generation timed out")
-                        await complete_turn_metric(metric_id, response_kind="scene_timeout", success=False, error_message="Scene generation timed out")
-                        await mark_conversation_failed(conversation_id, "场景图生成超时")
-                        return
-                    if service_mode == "ai_assist":
-                        if record.status != "completed":
-                            failed_text = get_localized_static_text(SCENE_FAILED_MESSAGES, language)
-                            await first_response("scene_failed")
-                            await create_pending_ai_reply(conversation_id, failed_text, language)
-                            if run_notify_admin and notify_bot and conversation:
-                                await notify_admin(
-                                    bot_id,
-                                    conversation,
-                                    user_message,
-                                    notify_bot,
-                                    is_followup=(current_status in {ConversationStatus.PENDING_HUMAN, ConversationStatus.HUMAN_HANDLING}),
-                                )
-                            await close_current_step(success=False, error_message=record.error_message or "Scene generation failed")
-                            await complete_turn_metric(metric_id, response_kind="scene_failed", success=False, error_message=record.error_message or "Scene generation failed")
-                            await mark_conversation_failed(conversation_id, "场景图生成失败")
-                            return
-                        async with AsyncSessionLocal() as db:
-                            current_record = await db.get(type(record), record.id)
-                            if current_record:
-                                current_record.deferred_delivery = True
-                                await db.commit()
-                        scene_delivery = await build_scene_result_delivery(record, language)
-                        scene_delivery["record_id"] = record.id
-                        scene_delivery["scene_state_action"] = "save"
-                        scene_delivery["scene_state_payload"] = {
-                            "primary_product_id": primary_product.id,
-                            "recommended_product_ids": [primary_product.id],
-                            "suggested_scene": scene_req.get("scene_name") or primary_product.space,
-                            "suggested_style": scene_req.get("style_hint") or primary_product.style,
-                            "pending_confirmation": False,
-                            "reply_language": language,
-                            "last_customer_request": user_message,
-                            "active_topic": "scene_image_request",
-                            "active_product_id": primary_product.id,
-                            "preferences": turn_preferences,
-                        }
-                        preview_text = f"{scene_delivery.get('intro_text', '')}\n\n{scene_delivery.get('preview_line', '')}".strip()
-                        await stage("creating_ai_draft", "场景图待确认")
-                        await first_response("scene_result_draft")
-                        await create_pending_ai_delivery(
-                            conversation_id=conversation_id,
-                            draft_text=preview_text,
-                            language=language,
-                            content_kind="scene_result",
-                            payload=scene_delivery,
-                        )
-                        if run_notify_admin and notify_bot and conversation:
-                            await notify_admin(
-                                bot_id,
-                                conversation,
-                                user_message,
-                                notify_bot,
-                                is_followup=(current_status in {ConversationStatus.PENDING_HUMAN, ConversationStatus.HUMAN_HANDLING}),
-                            )
-                        await finish("scene_result_draft", "场景图已生成，等待人工确认")
-                        return
-                    await first_response("scene_result")
-                    await stage("sending_response", "发送场景图")
-                    await send_scene_generation_result(language, record, outbound)
-                    await save_scene_state(
+                    await stage("scene_image_generation", scene_req.get("scene_name") or primary_product.space or "")
+                    record = await start_scene_generation(
+                        primary_product=primary_product,
+                        all_products=all_products,
+                        user_request=user_message,
+                        scene_name=scene_req.get("scene_name") or primary_product.space,
+                        style_hint=scene_req.get("style_hint") or primary_product.style,
                         conversation_id=conversation_id,
-                        primary_product_id=primary_product.id,
-                        recommended_product_ids=[primary_product.id],
-                        suggested_scene=scene_req.get("scene_name") or primary_product.space,
-                        suggested_style=scene_req.get("style_hint") or primary_product.style,
-                        pending_confirmation=False,
+                        deliver_to_customer=True,
                         reply_language=language,
-                        last_customer_request=user_message,
-                        active_topic="scene_image_request",
-                        active_product_id=primary_product.id,
-                        preferences=turn_preferences,
+                        delivery_context={
+                            "scene_state_action": "save",
+                            "scene_state_payload": {
+                                "primary_product_id": primary_product.id,
+                                "recommended_product_ids": [primary_product.id],
+                                "suggested_scene": scene_req.get("scene_name") or primary_product.space,
+                                "suggested_style": scene_req.get("style_hint") or primary_product.style,
+                                "pending_confirmation": False,
+                                "reply_language": language,
+                                "last_customer_request": user_message,
+                                "active_topic": "scene_image_request",
+                                "active_product_id": primary_product.id,
+                                "preferences": turn_preferences,
+                            },
+                        },
                     )
-                    await finish("scene_result", "场景图已发送")
+                    annotate_current_step(
+                        metadata={
+                            "scene_record_id": getattr(record, "id", None),
+                            "status": getattr(record, "status", ""),
+                            "duration_ms": getattr(record, "duration_ms", 0) or 0,
+                        },
+                    )
+                    if run_notify_admin and notify_bot and conversation and service_mode == "ai_assist":
+                        await notify_admin(
+                            bot_id,
+                            conversation,
+                            user_message,
+                            notify_bot,
+                            is_followup=(current_status in {ConversationStatus.PENDING_HUMAN, ConversationStatus.HUMAN_HANDLING}),
+                        )
+                    await finish("scene_generation_queued", "场景图生成已入队")
                     return
 
         await stage("checking_product_recommendation")

@@ -374,6 +374,30 @@ class ObservabilityAlert(Base):
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
 
 
+class BackgroundJob(Base):
+    __tablename__ = "background_jobs"
+    __table_args__ = (
+        UniqueConstraint("dedupe_key", name="uq_background_jobs_dedupe_key"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    job_type = Column(String(100), nullable=False, index=True)
+    entity_type = Column(String(100), default="", index=True)
+    entity_id = Column(Integer, nullable=True, index=True)
+    dedupe_key = Column(String(500), nullable=False, unique=True, index=True)
+    payload_json = Column(Text, default="{}")
+    status = Column(String(50), default="queued", index=True)
+    run_after = Column(DateTime, default=datetime.utcnow, index=True)
+    attempts = Column(Integer, default=0)
+    max_attempts = Column(Integer, default=1)
+    locked_by = Column(String(200), default="", index=True)
+    locked_at = Column(DateTime, nullable=True, index=True)
+    last_error = Column(Text, default="")
+    finished_at = Column(DateTime, nullable=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class PendingAIReply(Base):
     __tablename__ = "pending_ai_replies"
 

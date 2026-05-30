@@ -22,6 +22,11 @@ from app.services.llm_service import (
     get_llm_settings,
     select_scene_bundle_products,
 )
+from app.services.background_job_service import (
+    SCENE_GENERATION_MAX_ATTEMPTS,
+    cancel_jobs_for_entity,
+    enqueue_job,
+)
 from app.services.conversation_monitoring import set_conversation_stage
 from app.services.observability_service import record_llm_call
 from app.services.product_taxonomy import product_category_values
@@ -30,11 +35,9 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 SCENE_OUTPUT_COUNT = 1
 DEFAULT_SCENE_RELATED_PRODUCT_COUNT = 2
-CUSTOMER_SCENE_TIMEOUT_SECONDS = 300
 BACKEND_SCENE_TIMEOUT_SECONDS = 600
 MAX_DASHSCOPE_PROMPT_CHARS = 2400
 SCENE_BUNDLE_SELECTION_TIMEOUT_SECONDS = 12
-ACTIVE_SCENE_TASKS: dict[int, asyncio.Task[Any]] = {}
 
 
 def _scene_upload_root() -> Path:
@@ -969,17 +972,8 @@ async def cleanup_stale_pending_scene_generations(max_age_seconds: int = BACKEND
 
 
 async def cancel_scene_generation_task(record_id: int) -> bool:
-    task = ACTIVE_SCENE_TASKS.get(record_id)
-    if not task:
-        return False
-    task.cancel()
-    try:
-        await task
-    except asyncio.CancelledError:
-        pass
-    except Exception:
-        logger.exception("Scene generation task %s failed during cancellation", record_id)
-    return True
+    cancelled = await cancel_jobs_for_entity("scene_generation_record", record_id)
+    return cancelled > 0
 
 
 async def _generate_scene_outputs(
@@ -1227,7 +1221,12 @@ async def start_scene_generation(
     related_product_ids: list[int] | None = None,
     conversation_id: int | None = None,
     reference_image_items: list[dict[str, Any]] | None = None,
+    reference_image_refs: list[dict[str, Any]] | None = None,
     allow_reuse: bool = True,
+    deliver_to_customer: bool = False,
+    reply_language: str = "",
+    delivery_context: dict[str, Any] | None = None,
+    dedupe_prefix: str | None = None,
 ) -> SceneGenerationRecord:
     record = await _create_scene_generation_record(
         primary_product=primary_product,
@@ -1241,28 +1240,22 @@ async def start_scene_generation(
     if record.status == "completed":
         return record
 
-    async def _job():
-        try:
-            await _run_scene_generation_for_record(
-                record_id=record.id,
-                primary_product=primary_product,
-                all_products=all_products,
-                user_request=user_request,
-                scene_name=scene_name,
-                style_hint=style_hint,
-                related_product_ids=related_product_ids,
-                reference_image_items=reference_image_items,
-                timeout_seconds=BACKEND_SCENE_TIMEOUT_SECONDS,
-                conversation_id=conversation_id,
-            )
-        except asyncio.CancelledError:
-            logger.info("Scene generation background job %s cancelled", record.id)
-        except Exception:
-            logger.exception("Scene generation background job %s failed", record.id)
-        finally:
-            ACTIVE_SCENE_TASKS.pop(record.id, None)
-
-    ACTIVE_SCENE_TASKS[record.id] = asyncio.create_task(_job())
+    dedupe_key = f"{dedupe_prefix}:scene_generation:{record.id}" if dedupe_prefix else f"scene_generation:{record.id}"
+    await enqueue_job(
+        job_type="scene_generation",
+        entity_type="scene_generation_record",
+        entity_id=record.id,
+        dedupe_key=dedupe_key,
+        payload={
+            "record_id": record.id,
+            "reference_image_refs": reference_image_refs or [],
+            "reference_image_items": [] if reference_image_refs else (reference_image_items or []),
+            "deliver_to_customer": bool(deliver_to_customer),
+            "reply_language": reply_language or "",
+            "delivery_context": delivery_context or {},
+        },
+        max_attempts=SCENE_GENERATION_MAX_ATTEMPTS,
+    )
     return record
 
 

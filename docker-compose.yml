@@ -48,6 +48,25 @@ services:
       redis:
         condition: service_healthy
 
+  worker:
+    build: ./backend
+    restart: always
+    command: ["python", "-m", "app.worker"]
+    env_file:
+      - ./backend/.env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/cs_agent
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      - chroma_data:/app/chroma_data
+      - file_uploads:/app/uploads
+      - ./Furniture-Crawler:/app/Furniture-Crawler:ro
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
   frontend:
     build: ./frontend
     restart: always
