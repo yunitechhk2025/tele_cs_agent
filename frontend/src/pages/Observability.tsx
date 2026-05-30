@@ -167,6 +167,7 @@ export default function Observability() {
       setSummary(summaryData);
       setAlerts(alertData);
       setTrends(trendData);
+      // 默认展开每个意图下最重的前 5 个阶段，避免大流量下趋势图一次性渲染过多曲线。
       setStageSelections(Object.fromEntries(
         trendData.intents.map((group) => [
           group.intent,
@@ -201,6 +202,7 @@ export default function Observability() {
     if (language) next.set('language', language);
     if (intent) next.set('intent', intent);
     if (responseKind) next.set('response_kind', responseKind);
+    // 监控筛选条件需要可分享和可刷新，所有核心过滤项都同步到 URL。
     setSearchParams(next, { replace: true });
   }, [botId, intent, language, range, responseKind, setSearchParams]);
 

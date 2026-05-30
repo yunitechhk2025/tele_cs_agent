@@ -662,6 +662,7 @@ export default function Conversations() {
 
   const [listWidth, setListWidth] = useState<number>(() => {
     try {
+      // 列表宽度是高频操作偏好，放在本地即可，不能影响服务端会话状态。
       const v = parseInt(localStorage.getItem('conv:listWidth') || '', 10);
       if (Number.isFinite(v) && v >= 220 && v <= 720) return v;
     } catch {
@@ -863,6 +864,7 @@ export default function Conversations() {
 
   useEffect(() => {
     if (selectedId == null) return undefined;
+    // 会话页承担人工接管和 AI 草稿确认，短轮询保证倒计时、消息和模式状态接近实时。
     const timer = window.setInterval(() => {
       void loadDetail(selectedId, true);
       void loadList();
@@ -1106,6 +1108,7 @@ export default function Conversations() {
         kind: 'event' as const,
         event,
       }));
+    // 模拟器同时有 Message 和 OutboundEvent 两类来源，合并后按时间排序才能复现客户视角。
     return [...messageItems, ...eventItems].sort((a, b) => {
       const diff = dayjs(a.created_at).valueOf() - dayjs(b.created_at).valueOf();
       if (diff !== 0) return diff;

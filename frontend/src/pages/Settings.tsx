@@ -85,6 +85,7 @@ function buildLLMPayload(values: LLMSettings): Partial<LLMSettings> {
   if (values.api_key && !values.api_key.includes('****')) {
     payload.api_key = values.api_key;
   }
+  // 后端返回的密钥可能是脱敏占位符；保存时不能把占位符覆盖成真实配置。
   if (values.embedding_api_key && !values.embedding_api_key.includes('****')) {
     payload.embedding_api_key = values.embedding_api_key;
   }

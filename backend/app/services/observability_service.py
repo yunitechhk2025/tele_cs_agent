@@ -1,3 +1,9 @@
+"""客服链路观测数据聚合、导出和告警.
+
+该模块把 turn、stage、LLM 调用和场景图记录聚合成后台可读的 KPI。聚合逻辑同时要服务
+页面展示、ZIP 导出和告警去重，因此这里尽量保留 code key，并在展示层映射成人类可读标签。
+"""
+
 import asyncio
 import contextvars
 import csv
@@ -206,6 +212,7 @@ def build_observability_summary(
     llm_calls: list[dict[str, Any]],
     scenes: list[dict[str, Any]],
 ) -> dict[str, Any]:
+    """把原始观测行聚合为后台首页使用的 KPI、阶段表、LLM 表和告警样本."""
     total_turns = len(turns)
     success_count = sum(1 for row in turns if bool(_get(row, "success", True)))
     failed_count = total_turns - success_count
@@ -317,6 +324,7 @@ def build_observability_summary(
         or str(_get(row, "response_kind", "")).startswith("product_recommendation")
     ]
     alert_samples = {
+        # 告警样本保留 conversation_id，方便后台从指标直接跳回真实会话排查。
         "text_first_response_p95_ms": _slowest_conversation_ids(text_turns, "first_response_ms"),
         "product_recommendation_first_response_p95_ms": _slowest_conversation_ids(product_turns, "first_response_ms"),
         "turn_failure_rate": _unique_conversation_ids([row for row in turns if not bool(_get(row, "success", True))]),

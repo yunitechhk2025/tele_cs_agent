@@ -1,3 +1,9 @@
+"""商品场景图生成、复用和后台任务调度.
+
+场景图是慢任务：入口函数只创建记录并入队，真正的搭配选择、提示词组装、图片生成
+和失败落库都在后台执行。复用逻辑优先读取已完成记录，以减少重复生图成本和客户等待。
+"""
+
 import asyncio
 import base64
 import json
@@ -1047,6 +1053,7 @@ async def _run_scene_generation_for_record(
     timeout_seconds: int = BACKEND_SCENE_TIMEOUT_SECONDS,
     conversation_id: int | None = None,
 ) -> SceneGenerationRecord:
+    """执行单条场景图记录的完整后台生成流程."""
     total_start = time.perf_counter()
     cfg = await get_llm_settings()
     default_scene, default_style = _scene_defaults(primary_product)
@@ -1085,6 +1092,7 @@ async def _run_scene_generation_for_record(
         try:
             if conversation_id:
                 await set_conversation_stage(conversation_id, "scene_bundle_selection")
+            # 搭配商品选择依赖 LLM，但必须受短超时保护；超时后仍可用启发式候选继续生图。
             selected_related_ids = await asyncio.wait_for(
                 select_scene_bundle_products(
                     user_message=user_request or primary_product.product_name,
@@ -1228,6 +1236,7 @@ async def start_scene_generation(
     delivery_context: dict[str, Any] | None = None,
     dedupe_prefix: str | None = None,
 ) -> SceneGenerationRecord:
+    """创建场景图记录并投递后台任务，供在线客服链路快速返回."""
     record = await _create_scene_generation_record(
         primary_product=primary_product,
         user_request=user_request,
@@ -1240,6 +1249,7 @@ async def start_scene_generation(
     if record.status == "completed":
         return record
 
+    # 使用记录 ID 作为默认去重键，确保重复点击或重试不会并发生成同一条记录。
     dedupe_key = f"{dedupe_prefix}:scene_generation:{record.id}" if dedupe_prefix else f"scene_generation:{record.id}"
     await enqueue_job(
         job_type="scene_generation",

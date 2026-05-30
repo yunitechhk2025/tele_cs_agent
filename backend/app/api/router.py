@@ -1,3 +1,10 @@
+"""管理后台 API 路由.
+
+本文件聚合认证、会话、模拟器、知识库、合同、LLM 设置、文件库、机器人管理、
+产品和场景图库接口。路由较多，新增逻辑时优先把复杂业务下沉到 service，保持
+这里负责请求解析、权限校验、事务边界和响应组装。
+"""
+
 import asyncio
 import json
 import logging
@@ -158,6 +165,7 @@ async def _persist_simulator_outbound_events(
     events: list[dict[str, Any]],
     language: str,
 ) -> None:
+    """把模拟器产生的商品卡片、文件和可见文本写回时间线."""
     for event in events:
         event_type = event.get("type") or "text"
         created_at = _simulator_event_created_at(event)
@@ -903,6 +911,7 @@ async def _build_simulator_scene_events(
     conversation_language: str,
     db: AsyncSession,
 ) -> list[TelegramSimulatorEventSchema]:
+    """根据场景图记录重建模拟器时间线中的图片、文案和商品链接事件."""
     record_language = await _resolve_scene_record_language(record, conversation_language, db)
     ui_lang = ui_scene_language(record_language)
     created_at = record.updated_at or record.created_at or datetime.utcnow()
@@ -922,6 +931,7 @@ async def _build_simulator_scene_events(
     if record.status != "completed":
         return events
 
+    # 历史场景图可能由不同语言触发，回放时按触发消息语言而不是当前 UI 默认语言展示。
     localized_scene = localize_scene_name(record.scene_name or "", ui_lang) or _scene_fallback_name(ui_lang)
     intro_template = get_localized_static_text(SCENE_RESULT_MESSAGES, ui_lang)
     events.append(TelegramSimulatorEventSchema(

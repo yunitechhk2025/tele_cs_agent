@@ -1,3 +1,10 @@
+"""LLM、Embedding、意图路由和商品匹配的服务层.
+
+这里集中处理外部模型调用、数据库中的模型配置、快速本地规则、LLM 兜底判断、
+以及推荐商品的约束匹配。实时客服链路对延迟敏感，所以优先走确定性规则和本地
+匹配，只有在需要语义判断时才调用模型。
+"""
+
 import asyncio
 import json
 import logging
@@ -1552,12 +1559,14 @@ def _local_product_candidates(
     limit: int = PRODUCT_MATCH_CANDIDATE_LIMIT,
     request_profile: dict[str, Any] | None = None,
 ) -> list[tuple[dict, int]]:
+    """按客户显式约束给商品打分，保留足够候选给 LLM 做最终排序."""
     profile = _coerce_product_request_profile(user_message, request_profile)
     query_terms = _extract_product_query_terms(user_message)
     scored = [(product, _score_product_candidate(product, profile, query_terms)) for product in products]
     scored.sort(key=lambda item: (-item[1], int(item[0].get("id") or 0)))
 
     if profile.get("categories"):
+        # 类目是最强约束：客户要桌子时，不能因为颜色/风格词命中而返回沙发等跨类目商品。
         category_scored = [
             item for item in scored
             if _matches_any_requested_category(item[0], profile)
@@ -1593,6 +1602,7 @@ def _satisfiable_profile_constraints(
     candidates: list[tuple[dict, int]],
     profile: dict[str, set[str]],
 ) -> dict[str, set[str]]:
+    """只保留候选池内确实可满足的约束，避免后续过滤把结果集清空."""
     constraints: dict[str, set[str]] = {}
     for dimension in ("categories", *PRODUCT_MATCH_STRICT_DIMENSIONS):
         values = profile.get(dimension) or set()
