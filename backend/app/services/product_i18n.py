@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from typing import Any, Iterable
 
-from app.services.i18n import SUPPORTED_LANGUAGE_SET, normalize_language_code, to_traditional_chinese
+from app.services.i18n import (
+    SUPPORTED_LANGUAGE_SET,
+    normalize_language_code,
+    to_traditional_chinese,
+)
 from app.services.product_taxonomy import infer_product_metadata
 
 
@@ -151,7 +155,9 @@ def product_entry_to_payload(entry: Any) -> dict[str, Any]:
         "detail_content": getattr(entry, "detail_content_text", "") or "",
         "buy_url": getattr(entry, "buy_url", "") or "",
         "detail_url": getattr(entry, "detail_url", "") or "",
-        "image_paths": [getattr(img, "local_path", "") for img in images if getattr(img, "local_path", "")],
+        "image_paths": [
+            getattr(img, "local_path", "") for img in images if getattr(img, "local_path", "")
+        ],
         "translations": translation_map_from_entries(getattr(entry, "translations", []) or []),
         "primary_category": getattr(entry, "primary_category", "") or "",
         "secondary_categories_json": getattr(entry, "secondary_categories_json", "") or "[]",
@@ -166,18 +172,20 @@ def product_entry_to_payload(entry: Any) -> dict[str, Any]:
     }
     if not payload["primary_category"]:
         inferred = infer_product_metadata(payload)
-        payload.update({
-            "primary_category": inferred["primary_category"],
-            "secondary_categories": inferred["secondary_categories"],
-            "normalized_brand": inferred["normalized_brand"],
-            "normalized_space": inferred["normalized_space"],
-            "normalized_style": inferred["normalized_style"],
-            "normalized_color": inferred["normalized_color"],
-            "normalized_materials": inferred["normalized_materials"],
-            "category_confidence": inferred["category_confidence"],
-            "classification_source": inferred["classification_source"],
-            "classification_reason": inferred["classification_reason"],
-        })
+        payload.update(
+            {
+                "primary_category": inferred["primary_category"],
+                "secondary_categories": inferred["secondary_categories"],
+                "normalized_brand": inferred["normalized_brand"],
+                "normalized_space": inferred["normalized_space"],
+                "normalized_style": inferred["normalized_style"],
+                "normalized_color": inferred["normalized_color"],
+                "normalized_materials": inferred["normalized_materials"],
+                "category_confidence": inferred["category_confidence"],
+                "classification_source": inferred["classification_source"],
+                "classification_reason": inferred["classification_reason"],
+            }
+        )
     payload["search_text"] = product_search_text(payload)
     return payload
 
@@ -225,8 +233,7 @@ def _has_complete_translation(product: dict[str, Any], language: str) -> bool:
     translations = _normalize_translation_map(product.get("translations"))
     values = translations.get(language) or {}
     required_fields = [
-        field for field in PRODUCT_TRANSLATABLE_FIELDS
-        if _read_value(product, field)
+        field for field in PRODUCT_TRANSLATABLE_FIELDS if _read_value(product, field)
     ]
     if not required_fields:
         return True
@@ -242,7 +249,8 @@ def build_translation_request_items(
     """Return the product/language pairs an offline translation job should request."""
     items: list[dict[str, Any]] = []
     normalized_targets = [
-        lang for lang in (
+        lang
+        for lang in (
             normalize_language_code(language, fallback=None) for language in target_languages
         )
         if lang in SUPPORTED_LANGUAGE_SET
@@ -252,16 +260,17 @@ def build_translation_request_items(
         if product_id is None:
             continue
         source_fields = {
-            field: _read_value(product, field)
-            for field in PRODUCT_TRANSLATABLE_FIELDS
+            field: _read_value(product, field) for field in PRODUCT_TRANSLATABLE_FIELDS
         }
         for language in normalized_targets:
             if only_missing and _has_complete_translation(product, language):
                 continue
-            items.append({
-                "product_id": int(product_id),
-                "language": language,
-                "brand": str(product.get("brand") or ""),
-                "fields": source_fields,
-            })
+            items.append(
+                {
+                    "product_id": int(product_id),
+                    "language": language,
+                    "brand": str(product.get("brand") or ""),
+                    "fields": source_fields,
+                }
+            )
     return items

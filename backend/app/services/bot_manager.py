@@ -15,6 +15,7 @@ _running_bots: dict[int, Application] = {}
 
 def _make_handlers(bot_id: int):
     from app.telegram_bot import make_start_handler, make_message_handler, make_close_handler
+
     return [
         CommandHandler("start", make_start_handler(bot_id)),
         CommandHandler("close", make_close_handler(bot_id)),
@@ -72,9 +73,7 @@ async def stop_bot(bot_id: int) -> bool:
 async def start_all_active_bots():
     try:
         async with AsyncSessionLocal() as db:
-            result = await db.execute(
-                select(TelegramBot).where(TelegramBot.is_active == True)
-            )
+            result = await db.execute(select(TelegramBot).where(TelegramBot.is_active == True))
             bots = result.scalars().all()
 
         started = 0

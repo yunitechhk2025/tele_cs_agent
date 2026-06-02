@@ -7,7 +7,12 @@ from typing import Any
 from sqlalchemy import func, select
 
 from app.database import AsyncSessionLocal
-from app.models import ConversationOutboundEvent, ConversationRecommendationTurn, Message, MessageRole
+from app.models import (
+    ConversationOutboundEvent,
+    ConversationRecommendationTurn,
+    Message,
+    MessageRole,
+)
 from app.services.llm_service import (
     PRODUCT_CATEGORY_TERMS,
     _contains_any,
@@ -46,19 +51,25 @@ def extract_recommendation_profile(text: str) -> dict[str, list[str]]:
 
 
 def _normalize_message(text: str) -> str:
-    return _normalize_match_text(str(text or "").translate(str.maketrans({
-        "１": "1",
-        "２": "2",
-        "３": "3",
-        "４": "4",
-        "５": "5",
-        "６": "6",
-        "７": "7",
-        "８": "8",
-        "９": "9",
-        "＃": "#",
-        "﹟": "#",
-    })))
+    return _normalize_match_text(
+        str(text or "").translate(
+            str.maketrans(
+                {
+                    "１": "1",
+                    "２": "2",
+                    "３": "3",
+                    "４": "4",
+                    "５": "5",
+                    "６": "6",
+                    "７": "7",
+                    "８": "8",
+                    "９": "9",
+                    "＃": "#",
+                    "﹟": "#",
+                }
+            )
+        )
+    )
 
 
 def _turn_categories(turn: dict[str, Any]) -> set[str]:
@@ -72,7 +83,16 @@ def _item_text(item: dict[str, Any], product: dict[str, Any] | None = None) -> s
     for source in (item, product or {}):
         if not isinstance(source, dict):
             continue
-        for key in ("name", "product_name", "brand", "series", "series_name", "space", "style", "material"):
+        for key in (
+            "name",
+            "product_name",
+            "brand",
+            "series",
+            "series_name",
+            "space",
+            "style",
+            "material",
+        ):
             value = source.get(key)
             if value:
                 values.append(str(value))
@@ -101,7 +121,10 @@ def _turn_matches_categories(
         except (TypeError, ValueError):
             product = None
         text = _item_text(item, product)
-        if any(_contains_any(text, PRODUCT_CATEGORY_TERMS.get(category, [])) for category in requested_categories):
+        if any(
+            _contains_any(text, PRODUCT_CATEGORY_TERMS.get(category, []))
+            for category in requested_categories
+        ):
             return True
     return False
 
@@ -111,14 +134,12 @@ def _candidate_turns_for_categories(
     requested_categories: set[str],
     products_by_id: dict[int, dict[str, Any]] | None,
 ) -> list[dict[str, Any]]:
-    profile_matches = [
-        turn for turn in turns
-        if _turn_categories(turn) & requested_categories
-    ]
+    profile_matches = [turn for turn in turns if _turn_categories(turn) & requested_categories]
     if profile_matches:
         return profile_matches
     return [
-        turn for turn in turns
+        turn
+        for turn in turns
         if _turn_matches_categories(turn, requested_categories, products_by_id)
     ]
 
@@ -227,7 +248,9 @@ def resolve_product_reference_from_history(
         return empty
 
     if requested_categories:
-        candidate_turns = _candidate_turns_for_categories(valid_turns, requested_categories, products_by_id)
+        candidate_turns = _candidate_turns_for_categories(
+            valid_turns, requested_categories, products_by_id
+        )
         if not candidate_turns:
             return {
                 **empty,
@@ -309,7 +332,9 @@ def _event_product_id(url: str | None) -> int | None:
     return int(match.group(1))
 
 
-async def _legacy_turns_from_outbound_events(conversation_id: int, limit: int) -> list[dict[str, Any]]:
+async def _legacy_turns_from_outbound_events(
+    conversation_id: int, limit: int
+) -> list[dict[str, Any]]:
     async with AsyncSessionLocal() as db:
         result = await db.execute(
             select(ConversationOutboundEvent)
@@ -362,38 +387,48 @@ async def _legacy_turns_from_outbound_events(conversation_id: int, limit: int) -
                 if not slot or not product_id:
                     continue
                 product_ids.append(product_id)
-                items.append({
-                    "slot": slot,
-                    "product_id": product_id,
-                    "name": _caption_product_name(event.caption),
-                })
+                items.append(
+                    {
+                        "slot": slot,
+                        "product_id": product_id,
+                        "name": _caption_product_name(event.caption),
+                    }
+                )
             if product_ids:
-                turns.append({
-                    "id": None,
-                    "turn_index": index,
-                    "request_text": request_text,
-                    "language": request.language if request else "en",
-                    "category_profile": extract_recommendation_profile(request_text),
-                    "product_ids": product_ids,
-                    "items": items,
-                    "created_at": first_event.created_at.isoformat() if first_event.created_at else "",
-                })
+                turns.append(
+                    {
+                        "id": None,
+                        "turn_index": index,
+                        "request_text": request_text,
+                        "language": request.language if request else "en",
+                        "category_profile": extract_recommendation_profile(request_text),
+                        "product_ids": product_ids,
+                        "items": items,
+                        "created_at": (
+                            first_event.created_at.isoformat() if first_event.created_at else ""
+                        ),
+                    }
+                )
         return turns
 
 
-async def get_recent_recommendation_turns(conversation_id: int, limit: int = 8) -> list[dict[str, Any]]:
+async def get_recent_recommendation_turns(
+    conversation_id: int, limit: int = 8
+) -> list[dict[str, Any]]:
     async with AsyncSessionLocal() as db:
         result = await db.execute(
             select(ConversationRecommendationTurn)
             .where(ConversationRecommendationTurn.conversation_id == conversation_id)
-            .order_by(ConversationRecommendationTurn.turn_index.desc(), ConversationRecommendationTurn.id.desc())
+            .order_by(
+                ConversationRecommendationTurn.turn_index.desc(),
+                ConversationRecommendationTurn.id.desc(),
+            )
             .limit(limit)
         )
         turns = [_turn_to_dict(turn) for turn in result.scalars().all()]
     if turns:
         return list(reversed(turns))
     return await _legacy_turns_from_outbound_events(conversation_id, limit)
-
 
 
 async def record_recommendation_turn(
@@ -416,41 +451,53 @@ async def record_recommendation_turn(
     items = []
     for slot, product_id in enumerate(clean_ids, start=1):
         product = products_by_id.get(product_id, {})
-        items.append({
-            "slot": slot,
-            "product_id": product_id,
-            "name": product.get("name") or product.get("product_name") or "",
-            "brand": product.get("brand") or "",
-            "series": product.get("series") or product.get("series_name") or "",
-            "space": product.get("space") or "",
-            "style": product.get("style") or "",
-            "material": product.get("material") or "",
-        })
+        items.append(
+            {
+                "slot": slot,
+                "product_id": product_id,
+                "name": product.get("name") or product.get("product_name") or "",
+                "brand": product.get("brand") or "",
+                "series": product.get("series") or product.get("series_name") or "",
+                "space": product.get("space") or "",
+                "style": product.get("style") or "",
+                "material": product.get("material") or "",
+            }
+        )
 
     async with AsyncSessionLocal() as db:
         last_index = await db.scalar(
-            select(func.max(ConversationRecommendationTurn.turn_index))
-            .where(ConversationRecommendationTurn.conversation_id == conversation_id)
+            select(func.max(ConversationRecommendationTurn.turn_index)).where(
+                ConversationRecommendationTurn.conversation_id == conversation_id
+            )
         )
         latest = await db.scalar(
             select(ConversationRecommendationTurn)
             .where(ConversationRecommendationTurn.conversation_id == conversation_id)
-            .order_by(ConversationRecommendationTurn.turn_index.desc(), ConversationRecommendationTurn.id.desc())
+            .order_by(
+                ConversationRecommendationTurn.turn_index.desc(),
+                ConversationRecommendationTurn.id.desc(),
+            )
             .limit(1)
         )
         product_ids_json = json.dumps(clean_ids, ensure_ascii=False)
-        if latest and latest.request_text == (request_text or "") and latest.product_ids_json == product_ids_json:
+        if (
+            latest
+            and latest.request_text == (request_text or "")
+            and latest.product_ids_json == product_ids_json
+        ):
             return
-        db.add(ConversationRecommendationTurn(
-            conversation_id=conversation_id,
-            turn_index=int(last_index or 0) + 1,
-            request_text=request_text or "",
-            language=language or "en",
-            category_profile_json=json.dumps(
-                category_profile or extract_recommendation_profile(request_text),
-                ensure_ascii=False,
-            ),
-            product_ids_json=product_ids_json,
-            items_json=json.dumps(items, ensure_ascii=False),
-        ))
+        db.add(
+            ConversationRecommendationTurn(
+                conversation_id=conversation_id,
+                turn_index=int(last_index or 0) + 1,
+                request_text=request_text or "",
+                language=language or "en",
+                category_profile_json=json.dumps(
+                    category_profile or extract_recommendation_profile(request_text),
+                    ensure_ascii=False,
+                ),
+                product_ids_json=product_ids_json,
+                items_json=json.dumps(items, ensure_ascii=False),
+            )
+        )
         await db.commit()

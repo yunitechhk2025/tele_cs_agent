@@ -395,6 +395,7 @@ class TelegramSimulatorEventSchema(BaseModel):
 
 # ─── LLM Settings ────────────────────────────────────────────────────────────
 
+
 class LLMSettingsSchema(BaseModel):
     provider: str = "openai"
     api_key: str = ""
@@ -447,6 +448,7 @@ class LLMSettingsUpdateRequest(BaseModel):
 
 # ─── File Library ─────────────────────────────────────────────────────────────
 
+
 class FileEntrySchema(BaseModel):
     id: int
     filename: str
@@ -470,6 +472,7 @@ class FileEntryUpdateRequest(BaseModel):
 
 
 # ─── Telegram Bot Management ─────────────────────────────────────────────────
+
 
 class TelegramBotSchema(BaseModel):
     id: int

@@ -24,7 +24,9 @@ import urllib.error
 import urllib.request
 
 
-def _request(url: str, method: str = "GET", payload: dict | None = None, token: str | None = None) -> dict | list:
+def _request(
+    url: str, method: str = "GET", payload: dict | None = None, token: str | None = None
+) -> dict | list:
     body = json.dumps(payload).encode("utf-8") if payload is not None else None
     req = urllib.request.Request(url, data=body, method=method)
     if payload is not None:
@@ -52,7 +54,9 @@ def login(base_url: str, username: str, password: str) -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--base-url", default=os.environ.get("KB_BASE_URL", "http://localhost:8001"))
+    parser.add_argument(
+        "--base-url", default=os.environ.get("KB_BASE_URL", "http://localhost:8001")
+    )
     parser.add_argument(
         "--username",
         default=os.environ.get("KB_USERNAME") or os.environ.get("ADMIN_USERNAME") or "admin",

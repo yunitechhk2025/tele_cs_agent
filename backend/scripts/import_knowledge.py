@@ -29,7 +29,9 @@ import urllib.error
 import urllib.request
 
 
-def _request(url: str, method: str = "GET", payload: dict | None = None, token: str | None = None) -> dict | list:
+def _request(
+    url: str, method: str = "GET", payload: dict | None = None, token: str | None = None
+) -> dict | list:
     body = json.dumps(payload).encode("utf-8") if payload is not None else None
     req = urllib.request.Request(url, data=body, method=method)
     if payload is not None:
@@ -57,7 +59,9 @@ def login(base_url: str, username: str, password: str) -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--base-url", default=os.environ.get("KB_BASE_URL", "http://localhost:8001"))
+    parser.add_argument(
+        "--base-url", default=os.environ.get("KB_BASE_URL", "http://localhost:8001")
+    )
     parser.add_argument(
         "--username",
         default=os.environ.get("KB_USERNAME") or os.environ.get("ADMIN_USERNAME") or "admin",
@@ -101,7 +105,9 @@ def main() -> None:
         existing = _request(f"{args.base_url}/api/knowledge", token=token)
         if isinstance(existing, list):
             existing_keys = {(e.get("title", ""), e.get("category") or "") for e in existing}
-            print(f"[import] target already has {len(existing_keys)} entries; skip-existing enabled")
+            print(
+                f"[import] target already has {len(existing_keys)} entries; skip-existing enabled"
+            )
 
     created = 0
     skipped = 0

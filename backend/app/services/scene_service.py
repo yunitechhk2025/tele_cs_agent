@@ -363,7 +363,9 @@ async def _generate_image_binary(prompt: str, cfg: dict[str, str]) -> bytes:
                 )
                 return binary
         except Exception as first_error:
-            logger.warning("Image generation with b64_json failed, retrying with URL fallback: %s", first_error)
+            logger.warning(
+                "Image generation with b64_json failed, retrying with URL fallback: %s", first_error
+            )
             response = await client.images.generate(
                 model=model,
                 prompt=prompt,
@@ -464,26 +466,36 @@ async def _generate_dashscope_kling_images(
                 create_resp = await client.post(create_url, headers=headers, json=payload)
                 create_resp.raise_for_status()
                 created = create_resp.json()
-                task_id = (((created or {}).get("output") or {}).get("task_id"))
+                task_id = ((created or {}).get("output") or {}).get("task_id")
                 if not task_id:
-                    raise RuntimeError(created.get("message") or created.get("code") or "DashScope image task creation failed")
+                    raise RuntimeError(
+                        created.get("message")
+                        or created.get("code")
+                        or "DashScope image task creation failed"
+                    )
 
                 query_url = f"{base_url}/api/v1/tasks/{task_id}"
                 last_payload: dict[str, Any] = created
                 for _ in range(36):
-                    poll_resp = await client.get(query_url, headers={"Authorization": f"Bearer {api_key}"})
+                    poll_resp = await client.get(
+                        query_url, headers={"Authorization": f"Bearer {api_key}"}
+                    )
                     poll_resp.raise_for_status()
                     last_payload = poll_resp.json()
                     output = (last_payload or {}).get("output") or {}
                     status = output.get("task_status")
                     if status == "SUCCEEDED":
-                        contents = (((output.get("choices") or [{}])[0].get("message") or {}).get("content") or [])
+                        contents = ((output.get("choices") or [{}])[0].get("message") or {}).get(
+                            "content"
+                        ) or []
                         urls = [item.get("image") for item in contents if item.get("image")]
                         binaries: list[bytes] = []
                         for url in urls:
                             binaries.append(await _download_remote_binary(client, url))
                         if not binaries:
-                            raise RuntimeError("DashScope task succeeded but returned no image URLs")
+                            raise RuntimeError(
+                                "DashScope task succeeded but returned no image URLs"
+                            )
                         await record_llm_call(
                             operation="scene_image",
                             provider="dashscope",
@@ -503,7 +515,9 @@ async def _generate_dashscope_kling_images(
                         break
                     await asyncio.sleep(5)
                 else:
-                    last_error_message = f"DashScope image generation timed out after polling task {task_id}"
+                    last_error_message = (
+                        f"DashScope image generation timed out after polling task {task_id}"
+                    )
 
                 if task_attempt < 2:
                     await asyncio.sleep(2)
@@ -556,8 +570,7 @@ async def _get_selected_reference_items(
             )
         )
         images_map = {
-            (img.product_entry_id, img.display_order): img
-            for img in image_result.scalars().all()
+            (img.product_entry_id, img.display_order): img for img in image_result.scalars().all()
         }
 
     items: list[dict[str, Any]] = []
@@ -623,9 +636,7 @@ async def _load_products(ids: list[int]) -> list[ProductEntry]:
     if not ids:
         return []
     async with AsyncSessionLocal() as db:
-        result = await db.execute(
-            select(ProductEntry).where(ProductEntry.id.in_(ids))
-        )
+        result = await db.execute(select(ProductEntry).where(ProductEntry.id.in_(ids)))
         products = result.scalars().all()
     product_map = {p.id: p for p in products}
     return [product_map[i] for i in ids if i in product_map]
@@ -637,7 +648,9 @@ async def _save_record_images(
     binaries: list[bytes],
     mime_types: list[str] | None = None,
 ):
-    await db.execute(delete(SceneGenerationImage).where(SceneGenerationImage.record_id == record_id))
+    await db.execute(
+        delete(SceneGenerationImage).where(SceneGenerationImage.record_id == record_id)
+    )
     mime_types = mime_types or []
     for idx, binary in enumerate(binaries):
         db.add(
@@ -654,7 +667,9 @@ async def _save_record_images(
 async def _backfill_record_images_from_disk(record: SceneGenerationRecord):
     async with AsyncSessionLocal() as db:
         existing = await db.execute(
-            select(SceneGenerationImage.id).where(SceneGenerationImage.record_id == record.id).limit(1)
+            select(SceneGenerationImage.id)
+            .where(SceneGenerationImage.record_id == record.id)
+            .limit(1)
         )
         if existing.first():
             return
@@ -710,7 +725,9 @@ async def _find_reusable_record(
             continue
         if requested_related:
             candidate_related = sorted(
-                int(x) for x in _clean_json_list(candidate.related_product_ids_json) if str(x).isdigit()
+                int(x)
+                for x in _clean_json_list(candidate.related_product_ids_json)
+                if str(x).isdigit()
             )
             if candidate_related != requested_related:
                 continue
@@ -753,7 +770,9 @@ async def _find_completed_conversation_record(
             continue
         if requested_related:
             candidate_related = sorted(
-                int(x) for x in _clean_json_list(candidate.related_product_ids_json) if str(x).isdigit()
+                int(x)
+                for x in _clean_json_list(candidate.related_product_ids_json)
+                if str(x).isdigit()
             )
             if candidate_related != requested_related:
                 continue
@@ -810,7 +829,9 @@ async def _clone_reusable_record_for_conversation(
                 full = upload_dir / filename
                 full.write_bytes(binary)
                 cloned_paths.append(
-                    os.path.join("uploads", "generated_scenes", str(record.id), filename).replace("\\", "/")
+                    os.path.join("uploads", "generated_scenes", str(record.id), filename).replace(
+                        "\\", "/"
+                    )
                 )
             db.add(
                 SceneGenerationImage(
@@ -836,10 +857,16 @@ async def build_scene_record_response(record: SceneGenerationRecord) -> dict[str
 
     async with AsyncSessionLocal() as db:
         primary = await db.get(ProductEntry, record.primary_product_id)
-        related_ids = [int(x) for x in _clean_json_list(record.related_product_ids_json) if str(x).isdigit()]
+        related_ids = [
+            int(x) for x in _clean_json_list(record.related_product_ids_json) if str(x).isdigit()
+        ]
         related_products = []
         if related_ids:
-            result = await db.execute(select(ProductEntry).where(ProductEntry.id.in_(related_ids)).order_by(ProductEntry.id))
+            result = await db.execute(
+                select(ProductEntry)
+                .where(ProductEntry.id.in_(related_ids))
+                .order_by(ProductEntry.id)
+            )
             related_products = result.scalars().all()
         image_result = await db.execute(
             select(SceneGenerationImage)
@@ -850,8 +877,7 @@ async def build_scene_record_response(record: SceneGenerationRecord) -> dict[str
 
     if scene_images:
         image_urls = [
-            f"/api/scene-generations/{record.id}/images/{img.image_index}"
-            for img in scene_images
+            f"/api/scene-generations/{record.id}/images/{img.image_index}" for img in scene_images
         ]
     else:
         image_urls = [
@@ -948,7 +974,9 @@ async def _create_scene_generation_record(
         return record
 
 
-async def cleanup_stale_pending_scene_generations(max_age_seconds: int = BACKEND_SCENE_TIMEOUT_SECONDS) -> int:
+async def cleanup_stale_pending_scene_generations(
+    max_age_seconds: int = BACKEND_SCENE_TIMEOUT_SECONDS,
+) -> int:
     cutoff = datetime.utcnow() - timedelta(seconds=max_age_seconds)
     async with AsyncSessionLocal() as db:
         result = await db.execute(
@@ -1019,7 +1047,9 @@ async def _generate_scene_outputs(
         filename = f"{uuid.uuid4().hex}_{idx + 1}.png"
         full = upload_dir / filename
         full.write_bytes(binary)
-        rel = os.path.join("uploads", "generated_scenes", str(record_id), filename).replace("\\", "/")
+        rel = os.path.join("uploads", "generated_scenes", str(record_id), filename).replace(
+            "\\", "/"
+        )
         output_paths.append(rel)
     return output_paths, binaries
 
@@ -1060,25 +1090,27 @@ async def _run_scene_generation_for_record(
     scene_name = scene_name.strip() or default_scene
     style_hint = style_hint.strip() or default_style
 
-    candidate_products = [
-        p for p in all_products
-        if int(p["id"]) != primary_product.id
-    ]
+    candidate_products = [p for p in all_products if int(p["id"]) != primary_product.id]
     all_products_map = {int(p["id"]): p for p in all_products}
     preferred_candidates = [
-        p for p in candidate_products
-        if (p.get("space") == primary_product.space or not primary_product.space or p.get("style") == primary_product.style)
+        p
+        for p in candidate_products
+        if (
+            p.get("space") == primary_product.space
+            or not primary_product.space
+            or p.get("style") == primary_product.style
+        )
     ]
     primary_category = _infer_product_category(primary_product)
     distinct_category_candidates = [
-        p for p in (preferred_candidates or candidate_products)
+        p
+        for p in (preferred_candidates or candidate_products)
         if _infer_product_category(p) != primary_category
     ]
     shortlist = distinct_category_candidates[:30]
     if not shortlist:
         shortlist = [
-            p for p in candidate_products
-            if _infer_product_category(p) != primary_category
+            p for p in candidate_products if _infer_product_category(p) != primary_category
         ][:30]
 
     selected_related_ids: list[int] | None = related_product_ids
@@ -1128,13 +1160,16 @@ async def _run_scene_generation_for_record(
             )
     selected_related_ids = _filter_distinct_category_related_ids(
         primary_product=primary_product,
-        candidate_ids=selected_related_ids or [int(p["id"]) for p in shortlist[:DEFAULT_SCENE_RELATED_PRODUCT_COUNT]],
+        candidate_ids=selected_related_ids
+        or [int(p["id"]) for p in shortlist[:DEFAULT_SCENE_RELATED_PRODUCT_COUNT]],
         all_products_map=all_products_map,
         max_products=related_product_limit,
     )
 
     related_products = await _load_products(selected_related_ids)
-    reference_items = reference_image_items or await _build_default_reference_items(primary_product, related_products)
+    reference_items = reference_image_items or await _build_default_reference_items(
+        primary_product, related_products
+    )
     prompt = _build_scene_prompt(
         primary_product,
         related_products,
@@ -1213,7 +1248,9 @@ async def _run_scene_generation_for_record(
         raise
     except Exception as e:
         duration_ms = int((time.perf_counter() - total_start) * 1000)
-        logger.error("Scene image generation failed for product %s: %s", primary_product.id, e, exc_info=True)
+        logger.error(
+            "Scene image generation failed for product %s: %s", primary_product.id, e, exc_info=True
+        )
         current = await _mark_scene_generation_failed(record_id, duration_ms, str(e))
         if current:
             return current
@@ -1250,7 +1287,11 @@ async def start_scene_generation(
         return record
 
     # 使用记录 ID 作为默认去重键，确保重复点击或重试不会并发生成同一条记录。
-    dedupe_key = f"{dedupe_prefix}:scene_generation:{record.id}" if dedupe_prefix else f"scene_generation:{record.id}"
+    dedupe_key = (
+        f"{dedupe_prefix}:scene_generation:{record.id}"
+        if dedupe_prefix
+        else f"scene_generation:{record.id}"
+    )
     await enqueue_job(
         job_type="scene_generation",
         entity_type="scene_generation_record",

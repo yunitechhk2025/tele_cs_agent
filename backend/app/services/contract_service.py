@@ -118,13 +118,14 @@ async def create_contract_from_conversation(
         return None
 
     chat_history = [
-        {"role": msg.role.value, "content": msg.content}
-        for msg in conversation.messages
+        {"role": msg.role.value, "content": msg.content} for msg in conversation.messages
     ]
 
-    customer_name = " ".join(
-        filter(None, [conversation.first_name, conversation.last_name])
-    ) or conversation.username or f"Customer #{conversation.telegram_user_id}"
+    customer_name = (
+        " ".join(filter(None, [conversation.first_name, conversation.last_name]))
+        or conversation.username
+        or f"Customer #{conversation.telegram_user_id}"
+    )
 
     template_content: str | None = None
     if template_id is not None:

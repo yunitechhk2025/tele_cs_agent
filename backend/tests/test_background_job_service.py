@@ -38,7 +38,9 @@ class BackgroundJobServiceTests(unittest.TestCase):
 
     async def _cleanup(self):
         async with AsyncSessionLocal() as db:
-            await db.execute(delete(BackgroundJob).where(BackgroundJob.dedupe_key.like(f"{self.prefix}%")))
+            await db.execute(
+                delete(BackgroundJob).where(BackgroundJob.dedupe_key.like(f"{self.prefix}%"))
+            )
             await db.commit()
 
     def test_enqueue_claim_and_dedupe_prevent_duplicate_execution(self):
@@ -95,14 +97,22 @@ class BackgroundJobServiceTests(unittest.TestCase):
             max_attempts=2,
         )
 
-        first_claim = [item for item in await claim_due_jobs("worker-a", limit=5) if item.id == job.id][0]
-        retry = await mark_failed_or_retry(first_claim.id, "temporary network error", retry_delay_seconds=0)
+        first_claim = [
+            item for item in await claim_due_jobs("worker-a", limit=5) if item.id == job.id
+        ][0]
+        retry = await mark_failed_or_retry(
+            first_claim.id, "temporary network error", retry_delay_seconds=0
+        )
         self.assertEqual(retry.status, "queued")
         self.assertEqual(retry.attempts, 1)
         self.assertIn("temporary network error", retry.last_error)
 
-        second_claim = [item for item in await claim_due_jobs("worker-a", limit=5) if item.id == job.id][0]
-        failed = await mark_failed_or_retry(second_claim.id, "image model rejected request", retry_delay_seconds=0)
+        second_claim = [
+            item for item in await claim_due_jobs("worker-a", limit=5) if item.id == job.id
+        ][0]
+        failed = await mark_failed_or_retry(
+            second_claim.id, "image model rejected request", retry_delay_seconds=0
+        )
         self.assertEqual(failed.status, "failed")
         self.assertEqual(failed.attempts, 2)
         self.assertIsNotNone(failed.finished_at)
@@ -121,7 +131,9 @@ class BackgroundJobServiceTests(unittest.TestCase):
             payload={"record_id": 303},
             max_attempts=2,
         )
-        claimed = [item for item in await claim_due_jobs("worker-a", limit=5) if item.id == job.id][0]
+        claimed = [item for item in await claim_due_jobs("worker-a", limit=5) if item.id == job.id][
+            0
+        ]
 
         async with AsyncSessionLocal() as db:
             await db.execute(

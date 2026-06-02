@@ -20,8 +20,10 @@ class SimulatorSceneI18nTests(unittest.TestCase):
         source = _function_source("_build_simulator_scene_events")
 
         self.assertIn("_resolve_scene_record_language", source)
-        self.assertNotIn("SCENE_RESULT_MESSAGES.get(ui_lang, SCENE_RESULT_MESSAGES[\"en\"])", source)
-        self.assertNotIn("SCENE_RESULT_LINK_LABELS.get(ui_lang, SCENE_RESULT_LINK_LABELS[\"en\"])", source)
+        self.assertNotIn('SCENE_RESULT_MESSAGES.get(ui_lang, SCENE_RESULT_MESSAGES["en"])', source)
+        self.assertNotIn(
+            'SCENE_RESULT_LINK_LABELS.get(ui_lang, SCENE_RESULT_LINK_LABELS["en"])', source
+        )
         self.assertIn("get_localized_static_text(SCENE_RESULT_MESSAGES", source)
         self.assertIn("get_localized_static_dict(SCENE_RESULT_LINK_LABELS", source)
 

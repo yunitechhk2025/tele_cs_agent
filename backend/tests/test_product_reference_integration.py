@@ -12,10 +12,18 @@ class ProductReferenceIntegrationTests(unittest.TestCase):
     def test_telegram_local_resolution_uses_shared_relative_references(self):
         product_ids = [101, 102, 103]
 
-        self.assertEqual(resolve_recommended_product_reference_locally("倒数第一个", product_ids), 103)
-        self.assertEqual(resolve_recommended_product_reference_locally("last one", product_ids), 103)
-        self.assertEqual(resolve_recommended_product_reference_locally("penúltimo sofá", product_ids), 102)
-        self.assertEqual(resolve_recommended_product_reference_locally("el del medio", product_ids), 102)
+        self.assertEqual(
+            resolve_recommended_product_reference_locally("倒数第一个", product_ids), 103
+        )
+        self.assertEqual(
+            resolve_recommended_product_reference_locally("last one", product_ids), 103
+        )
+        self.assertEqual(
+            resolve_recommended_product_reference_locally("penúltimo sofá", product_ids), 102
+        )
+        self.assertEqual(
+            resolve_recommended_product_reference_locally("el del medio", product_ids), 102
+        )
 
     def test_selection_and_followup_detection_cover_relative_references(self):
         for text in ["last one", "倒数第一个", "el del medio"]:

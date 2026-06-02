@@ -324,7 +324,9 @@ ENTRIES: list[dict] = [
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--base-url", default=os.environ.get("KB_BASE_URL", "http://localhost:8001"))
+    parser.add_argument(
+        "--base-url", default=os.environ.get("KB_BASE_URL", "http://localhost:8001")
+    )
     parser.add_argument("--username", default=os.environ.get("KB_USERNAME", "admin"))
     parser.add_argument(
         "--password",

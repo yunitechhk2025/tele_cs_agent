@@ -83,7 +83,9 @@ async def _deliver_scene_generation(record: SceneGenerationRecord, payload: dict
         return
 
     language = payload.get("reply_language") or conversation.language or "en"
-    delivery_context = payload.get("delivery_context") if isinstance(payload.get("delivery_context"), dict) else {}
+    delivery_context = (
+        payload.get("delivery_context") if isinstance(payload.get("delivery_context"), dict) else {}
+    )
     from app.telegram_bot import build_scene_result_delivery
 
     scene_delivery = await build_scene_result_delivery(record, language)
@@ -151,9 +153,19 @@ async def _process_scene_generation(job: BackgroundJob) -> None:
             raise RuntimeError(f"Primary product {record.primary_product_id} not found")
 
     all_products = await _load_all_products_for_scene_generation()
-    related_product_ids = [int(x) for x in _json_list(record.related_product_ids_json) if str(x).isdigit()]
-    reference_image_items = payload.get("reference_image_items") if isinstance(payload.get("reference_image_items"), list) else []
-    reference_image_refs = payload.get("reference_image_refs") if isinstance(payload.get("reference_image_refs"), list) else []
+    related_product_ids = [
+        int(x) for x in _json_list(record.related_product_ids_json) if str(x).isdigit()
+    ]
+    reference_image_items = (
+        payload.get("reference_image_items")
+        if isinstance(payload.get("reference_image_items"), list)
+        else []
+    )
+    reference_image_refs = (
+        payload.get("reference_image_refs")
+        if isinstance(payload.get("reference_image_refs"), list)
+        else []
+    )
     if reference_image_refs:
         reference_image_items = await _get_selected_reference_items(reference_image_refs)
 

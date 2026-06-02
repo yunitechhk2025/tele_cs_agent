@@ -186,7 +186,11 @@ def _slowest_conversation_ids(
     *,
     limit: int = 10,
 ) -> list[int]:
-    sortable = [row for row in rows if _get(row, field) is not None and _get(row, "conversation_id") is not None]
+    sortable = [
+        row
+        for row in rows
+        if _get(row, field) is not None and _get(row, "conversation_id") is not None
+    ]
     sortable.sort(key=lambda row: int(_get(row, field) or 0), reverse=True)
     return _unique_conversation_ids(sortable, limit=limit)
 
@@ -231,10 +235,16 @@ def build_observability_summary(
         or str(_get(row, "response_kind", "")).startswith("product_recommendation")
     ]
 
-    handoff_count = sum(1 for row in turns if str(_get(row, "response_kind", "")) in HANDOFF_RESPONSE_KINDS)
-    profile_handoff_count = sum(1 for row in turns if str(_get(row, "response_kind", "")) == "profile_handoff")
+    handoff_count = sum(
+        1 for row in turns if str(_get(row, "response_kind", "")) in HANDOFF_RESPONSE_KINDS
+    )
+    profile_handoff_count = sum(
+        1 for row in turns if str(_get(row, "response_kind", "")) == "profile_handoff"
+    )
 
-    rag_steps = [step for step in steps if str(_get(step, "stage_key", "")) == "knowledge_retrieval"]
+    rag_steps = [
+        step for step in steps if str(_get(step, "stage_key", "")) == "knowledge_retrieval"
+    ]
     rag_empty_rows = _rag_empty_steps(steps)
     rag_empty_count = len(rag_empty_rows)
 
@@ -247,18 +257,24 @@ def build_observability_summary(
     stage_metrics = []
     for stage_key, rows in stage_groups.items():
         durations = _duration_values(rows, "duration_ms")
-        labels = [str(_get(row, "stage_label", "")) for row in rows if str(_get(row, "stage_label", ""))]
-        stage_metrics.append({
-            "stage_key": stage_key,
-            "stage_label": _stage_label(stage_key, labels[0] if labels else ""),
-            "count": len(rows),
-            "avg_ms": _avg(durations),
-            "p50_ms": percentile(durations, 50),
-            "p95_ms": percentile(durations, 95),
-            "p99_ms": percentile(durations, 99),
-            "failed_count": sum(1 for row in rows if not bool(_get(row, "success", True))),
-        })
-    stage_metrics.sort(key=lambda item: (item.get("p95_ms") or 0, item.get("count") or 0), reverse=True)
+        labels = [
+            str(_get(row, "stage_label", "")) for row in rows if str(_get(row, "stage_label", ""))
+        ]
+        stage_metrics.append(
+            {
+                "stage_key": stage_key,
+                "stage_label": _stage_label(stage_key, labels[0] if labels else ""),
+                "count": len(rows),
+                "avg_ms": _avg(durations),
+                "p50_ms": percentile(durations, 50),
+                "p95_ms": percentile(durations, 95),
+                "p99_ms": percentile(durations, 99),
+                "failed_count": sum(1 for row in rows if not bool(_get(row, "success", True))),
+            }
+        )
+    stage_metrics.sort(
+        key=lambda item: (item.get("p95_ms") or 0, item.get("count") or 0), reverse=True
+    )
 
     llm_groups: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
     for call in llm_calls:
@@ -270,74 +286,87 @@ def build_observability_summary(
         failed_rows = [row for row in rows if not bool(_get(row, "success", True))]
         last_error = ""
         if failed_rows:
-            last_error = str(_get(failed_rows[-1], "error_message", "") or _get(failed_rows[-1], "error_type", ""))
-        llm_metrics.append({
-            "operation": operation,
-            "model": model,
-            "count": len(rows),
-            "failed_count": len(failed_rows),
-            "failure_rate": _safe_ratio(len(failed_rows), len(rows)),
-            "avg_ms": _avg(durations),
-            "p50_ms": percentile(durations, 50),
-            "p95_ms": percentile(durations, 95),
-            "p99_ms": percentile(durations, 99),
-            "last_error": last_error[:500],
-        })
+            last_error = str(
+                _get(failed_rows[-1], "error_message", "")
+                or _get(failed_rows[-1], "error_type", "")
+            )
+        llm_metrics.append(
+            {
+                "operation": operation,
+                "model": model,
+                "count": len(rows),
+                "failed_count": len(failed_rows),
+                "failure_rate": _safe_ratio(len(failed_rows), len(rows)),
+                "avg_ms": _avg(durations),
+                "p50_ms": percentile(durations, 50),
+                "p95_ms": percentile(durations, 95),
+                "p99_ms": percentile(durations, 99),
+                "last_error": last_error[:500],
+            }
+        )
     llm_metrics.sort(key=lambda item: (item["failed_count"], item["count"]), reverse=True)
 
     recent_failures: list[dict[str, Any]] = []
     for row in turns:
         if bool(_get(row, "success", True)):
             continue
-        recent_failures.append({
-            "source": "turn",
-            "conversation_id": _get(row, "conversation_id"),
-            "turn_metric_id": _get(row, "id"),
-            "language": str(_get(row, "language", "")),
-            "primary_intent": str(_get(row, "primary_intent", "")),
-            "response_kind": str(_get(row, "response_kind", "")),
-            "error_message": str(_get(row, "error_message", "")),
-            "created_at": _dt(_get(row, "started_at")),
-        })
+        recent_failures.append(
+            {
+                "source": "turn",
+                "conversation_id": _get(row, "conversation_id"),
+                "turn_metric_id": _get(row, "id"),
+                "language": str(_get(row, "language", "")),
+                "primary_intent": str(_get(row, "primary_intent", "")),
+                "response_kind": str(_get(row, "response_kind", "")),
+                "error_message": str(_get(row, "error_message", "")),
+                "created_at": _dt(_get(row, "started_at")),
+            }
+        )
     for scene in scenes:
         if str(_get(scene, "status", "")) != "failed":
             continue
-        recent_failures.append({
-            "source": "scene",
-            "conversation_id": _get(scene, "conversation_id"),
-            "turn_metric_id": None,
-            "language": "",
-            "primary_intent": "scene_image_request",
-            "response_kind": "scene_failed",
-            "error_message": str(_get(scene, "error_message", "")),
-            "created_at": _dt(_get(scene, "created_at")),
-        })
+        recent_failures.append(
+            {
+                "source": "scene",
+                "conversation_id": _get(scene, "conversation_id"),
+                "turn_metric_id": None,
+                "language": "",
+                "primary_intent": "scene_image_request",
+                "response_kind": "scene_failed",
+                "error_message": str(_get(scene, "error_message", "")),
+                "created_at": _dt(_get(scene, "created_at")),
+            }
+        )
     recent_failures.sort(key=lambda item: item.get("created_at") or datetime.min, reverse=True)
 
     text_turns = [
-        row for row in turns
-        if str(_get(row, "response_kind", "")) in {"text", "text_draft"}
+        row for row in turns if str(_get(row, "response_kind", "")) in {"text", "text_draft"}
     ]
     product_turns = [
-        row for row in turns
+        row
+        for row in turns
         if str(_get(row, "primary_intent", "")) == "product_recommendation"
         or str(_get(row, "response_kind", "")).startswith("product_recommendation")
     ]
     alert_samples = {
         # 告警样本保留 conversation_id，方便后台从指标直接跳回真实会话排查。
         "text_first_response_p95_ms": _slowest_conversation_ids(text_turns, "first_response_ms"),
-        "product_recommendation_first_response_p95_ms": _slowest_conversation_ids(product_turns, "first_response_ms"),
-        "turn_failure_rate": _unique_conversation_ids([row for row in turns if not bool(_get(row, "success", True))]),
-        "profile_handoff_rate": _unique_conversation_ids([
-            row for row in turns if str(_get(row, "response_kind", "")) == "profile_handoff"
-        ]),
+        "product_recommendation_first_response_p95_ms": _slowest_conversation_ids(
+            product_turns, "first_response_ms"
+        ),
+        "turn_failure_rate": _unique_conversation_ids(
+            [row for row in turns if not bool(_get(row, "success", True))]
+        ),
+        "profile_handoff_rate": _unique_conversation_ids(
+            [row for row in turns if str(_get(row, "response_kind", "")) == "profile_handoff"]
+        ),
         "rag_empty_rate": _unique_conversation_ids(rag_empty_rows),
-        "llm_failure_rate": _unique_conversation_ids([
-            row for row in llm_calls if not bool(_get(row, "success", True))
-        ]),
-        "scene_failure_rate": _unique_conversation_ids([
-            row for row in scenes if str(_get(row, "status", "")) == "failed"
-        ]),
+        "llm_failure_rate": _unique_conversation_ids(
+            [row for row in llm_calls if not bool(_get(row, "success", True))]
+        ),
+        "scene_failure_rate": _unique_conversation_ids(
+            [row for row in scenes if str(_get(row, "status", "")) == "failed"]
+        ),
     }
 
     kpis = {
@@ -353,7 +382,9 @@ def build_observability_summary(
         "total_p95_ms": percentile(total_values, 95),
         "total_p99_ms": percentile(total_values, 99),
         "text_first_response_p95_ms": percentile(text_first_response_values, 95),
-        "product_recommendation_first_response_p95_ms": percentile(product_rec_first_response_values, 95),
+        "product_recommendation_first_response_p95_ms": percentile(
+            product_rec_first_response_values, 95
+        ),
         "handoff_count": handoff_count,
         "handoff_rate": _safe_ratio(handoff_count, total_turns),
         "profile_handoff_count": profile_handoff_count,
@@ -491,18 +522,20 @@ def evaluate_alert_candidates(
             continue
         if observed_num > threshold_num:
             sample_ids = alert_samples.get(metric_key) or []
-            alerts.append(_alert(
-                metric_key,
-                severity,
-                title,
-                message,
-                observed_num,
-                threshold_num,
-                window_start,
-                window_end,
-                scope_key,
-                sample_ids,
-            ))
+            alerts.append(
+                _alert(
+                    metric_key,
+                    severity,
+                    title,
+                    message,
+                    observed_num,
+                    threshold_num,
+                    window_start,
+                    window_end,
+                    scope_key,
+                    sample_ids,
+                )
+            )
     return alerts
 
 
@@ -528,7 +561,9 @@ def build_observability_stage_trends(
     window_end: datetime | None = None,
 ) -> dict[str, Any]:
     granularity = _trend_granularity(range_key)
-    grouped: dict[str, dict[str, dict[datetime, list[int]]]] = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
+    grouped: dict[str, dict[str, dict[datetime, list[int]]]] = defaultdict(
+        lambda: defaultdict(lambda: defaultdict(list))
+    )
     for step in steps:
         started_at = _dt(_get(step, "started_at"))
         duration = _get(step, "duration_ms")
@@ -553,32 +588,42 @@ def build_observability_stage_trends(
             all_values = [value for values in bucket_map.values() for value in values]
             points = []
             for bucket, values in sorted(bucket_map.items(), key=lambda item: item[0]):
-                points.append({
-                    "bucket_start": bucket,
-                    "bucket_label": _bucket_label(bucket, granularity),
-                    "count": len(values),
-                    "avg_ms": _avg(values),
-                    "p50_ms": percentile(values, 50),
-                    "p95_ms": percentile(values, 95),
-                    "p99_ms": percentile(values, 99),
-                })
-            stages.append({
-                "stage_key": stage_key,
-                "stage_label": _stage_label(stage_key),
-                "count": len(all_values),
-                "avg_ms": _avg(all_values),
-                "p50_ms": percentile(all_values, 50),
-                "p95_ms": percentile(all_values, 95),
-                "p99_ms": percentile(all_values, 99),
-                "points": points,
-            })
-        stages.sort(key=lambda item: (item.get("p95_ms") or 0, item.get("count") or 0), reverse=True)
-        intent_groups.append({
-            "intent": intent,
-            "intent_label": _intent_label(intent),
-            "stages": stages,
-        })
-    intent_groups.sort(key=lambda item: sum(stage["count"] for stage in item["stages"]), reverse=True)
+                points.append(
+                    {
+                        "bucket_start": bucket,
+                        "bucket_label": _bucket_label(bucket, granularity),
+                        "count": len(values),
+                        "avg_ms": _avg(values),
+                        "p50_ms": percentile(values, 50),
+                        "p95_ms": percentile(values, 95),
+                        "p99_ms": percentile(values, 99),
+                    }
+                )
+            stages.append(
+                {
+                    "stage_key": stage_key,
+                    "stage_label": _stage_label(stage_key),
+                    "count": len(all_values),
+                    "avg_ms": _avg(all_values),
+                    "p50_ms": percentile(all_values, 50),
+                    "p95_ms": percentile(all_values, 95),
+                    "p99_ms": percentile(all_values, 99),
+                    "points": points,
+                }
+            )
+        stages.sort(
+            key=lambda item: (item.get("p95_ms") or 0, item.get("count") or 0), reverse=True
+        )
+        intent_groups.append(
+            {
+                "intent": intent,
+                "intent_label": _intent_label(intent),
+                "stages": stages,
+            }
+        )
+    intent_groups.sort(
+        key=lambda item: sum(stage["count"] for stage in item["stages"]), reverse=True
+    )
     return {
         "granularity": granularity,
         "window_start": window_start,
@@ -614,41 +659,83 @@ def build_observability_export_zip(
     kpi_rows = [{"metric": key, "value": value} for key, value in kpis.items()]
     alert_rows = []
     for alert in alerts:
-        alert_rows.append({
-            "id": _get(alert, "id"),
-            "severity": _get(alert, "severity", ""),
-            "metric_key": _get(alert, "metric_key", ""),
-            "title": _get(alert, "title", ""),
-            "message": _get(alert, "message", ""),
-            "observed_value": _get(alert, "observed_value", ""),
-            "threshold_value": _get(alert, "threshold_value", ""),
-            "status": _get(alert, "status", ""),
-            "sample_conversation_ids_json": _get(alert, "sample_conversation_ids_json", "[]"),
-            "sample_count": _get(alert, "sample_count", 0),
-            "window_start": _get(alert, "window_start"),
-            "window_end": _get(alert, "window_end"),
-            "created_at": _get(alert, "created_at"),
-        })
+        alert_rows.append(
+            {
+                "id": _get(alert, "id"),
+                "severity": _get(alert, "severity", ""),
+                "metric_key": _get(alert, "metric_key", ""),
+                "title": _get(alert, "title", ""),
+                "message": _get(alert, "message", ""),
+                "observed_value": _get(alert, "observed_value", ""),
+                "threshold_value": _get(alert, "threshold_value", ""),
+                "status": _get(alert, "status", ""),
+                "sample_conversation_ids_json": _get(alert, "sample_conversation_ids_json", "[]"),
+                "sample_count": _get(alert, "sample_count", 0),
+                "window_start": _get(alert, "window_start"),
+                "window_end": _get(alert, "window_end"),
+                "created_at": _get(alert, "created_at"),
+            }
+        )
 
     files = {
         "kpis.csv": _csv_text(["metric", "value"], kpi_rows),
         "stage_metrics.csv": _csv_text(
-            ["stage_key", "stage_label", "count", "avg_ms", "p50_ms", "p95_ms", "p99_ms", "failed_count"],
+            [
+                "stage_key",
+                "stage_label",
+                "count",
+                "avg_ms",
+                "p50_ms",
+                "p95_ms",
+                "p99_ms",
+                "failed_count",
+            ],
             summary.get("stage_metrics") or [],
         ),
         "llm_metrics.csv": _csv_text(
-            ["operation", "model", "count", "failed_count", "failure_rate", "avg_ms", "p50_ms", "p95_ms", "p99_ms", "last_error"],
+            [
+                "operation",
+                "model",
+                "count",
+                "failed_count",
+                "failure_rate",
+                "avg_ms",
+                "p50_ms",
+                "p95_ms",
+                "p99_ms",
+                "last_error",
+            ],
             summary.get("llm_metrics") or [],
         ),
         "alerts.csv": _csv_text(
             [
-                "id", "severity", "metric_key", "title", "message", "observed_value", "threshold_value",
-                "status", "sample_conversation_ids_json", "sample_count", "window_start", "window_end", "created_at",
+                "id",
+                "severity",
+                "metric_key",
+                "title",
+                "message",
+                "observed_value",
+                "threshold_value",
+                "status",
+                "sample_conversation_ids_json",
+                "sample_count",
+                "window_start",
+                "window_end",
+                "created_at",
             ],
             alert_rows,
         ),
         "recent_failures.csv": _csv_text(
-            ["source", "conversation_id", "turn_metric_id", "language", "primary_intent", "response_kind", "error_message", "created_at"],
+            [
+                "source",
+                "conversation_id",
+                "turn_metric_id",
+                "language",
+                "primary_intent",
+                "response_kind",
+                "error_message",
+                "created_at",
+            ],
             summary.get("recent_failures") or [],
         ),
     }
@@ -677,7 +764,9 @@ def build_observability_export_filename(
     if response_kind:
         parts.append(response_kind)
     parts.append(datetime.utcnow().strftime("%Y%m%d%H%M%S"))
-    safe = ["".join(ch if ch.isalnum() or ch in {"-", "_"} else "-" for ch in part) for part in parts]
+    safe = [
+        "".join(ch if ch.isalnum() or ch in {"-", "_"} else "-" for ch in part) for part in parts
+    ]
     return "-".join(safe) + ".zip"
 
 
@@ -699,15 +788,19 @@ def _scope_key(
     intent: str | None = None,
     response_kind: str | None = None,
 ) -> str:
-    return "|".join([
-        f"bot={bot_id or 'all'}",
-        f"language={language or 'all'}",
-        f"intent={intent or 'all'}",
-        f"response_kind={response_kind or 'all'}",
-    ])
+    return "|".join(
+        [
+            f"bot={bot_id or 'all'}",
+            f"language={language or 'all'}",
+            f"intent={intent or 'all'}",
+            f"response_kind={response_kind or 'all'}",
+        ]
+    )
 
 
-def _turn_to_row(metric: ConversationTurnMetric, bot_id: int | None, language: str | None) -> dict[str, Any]:
+def _turn_to_row(
+    metric: ConversationTurnMetric, bot_id: int | None, language: str | None
+) -> dict[str, Any]:
     return {
         "id": metric.id,
         "conversation_id": metric.conversation_id,
@@ -789,11 +882,18 @@ async def load_observability_summary(
         stmt = stmt.where(ConversationTurnMetric.primary_intent == intent)
     if response_kind:
         stmt = stmt.where(ConversationTurnMetric.response_kind == response_kind)
-    result = await db.execute(stmt.order_by(desc(ConversationTurnMetric.started_at), desc(ConversationTurnMetric.id)))
+    result = await db.execute(
+        stmt.order_by(desc(ConversationTurnMetric.started_at), desc(ConversationTurnMetric.id))
+    )
     turn_rows_raw = result.all()
-    turns = [_turn_to_row(metric, row_bot_id, row_language) for metric, row_bot_id, row_language in turn_rows_raw]
+    turns = [
+        _turn_to_row(metric, row_bot_id, row_language)
+        for metric, row_bot_id, row_language in turn_rows_raw
+    ]
     turn_ids = [int(row["id"]) for row in turns if row.get("id") is not None]
-    conversation_ids = sorted({int(row["conversation_id"]) for row in turns if row.get("conversation_id") is not None})
+    conversation_ids = sorted(
+        {int(row["conversation_id"]) for row in turns if row.get("conversation_id") is not None}
+    )
 
     steps: list[dict[str, Any]] = []
     if turn_ids:
@@ -822,7 +922,9 @@ async def load_observability_summary(
     )
     if bot_id is not None or language or intent or response_kind:
         if conversation_ids:
-            scene_stmt = scene_stmt.where(SceneGenerationRecord.conversation_id.in_(conversation_ids))
+            scene_stmt = scene_stmt.where(
+                SceneGenerationRecord.conversation_id.in_(conversation_ids)
+            )
         else:
             scene_stmt = scene_stmt.where(SceneGenerationRecord.id == -1)
     scene_result = await db.execute(scene_stmt.order_by(SceneGenerationRecord.created_at))
@@ -842,7 +944,10 @@ async def load_observability_stage_trends(
     window_start, window_end = resolve_time_range(range_key)
     stmt = (
         select(ConversationTurnStepMetric, ConversationTurnMetric.primary_intent)
-        .join(ConversationTurnMetric, ConversationTurnMetric.id == ConversationTurnStepMetric.turn_metric_id)
+        .join(
+            ConversationTurnMetric,
+            ConversationTurnMetric.id == ConversationTurnStepMetric.turn_metric_id,
+        )
         .join(Conversation, Conversation.id == ConversationTurnMetric.conversation_id)
         .where(
             ConversationTurnStepMetric.started_at >= window_start,
@@ -906,8 +1011,14 @@ async def save_alert_settings(db: AsyncSession, updates: dict[str, Any]) -> dict
     return out
 
 
-async def list_alerts(db: AsyncSession, *, status: str | None = None, limit: int = 100) -> list[ObservabilityAlert]:
-    stmt = select(ObservabilityAlert).order_by(desc(ObservabilityAlert.created_at), desc(ObservabilityAlert.id)).limit(limit)
+async def list_alerts(
+    db: AsyncSession, *, status: str | None = None, limit: int = 100
+) -> list[ObservabilityAlert]:
+    stmt = (
+        select(ObservabilityAlert)
+        .order_by(desc(ObservabilityAlert.created_at), desc(ObservabilityAlert.id))
+        .limit(limit)
+    )
     if status:
         stmt = stmt.where(ObservabilityAlert.status == status)
     result = await db.execute(stmt)
@@ -939,17 +1050,27 @@ async def record_llm_call(
 ) -> None:
     try:
         async with AsyncSessionLocal() as db:
-            db.add(LLMCallMetric(
-                operation=operation[:100],
-                provider=provider[:100],
-                model=model[:200],
-                duration_ms=max(0, int(duration_ms)),
-                success=bool(success),
-                error_type=(error_type or "")[:200],
-                error_message=(error_message or "")[:2000],
-                conversation_id=conversation_id if conversation_id is not None else _context_conversation_id.get(),
-                turn_metric_id=turn_metric_id if turn_metric_id is not None else _context_turn_metric_id.get(),
-            ))
+            db.add(
+                LLMCallMetric(
+                    operation=operation[:100],
+                    provider=provider[:100],
+                    model=model[:200],
+                    duration_ms=max(0, int(duration_ms)),
+                    success=bool(success),
+                    error_type=(error_type or "")[:200],
+                    error_message=(error_message or "")[:2000],
+                    conversation_id=(
+                        conversation_id
+                        if conversation_id is not None
+                        else _context_conversation_id.get()
+                    ),
+                    turn_metric_id=(
+                        turn_metric_id
+                        if turn_metric_id is not None
+                        else _context_turn_metric_id.get()
+                    ),
+                )
+            )
             await db.commit()
     except Exception:
         logger.exception("Failed to record LLM call metric operation=%s model=%s", operation, model)
@@ -986,7 +1107,9 @@ async def timed_llm_call(
     return result
 
 
-async def _persist_alert_candidates(db: AsyncSession, candidates: list[dict[str, Any]]) -> list[ObservabilityAlert]:
+async def _persist_alert_candidates(
+    db: AsyncSession, candidates: list[dict[str, Any]]
+) -> list[ObservabilityAlert]:
     created: list[ObservabilityAlert] = []
     for item in candidates:
         alert = ObservabilityAlert(**item)
@@ -999,7 +1122,9 @@ async def _persist_alert_candidates(db: AsyncSession, candidates: list[dict[str,
             await db.rollback()
         except Exception:
             await db.rollback()
-            logger.exception("Failed to persist observability alert metric=%s", item.get("metric_key"))
+            logger.exception(
+                "Failed to persist observability alert metric=%s", item.get("metric_key")
+            )
     return created
 
 
@@ -1021,7 +1146,9 @@ async def _send_alert_to_telegram(alert: ObservabilityAlert) -> bool:
             if bot_instance:
                 targets.append((bot_instance, settings.ADMIN_CHAT_ID))
         if not targets:
-            logger.warning("No Telegram admin target available for observability alert %s", alert.id)
+            logger.warning(
+                "No Telegram admin target available for observability alert %s", alert.id
+            )
             return False
 
         severity = "CRITICAL" if alert.severity == "critical" else "WARNING"
@@ -1054,10 +1181,14 @@ async def _send_alert_to_telegram(alert: ObservabilityAlert) -> bool:
                 continue
             seen.add(key)
             try:
-                await bot_instance.send_message(chat_id=chat_id, text=text, parse_mode="HTML", disable_notification=False)
+                await bot_instance.send_message(
+                    chat_id=chat_id, text=text, parse_mode="HTML", disable_notification=False
+                )
                 sent = True
             except Exception:
-                logger.exception("Failed to send observability alert %s to Telegram chat %s", alert.id, chat_id)
+                logger.exception(
+                    "Failed to send observability alert %s to Telegram chat %s", alert.id, chat_id
+                )
         return sent
     except Exception:
         logger.exception("Failed to send observability alert %s", alert.id)

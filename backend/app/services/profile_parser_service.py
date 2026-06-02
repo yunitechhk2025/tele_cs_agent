@@ -101,7 +101,10 @@ def _clamp_confidence(value: Any, default: float = 0.0) -> float:
 
 
 def _normalize_language(value: Any, fallback_language: str) -> str:
-    return normalize_language_code(str(value or ""), fallback=fallback_language or DEFAULT_LANGUAGE) or DEFAULT_LANGUAGE
+    return (
+        normalize_language_code(str(value or ""), fallback=fallback_language or DEFAULT_LANGUAGE)
+        or DEFAULT_LANGUAGE
+    )
 
 
 def _normalize_hard_constraints(raw: Any) -> list[str]:
@@ -127,12 +130,16 @@ def _profile_from_local_rules(user_message: str) -> dict[str, list[str]]:
         dimension: sorted(str(value) for value in extracted.get(dimension, set()) if value)
         for dimension in PROFILE_DIMENSIONS
     }
-    if not profile.get("categories") and contains_any(normalize_text(user_message), GENERIC_TABLE_CATEGORY_TERMS):
+    if not profile.get("categories") and contains_any(
+        normalize_text(user_message), GENERIC_TABLE_CATEGORY_TERMS
+    ):
         profile["categories"] = list(GENERIC_TABLE_CATEGORIES)
     return profile
 
 
-def build_fallback_product_request_profile(user_message: str, fallback_language: str = DEFAULT_LANGUAGE) -> dict[str, Any]:
+def build_fallback_product_request_profile(
+    user_message: str, fallback_language: str = DEFAULT_LANGUAGE
+) -> dict[str, Any]:
     local = _profile_from_local_rules(user_message)
     hard_constraints = [dimension for dimension, values in local.items() if values]
     return {
@@ -245,7 +252,9 @@ async def parse_product_request_profile(
             ),
             timeout=timeout,
         )
-        profile = normalize_product_request_profile(raw, user_message=user_message, fallback_language=language)
+        profile = normalize_product_request_profile(
+            raw, user_message=user_message, fallback_language=language
+        )
         profile["source"] = "profile_llm"
         logger.info(
             "Product profile parsed source=profile_llm confidence=%.2f elapsed_ms=%d profile=%s",
@@ -371,7 +380,10 @@ async def parse_scene_request_profile(
             "Scene profile parsed source=profile_llm confidence=%.2f elapsed_ms=%d profile=%s",
             profile.get("confidence") or 0.0,
             int((time.perf_counter() - start) * 1000),
-            {k: profile.get(k) for k in ["target_product_slot", "target_product_id", "scene_name", "style_hint"]},
+            {
+                k: profile.get(k)
+                for k in ["target_product_slot", "target_product_id", "scene_name", "style_hint"]
+            },
         )
         if profile["confidence"] < 0.35:
             fallback["source"] = "local_rules_after_low_confidence_llm"

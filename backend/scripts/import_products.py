@@ -154,7 +154,8 @@ def _normalize_row(row: dict[str, str], csv_path: Path) -> tuple[str, dict[str, 
         fields = dict(
             brand=brand,
             product_id_ext=product_id_ext,
-            product_name=row.get("product_name_inferred", "").strip() or row.get("product_title", "").strip(),
+            product_name=row.get("product_name_inferred", "").strip()
+            or row.get("product_title", "").strip(),
             series_name=row.get("series_name", "").strip() or row.get("subbrand", "").strip(),
             space=_infer_zuoyou_space(row),
             style=row.get("style", "").strip(),
@@ -248,7 +249,9 @@ async def import_csv(csv_path: Path, images_root: Path, uploads_dir: Path):
                 for k, v in fields.items():
                     setattr(entry, k, v)
                 old_translations_result = await db.execute(
-                    select(ProductEntryTranslation).where(ProductEntryTranslation.product_entry_id == entry.id)
+                    select(ProductEntryTranslation).where(
+                        ProductEntryTranslation.product_entry_id == entry.id
+                    )
                 )
                 for translation in old_translations_result.scalars().all():
                     await db.delete(translation)
@@ -266,14 +269,11 @@ async def import_csv(csv_path: Path, images_root: Path, uploads_dir: Path):
             raw_urls = _parse_urls(row.get("display_image_urls", ""))
             for order, rel_path in enumerate(raw_paths):
                 # CSV may use Windows backslashes; split on both / and \
-                parts = [p for p in re.split(r'[/\\]', rel_path.strip()) if p]
+                parts = [p for p in re.split(r"[/\\]", rel_path.strip()) if p]
                 # Locate brand folder and take everything after it
                 try:
-                    idx = next(
-                        i for i, p in enumerate(parts)
-                        if p.lower() == brand_key
-                    )
-                    sub_parts = parts[idx + 1:]   # e.g. ["104", "display_01.jpg"]
+                    idx = next(i for i, p in enumerate(parts) if p.lower() == brand_key)
+                    sub_parts = parts[idx + 1 :]  # e.g. ["104", "display_01.jpg"]
                 except StopIteration:
                     # Fallback: product_id subfolder + filename
                     sub_parts = [product_id_ext, parts[-1]] if parts else []
@@ -282,7 +282,7 @@ async def import_csv(csv_path: Path, images_root: Path, uploads_dir: Path):
                     logger.warning(f"Cannot resolve image path: {rel_path}")
                     continue
 
-                sub = Path(*sub_parts)   # e.g. Path("104/display_01.jpg")
+                sub = Path(*sub_parts)  # e.g. Path("104/display_01.jpg")
                 src = images_root / sub
                 dst = products_dest / sub
                 dst.parent.mkdir(parents=True, exist_ok=True)
@@ -305,16 +305,16 @@ async def import_csv(csv_path: Path, images_root: Path, uploads_dir: Path):
 
         await db.commit()
 
-    logger.info(
-        f"Import done. created={created} updated={updated} skipped={skipped}"
-    )
+    logger.info(f"Import done. created={created} updated={updated} skipped={skipped}")
 
 
 def main():
     parser = argparse.ArgumentParser(description="Import Furniture-Crawler data into product DB")
     parser.add_argument("--csv", default="", help="Optional explicit CSV path")
     parser.add_argument("--images-root", default="", help="Optional explicit images root path")
-    parser.add_argument("--uploads-dir", default=str(DEFAULT_UPLOADS_DIR), help="Backend uploads directory")
+    parser.add_argument(
+        "--uploads-dir", default=str(DEFAULT_UPLOADS_DIR), help="Backend uploads directory"
+    )
     args = parser.parse_args()
 
     csv_path = Path(args.csv) if args.csv else None

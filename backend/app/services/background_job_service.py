@@ -47,7 +47,9 @@ async def enqueue_job(
 ) -> BackgroundJob:
     now = datetime.utcnow()
     async with AsyncSessionLocal() as db:
-        result = await db.execute(select(BackgroundJob).where(BackgroundJob.dedupe_key == dedupe_key))
+        result = await db.execute(
+            select(BackgroundJob).where(BackgroundJob.dedupe_key == dedupe_key)
+        )
         existing = result.scalar_one_or_none()
         if existing:
             if existing.status == JOB_STATUS_RUNNING:
@@ -90,7 +92,9 @@ async def enqueue_job(
         return job
 
 
-async def claim_due_jobs(worker_id: str, *, limit: int = DEFAULT_CLAIM_LIMIT) -> list[BackgroundJob]:
+async def claim_due_jobs(
+    worker_id: str, *, limit: int = DEFAULT_CLAIM_LIMIT
+) -> list[BackgroundJob]:
     now = datetime.utcnow()
     async with AsyncSessionLocal() as db:
         stmt = (

@@ -1,4 +1,5 @@
 """Generate 3 cross-brand scene library examples."""
+
 import asyncio
 import sys
 import time

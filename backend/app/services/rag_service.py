@@ -34,7 +34,10 @@ file_collection = chroma_client.get_or_create_collection(
 
 # ─── Knowledge Base ──────────────────────────────────────────────────────────
 
-async def add_to_knowledge_base(entry_id: int, title: str, content: str, category: str | None = None):
+
+async def add_to_knowledge_base(
+    entry_id: int, title: str, content: str, category: str | None = None
+):
     raw = f"{title}\n\n{content}"
     # OpenAI embeddings have input length limits; truncate to avoid silent [] embedding failures.
     full_text = raw[:24000] if len(raw) > 24000 else raw
@@ -43,8 +46,10 @@ async def add_to_knowledge_base(entry_id: int, title: str, content: str, categor
         return False
     metadata = {"title": title, "category": category or "general"}
     kb_collection.upsert(
-        ids=[str(entry_id)], embeddings=[embedding],
-        documents=[full_text], metadatas=[metadata],
+        ids=[str(entry_id)],
+        embeddings=[embedding],
+        documents=[full_text],
+        metadatas=[metadata],
     )
     return True
 
@@ -118,8 +123,28 @@ async def search_knowledge_keyword_fallback(query: str, limit: int = 5) -> str:
         return terms
 
     domain_groups = [
-        ["隐私政策", "隐私", "个人信息", "个人资料", "信息安全", "数据保护", "privacy", "personal information"],
-        ["退货政策", "完整退货政策", "退货", "退换货", "退款", "换货", "return policy", "return", "refund", "exchange"],
+        [
+            "隐私政策",
+            "隐私",
+            "个人信息",
+            "个人资料",
+            "信息安全",
+            "数据保护",
+            "privacy",
+            "personal information",
+        ],
+        [
+            "退货政策",
+            "完整退货政策",
+            "退货",
+            "退换货",
+            "退款",
+            "换货",
+            "return policy",
+            "return",
+            "refund",
+            "exchange",
+        ],
         ["保修条款", "保修", "质保", "售后", "维修", "warranty", "guarantee", "repair"],
         ["发货时效", "物流追踪", "物流", "配送", "发货", "送货", "运费", "shipping", "delivery"],
         ["订单状态", "订单状态查询", "订单", "order status"],
@@ -133,8 +158,24 @@ async def search_knowledge_keyword_fallback(query: str, limit: int = 5) -> str:
     terms.extend(re.findall(r"[a-zA-Z0-9][a-zA-Z0-9_-]{1,}", q_lower))
     chinese_runs = re.findall(r"[\u4e00-\u9fff]{2,}", q)
     stop_terms = {
-        "你们", "我们", "公司", "贵司", "这个", "那个", "什么", "是什么", "多少", "怎么",
-        "如何", "一下", "请问", "有没有", "能不能", "可以", "的吗", "政策",
+        "你们",
+        "我们",
+        "公司",
+        "贵司",
+        "这个",
+        "那个",
+        "什么",
+        "是什么",
+        "多少",
+        "怎么",
+        "如何",
+        "一下",
+        "请问",
+        "有没有",
+        "能不能",
+        "可以",
+        "的吗",
+        "政策",
     }
     for run in chinese_runs:
         if run in stop_terms:
@@ -143,7 +184,7 @@ async def search_knowledge_keyword_fallback(query: str, limit: int = 5) -> str:
             if len(run) < size:
                 continue
             for idx in range(0, len(run) - size + 1):
-                gram = run[idx:idx + size]
+                gram = run[idx : idx + size]
                 if gram not in stop_terms:
                     terms.append(gram)
 
@@ -194,7 +235,9 @@ async def search_knowledge_for_bot(query: str) -> str:
         return text
     fallback = await search_knowledge_keyword_fallback(query)
     if fallback.strip():
-        logger.info("KB: using keyword fallback, %d chars (Chroma empty or semantic miss)", len(fallback))
+        logger.info(
+            "KB: using keyword fallback, %d chars (Chroma empty or semantic miss)", len(fallback)
+        )
     else:
         logger.info("KB: no retrieval (semantic empty, keyword empty)")
     return fallback
@@ -202,7 +245,10 @@ async def search_knowledge_for_bot(query: str) -> str:
 
 # ─── File Library ─────────────────────────────────────────────────────────────
 
-async def add_file_to_index(file_id: int, name: str, description: str, tags: str, category: str | None = None):
+
+async def add_file_to_index(
+    file_id: int, name: str, description: str, tags: str, category: str | None = None
+):
     """Index a file's metadata for semantic search."""
     text = f"{name}\n{description}\n{tags}"
     embedding = await get_embedding(text)
@@ -210,8 +256,10 @@ async def add_file_to_index(file_id: int, name: str, description: str, tags: str
         return False
     metadata = {"name": name, "tags": tags, "category": category or "general"}
     file_collection.upsert(
-        ids=[str(file_id)], embeddings=[embedding],
-        documents=[text], metadatas=[metadata],
+        ids=[str(file_id)],
+        embeddings=[embedding],
+        documents=[text],
+        metadatas=[metadata],
     )
     return True
 
@@ -245,12 +293,14 @@ async def search_files(query: str, top_k: int = 3) -> list[dict]:
             distance = results["distances"][0][i] if results["distances"] else 0
             if distance < 1.2:
                 meta = results["metadatas"][0][i] if results["metadatas"] else {}
-                matched.append({
-                    "id": int(fid),
-                    "name": meta.get("name", ""),
-                    "tags": meta.get("tags", ""),
-                    "score": round(1 - distance, 3),
-                })
+                matched.append(
+                    {
+                        "id": int(fid),
+                        "name": meta.get("name", ""),
+                        "tags": meta.get("tags", ""),
+                        "score": round(1 - distance, 3),
+                    }
+                )
         return matched
     except Exception as e:
         logger.error(f"File search failed: {e}")

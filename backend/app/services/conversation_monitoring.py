@@ -5,7 +5,11 @@ from datetime import datetime
 from sqlalchemy import select
 
 from app.database import AsyncSessionLocal
-from app.models import ConversationProcessingState, ConversationTurnMetric, ConversationTurnStepMetric
+from app.models import (
+    ConversationProcessingState,
+    ConversationTurnMetric,
+    ConversationTurnStepMetric,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +78,11 @@ async def set_conversation_stage(
             state.updated_at = now
             await db.commit()
     except Exception:
-        logger.exception("Failed to update conversation stage conversation_id=%s stage=%s", conversation_id, stage_key)
+        logger.exception(
+            "Failed to update conversation stage conversation_id=%s stage=%s",
+            conversation_id,
+            stage_key,
+        )
 
 
 async def mark_conversation_completed(conversation_id: int, detail: str = "") -> None:
@@ -152,20 +160,22 @@ async def record_turn_step(
     duration_ms = int((completed - started_at).total_seconds() * 1000)
     try:
         async with AsyncSessionLocal() as db:
-            db.add(ConversationTurnStepMetric(
-                turn_metric_id=metric_id,
-                conversation_id=conversation_id,
-                step_index=step_index,
-                stage_key=stage_key,
-                stage_label=_label(stage_key),
-                stage_detail=(stage_detail or "")[:1000],
-                metadata_json=json.dumps(metadata or {}, ensure_ascii=False),
-                started_at=started_at,
-                completed_at=completed,
-                duration_ms=max(0, duration_ms),
-                success=success,
-                error_message=(error_message or "")[:2000],
-            ))
+            db.add(
+                ConversationTurnStepMetric(
+                    turn_metric_id=metric_id,
+                    conversation_id=conversation_id,
+                    step_index=step_index,
+                    stage_key=stage_key,
+                    stage_label=_label(stage_key),
+                    stage_detail=(stage_detail or "")[:1000],
+                    metadata_json=json.dumps(metadata or {}, ensure_ascii=False),
+                    started_at=started_at,
+                    completed_at=completed,
+                    duration_ms=max(0, duration_ms),
+                    success=success,
+                    error_message=(error_message or "")[:2000],
+                )
+            )
             await db.commit()
         logger.info(
             "Turn step metric conversation_id=%s metric_id=%s step=%s duration_ms=%s success=%s",

@@ -53,17 +53,37 @@ class SlowTaskAsyncificationTests(unittest.TestCase):
 
     async def _cleanup(self):
         async with AsyncSessionLocal() as db:
-            await db.execute(delete(BackgroundJob).where(BackgroundJob.dedupe_key.like(f"{self.prefix}%")))
+            await db.execute(
+                delete(BackgroundJob).where(BackgroundJob.dedupe_key.like(f"{self.prefix}%"))
+            )
             if self.created_scene_ids:
-                await db.execute(delete(SceneGenerationRecord).where(SceneGenerationRecord.id.in_(self.created_scene_ids)))
+                await db.execute(
+                    delete(SceneGenerationRecord).where(
+                        SceneGenerationRecord.id.in_(self.created_scene_ids)
+                    )
+                )
             if self.created_pending_ids:
-                await db.execute(delete(PendingAIReply).where(PendingAIReply.id.in_(self.created_pending_ids)))
+                await db.execute(
+                    delete(PendingAIReply).where(PendingAIReply.id.in_(self.created_pending_ids))
+                )
             if self.created_conversation_ids:
-                await db.execute(delete(ConversationOutboundEvent).where(ConversationOutboundEvent.conversation_id.in_(self.created_conversation_ids)))
-                await db.execute(delete(Message).where(Message.conversation_id.in_(self.created_conversation_ids)))
-                await db.execute(delete(Conversation).where(Conversation.id.in_(self.created_conversation_ids)))
+                await db.execute(
+                    delete(ConversationOutboundEvent).where(
+                        ConversationOutboundEvent.conversation_id.in_(self.created_conversation_ids)
+                    )
+                )
+                await db.execute(
+                    delete(Message).where(
+                        Message.conversation_id.in_(self.created_conversation_ids)
+                    )
+                )
+                await db.execute(
+                    delete(Conversation).where(Conversation.id.in_(self.created_conversation_ids))
+                )
             if self.created_product_ids:
-                await db.execute(delete(ProductEntry).where(ProductEntry.id.in_(self.created_product_ids)))
+                await db.execute(
+                    delete(ProductEntry).where(ProductEntry.id.in_(self.created_product_ids))
+                )
             await db.commit()
 
     async def _create_product(self) -> ProductEntry:
@@ -94,16 +114,24 @@ class SlowTaskAsyncificationTests(unittest.TestCase):
             self.created_conversation_ids.append(conversation.id)
             return conversation
 
-    def test_start_scene_generation_returns_pending_record_and_enqueues_job_without_running_model(self):
-        self.run_async(self._test_start_scene_generation_returns_pending_record_and_enqueues_job_without_running_model())
+    def test_start_scene_generation_returns_pending_record_and_enqueues_job_without_running_model(
+        self,
+    ):
+        self.run_async(
+            self._test_start_scene_generation_returns_pending_record_and_enqueues_job_without_running_model()
+        )
 
-    async def _test_start_scene_generation_returns_pending_record_and_enqueues_job_without_running_model(self):
+    async def _test_start_scene_generation_returns_pending_record_and_enqueues_job_without_running_model(
+        self,
+    ):
         product = await self._create_product()
 
         async def slow_model(**_kwargs):
             await asyncio.sleep(60)
 
-        with patch("app.services.scene_service._run_scene_generation_for_record", side_effect=slow_model) as run_scene:
+        with patch(
+            "app.services.scene_service._run_scene_generation_for_record", side_effect=slow_model
+        ) as run_scene:
             started_at = time.monotonic()
             record = await start_scene_generation(
                 primary_product=product,
@@ -173,7 +201,11 @@ class SlowTaskAsyncificationTests(unittest.TestCase):
             dedupe_prefix=self.prefix,
         )
         self.created_scene_ids.append(record.id)
-        job = [item for item in await claim_due_jobs("worker-a", limit=5) if item.entity_id == record.id][0]
+        job = [
+            item
+            for item in await claim_due_jobs("worker-a", limit=5)
+            if item.entity_id == record.id
+        ][0]
 
         async def fail_once(**_kwargs):
             raise RuntimeError("temporary image failure")
@@ -195,7 +227,11 @@ class SlowTaskAsyncificationTests(unittest.TestCase):
             )
             await db.commit()
 
-        retry_job = [item for item in await claim_due_jobs("worker-a", limit=5) if item.entity_id == record.id][0]
+        retry_job = [
+            item
+            for item in await claim_due_jobs("worker-a", limit=5)
+            if item.entity_id == record.id
+        ][0]
 
         async def succeed(**kwargs):
             async with AsyncSessionLocal() as db:
@@ -233,8 +269,15 @@ class SlowTaskAsyncificationTests(unittest.TestCase):
         self.created_scene_ids.append(record.id)
 
         for _ in range(2):
-            job = [item for item in await claim_due_jobs("worker-a", limit=5) if item.entity_id == record.id][0]
-            with patch("app.worker._run_scene_generation_for_record", side_effect=RuntimeError("permanent image failure")):
+            job = [
+                item
+                for item in await claim_due_jobs("worker-a", limit=5)
+                if item.entity_id == record.id
+            ][0]
+            with patch(
+                "app.worker._run_scene_generation_for_record",
+                side_effect=RuntimeError("permanent image failure"),
+            ):
                 await process_background_job(job)
             async with AsyncSessionLocal() as db:
                 await db.execute(
@@ -284,13 +327,21 @@ class SlowTaskAsyncificationTests(unittest.TestCase):
         claimed = await claim_due_jobs("worker-a", limit=5)
         self.assertNotIn(job.id, [item.id for item in claimed])
 
-    def test_pending_ai_reply_autosend_uses_persistent_job_and_honors_pause_cancel_and_manual_send(self):
-        self.run_async(self._test_pending_ai_reply_autosend_uses_persistent_job_and_honors_pause_cancel_and_manual_send())
+    def test_pending_ai_reply_autosend_uses_persistent_job_and_honors_pause_cancel_and_manual_send(
+        self,
+    ):
+        self.run_async(
+            self._test_pending_ai_reply_autosend_uses_persistent_job_and_honors_pause_cancel_and_manual_send()
+        )
 
-    async def _test_pending_ai_reply_autosend_uses_persistent_job_and_honors_pause_cancel_and_manual_send(self):
+    async def _test_pending_ai_reply_autosend_uses_persistent_job_and_honors_pause_cancel_and_manual_send(
+        self,
+    ):
         conversation = await self._create_conversation()
 
-        draft = await create_pending_ai_reply(conversation.id, "自动发送草稿", "zh-Hans", dedupe_prefix=self.prefix)
+        draft = await create_pending_ai_reply(
+            conversation.id, "自动发送草稿", "zh-Hans", dedupe_prefix=self.prefix
+        )
         self.created_pending_ids.append(draft.id)
 
         async with AsyncSessionLocal() as db:
@@ -311,12 +362,16 @@ class SlowTaskAsyncificationTests(unittest.TestCase):
             paused_job = await db.get(BackgroundJob, job.id)
         self.assertEqual(paused_job.status, "cancelled")
 
-        draft = await create_pending_ai_reply(conversation.id, "取消草稿", "zh-Hans", dedupe_prefix=self.prefix)
+        draft = await create_pending_ai_reply(
+            conversation.id, "取消草稿", "zh-Hans", dedupe_prefix=self.prefix
+        )
         self.created_pending_ids.append(draft.id)
         cancelled = await cancel_pending_ai_reply(conversation.id)
         self.assertEqual(cancelled.status, "cancelled")
 
-        draft = await create_pending_ai_reply(conversation.id, "人工提前发送", "zh-Hans", dedupe_prefix=self.prefix)
+        draft = await create_pending_ai_reply(
+            conversation.id, "人工提前发送", "zh-Hans", dedupe_prefix=self.prefix
+        )
         self.created_pending_ids.append(draft.id)
         with patch("app.services.bot_manager.get_any_bot_instance", return_value=None):
             sent = await send_pending_ai_reply(conversation.id)
