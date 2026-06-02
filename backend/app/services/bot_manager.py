@@ -73,7 +73,7 @@ async def stop_bot(bot_id: int) -> bool:
 async def start_all_active_bots():
     try:
         async with AsyncSessionLocal() as db:
-            result = await db.execute(select(TelegramBot).where(TelegramBot.is_active == True))
+            result = await db.execute(select(TelegramBot).where(TelegramBot.is_active.is_(True)))
             bots = result.scalars().all()
 
         started = 0

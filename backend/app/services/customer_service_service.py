@@ -84,7 +84,7 @@ async def _resolve_bot_for_conversation(db, conversation: Conversation) -> Bot |
         result = await db.execute(
             select(TelegramBot)
             .where(
-                TelegramBot.is_active == True,
+                TelegramBot.is_active.is_(True),
                 TelegramBot.token != "",
                 TelegramBot.token != "your_bot_token_here",
             )
@@ -567,7 +567,7 @@ async def _send_pending_ai_reply_record_unlocked(
             PendingAIReply.status == "pending",
         ]
         if respect_auto_pause:
-            conditions.append(PendingAIReply.auto_send_paused == False)
+            conditions.append(PendingAIReply.auto_send_paused.is_(False))
         claim_result = await db.execute(
             update(PendingAIReply)
             .where(*conditions)
@@ -772,7 +772,7 @@ async def dispatch_due_pending_ai_replies() -> int:
         rows = await db.execute(
             select(PendingAIReply.id).where(
                 PendingAIReply.status == "pending",
-                PendingAIReply.auto_send_paused == False,
+                PendingAIReply.auto_send_paused.is_(False),
                 PendingAIReply.auto_send_at <= now,
             )
         )
@@ -788,7 +788,7 @@ async def restore_pending_ai_reply_tasks() -> None:
         rows = await db.execute(
             select(PendingAIReply).where(
                 PendingAIReply.status == "pending",
-                PendingAIReply.auto_send_paused == False,
+                PendingAIReply.auto_send_paused.is_(False),
             )
         )
         drafts = rows.scalars().all()

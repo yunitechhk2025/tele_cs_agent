@@ -1134,7 +1134,7 @@ async def _send_alert_to_telegram(alert: ObservabilityAlert) -> bool:
     targets: list[tuple[Any, str]] = []
     try:
         async with AsyncSessionLocal() as db:
-            result = await db.execute(select(TelegramBot).where(TelegramBot.is_active == True))
+            result = await db.execute(select(TelegramBot).where(TelegramBot.is_active.is_(True)))
             for bot in result.scalars().all():
                 if not bot.admin_chat_id:
                     continue

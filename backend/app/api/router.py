@@ -338,7 +338,7 @@ async def _load_scene_generation_events(
         .where(
             SceneGenerationRecord.conversation_id == conversation_id,
             SceneGenerationRecord.status.in_(["completed", "failed"]),
-            SceneGenerationRecord.deferred_delivery == False,
+            SceneGenerationRecord.deferred_delivery.is_(False),
         )
         .order_by(SceneGenerationRecord.created_at)
     )
@@ -405,7 +405,7 @@ async def dashboard_stats(
     total_files = await db.scalar(select(func.count(FileEntry.id)))
     total_bots = await db.scalar(select(func.count(TelegramBot.id)))
     active_bots_count = await db.scalar(
-        select(func.count(TelegramBot.id)).where(TelegramBot.is_active == True)
+        select(func.count(TelegramBot.id)).where(TelegramBot.is_active.is_(True))
     )
 
     recent = await db.execute(
@@ -2521,14 +2521,14 @@ async def delete_scene_generation(
 def _scene_view_clause(view: str):
     if view == "review":
         return (SceneGenerationRecord.status == "completed") & (
-            SceneGenerationRecord.in_library == False
+            SceneGenerationRecord.in_library.is_(False)
         )
     if view == "generating":
         return SceneGenerationRecord.status == "pending"
     if view == "failed":
         return SceneGenerationRecord.status == "failed"
     return (SceneGenerationRecord.status == "completed") & (
-        SceneGenerationRecord.in_library == True
+        SceneGenerationRecord.in_library.is_(True)
     )
 
 

@@ -711,7 +711,7 @@ async def _find_reusable_record(
             .where(
                 SceneGenerationRecord.primary_product_id == primary_product_id,
                 SceneGenerationRecord.status == "completed",
-                SceneGenerationRecord.in_library == True,
+                SceneGenerationRecord.in_library.is_(True),
             )
             .order_by(SceneGenerationRecord.updated_at.desc())
             .limit(20)
