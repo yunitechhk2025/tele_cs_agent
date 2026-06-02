@@ -174,7 +174,9 @@ export default function BotManagement() {
       key: 'token_masked',
       width: 200,
       render: (t: string) => (
-        <Text code style={{ fontSize: 12 }}>{t}</Text>
+        <Text code style={{ fontSize: 12 }}>
+          {t}
+        </Text>
       ),
     },
     {
@@ -184,12 +186,24 @@ export default function BotManagement() {
       align: 'center',
       render: (_, record) => {
         if (record.is_running) {
-          return <Tag icon={<CheckCircleOutlined />} color="success">运行中</Tag>;
+          return (
+            <Tag icon={<CheckCircleOutlined />} color="success">
+              运行中
+            </Tag>
+          );
         }
         if (record.is_active) {
-          return <Tag icon={<PauseCircleOutlined />} color="warning">已停止</Tag>;
+          return (
+            <Tag icon={<PauseCircleOutlined />} color="warning">
+              已停止
+            </Tag>
+          );
         }
-        return <Tag icon={<CloseCircleOutlined />} color="default">已禁用</Tag>;
+        return (
+          <Tag icon={<CloseCircleOutlined />} color="default">
+            已禁用
+          </Tag>
+        );
       },
     },
     {
@@ -223,12 +237,7 @@ export default function BotManagement() {
               {record.is_running ? '停止' : '启动'}
             </Button>
           </Tooltip>
-          <Button
-            type="link"
-            size="small"
-            icon={<EditOutlined />}
-            onClick={() => openEdit(record)}
-          >
+          <Button type="link" size="small" icon={<EditOutlined />} onClick={() => openEdit(record)}>
             编辑
           </Button>
           <Popconfirm
@@ -269,9 +278,7 @@ export default function BotManagement() {
                 <Title level={4} style={{ margin: 0 }}>
                   Bot 管理
                 </Title>
-                <Text type="secondary">
-                  创建和管理 Telegram Bot，支持多 Bot 同时运行
-                </Text>
+                <Text type="secondary">创建和管理 Telegram Bot，支持多 Bot 同时运行</Text>
               </div>
             </Space>
             <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>
@@ -307,7 +314,10 @@ export default function BotManagement() {
         destroyOnClose
         width={600}
       >
-        <Form form={createForm} layout="vertical" style={{ marginTop: 8 }}
+        <Form
+          form={createForm}
+          layout="vertical"
+          style={{ marginTop: 8 }}
           initialValues={{ is_active: true }}
         >
           <Form.Item

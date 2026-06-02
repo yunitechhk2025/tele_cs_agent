@@ -107,9 +107,7 @@ function parseSampleConversationIds(raw: string | null | undefined) {
   try {
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
-    return parsed
-      .map((item) => Number(item))
-      .filter((item) => Number.isInteger(item) && item > 0);
+    return parsed.map((item) => Number(item)).filter((item) => Number.isInteger(item) && item > 0);
   } catch {
     return [];
   }
@@ -129,7 +127,9 @@ const TREND_METRIC_OPTIONS = [
 export default function Observability() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
-  const [range, setRange] = useState<'24h' | '7d' | '30d'>(() => normalizeRange(searchParams.get('range')));
+  const [range, setRange] = useState<'24h' | '7d' | '30d'>(() =>
+    normalizeRange(searchParams.get('range')),
+  );
   const [botId, setBotId] = useState<number | undefined>(() => {
     const raw = searchParams.get('bot_id');
     const value = raw ? Number(raw) : undefined;
@@ -148,13 +148,16 @@ export default function Observability() {
   const [alertLoading, setAlertLoading] = useState(false);
   const [exportLoading, setExportLoading] = useState(false);
 
-  const params = useMemo(() => ({
-    range,
-    bot_id: botId,
-    language: language || undefined,
-    intent: intent || undefined,
-    response_kind: responseKind || undefined,
-  }), [range, botId, language, intent, responseKind]);
+  const params = useMemo(
+    () => ({
+      range,
+      bot_id: botId,
+      language: language || undefined,
+      intent: intent || undefined,
+      response_kind: responseKind || undefined,
+    }),
+    [range, botId, language, intent, responseKind],
+  );
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -168,12 +171,14 @@ export default function Observability() {
       setAlerts(alertData);
       setTrends(trendData);
       // 默认展开每个意图下最重的前 5 个阶段，避免大流量下趋势图一次性渲染过多曲线。
-      setStageSelections(Object.fromEntries(
-        trendData.intents.map((group) => [
-          group.intent,
-          group.stages.slice(0, 5).map((stage) => stage.stage_key),
-        ]),
-      ));
+      setStageSelections(
+        Object.fromEntries(
+          trendData.intents.map((group) => [
+            group.intent,
+            group.stages.slice(0, 5).map((stage) => stage.stage_key),
+          ]),
+        ),
+      );
     } catch (err) {
       console.error(err);
       message.error('监控数据加载失败');
@@ -256,20 +261,29 @@ export default function Observability() {
       render: (value, row) => (
         <Space direction="vertical" size={2}>
           <Text strong>{value || row.stage_key}</Text>
-          <Text type="secondary" style={{ fontSize: 12 }}>{row.stage_key}</Text>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            {row.stage_key}
+          </Text>
         </Space>
       ),
     },
     { title: '次数', dataIndex: 'count', width: 90 },
     { title: '平均', dataIndex: 'avg_ms', width: 100, render: formatLatency },
     { title: 'P50', dataIndex: 'p50_ms', width: 100, render: formatLatency },
-    { title: 'P95', dataIndex: 'p95_ms', width: 100, render: formatLatency, sorter: (a, b) => (a.p95_ms || 0) - (b.p95_ms || 0) },
+    {
+      title: 'P95',
+      dataIndex: 'p95_ms',
+      width: 100,
+      render: formatLatency,
+      sorter: (a, b) => (a.p95_ms || 0) - (b.p95_ms || 0),
+    },
     { title: 'P99', dataIndex: 'p99_ms', width: 100, render: formatLatency },
     {
       title: '失败',
       dataIndex: 'failed_count',
       width: 90,
-      render: (value: number) => value ? <Tag color="red">{value}</Tag> : <Tag color="green">0</Tag>,
+      render: (value: number) =>
+        value ? <Tag color="red">{value}</Tag> : <Tag color="green">0</Tag>,
     },
   ];
 
@@ -277,7 +291,12 @@ export default function Observability() {
     { title: 'Operation', dataIndex: 'operation', width: 180 },
     { title: 'Model', dataIndex: 'model', ellipsis: true },
     { title: '次数', dataIndex: 'count', width: 80 },
-    { title: '失败率', dataIndex: 'failure_rate', width: 120, render: (value) => <Tag color={value > 0 ? 'red' : 'green'}>{formatRate(value)}</Tag> },
+    {
+      title: '失败率',
+      dataIndex: 'failure_rate',
+      width: 120,
+      render: (value) => <Tag color={value > 0 ? 'red' : 'green'}>{formatRate(value)}</Tag>,
+    },
     { title: '平均', dataIndex: 'avg_ms', width: 100, render: formatLatency },
     { title: 'P95', dataIndex: 'p95_ms', width: 100, render: formatLatency },
     { title: 'P99', dataIndex: 'p99_ms', width: 100, render: formatLatency },
@@ -292,13 +311,25 @@ export default function Observability() {
       render: (value, row) => (
         <Space direction="vertical" size={0}>
           <Text strong>{value}</Text>
-          <Text type="secondary" style={{ fontSize: 12 }}>{row.message}</Text>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            {row.message}
+          </Text>
         </Space>
       ),
     },
     { title: '指标', dataIndex: 'metric_key', width: 210 },
-    { title: '观测值', dataIndex: 'observed_value', width: 100, render: (value) => value.toFixed(4) },
-    { title: '阈值', dataIndex: 'threshold_value', width: 100, render: (value) => value.toFixed(4) },
+    {
+      title: '观测值',
+      dataIndex: 'observed_value',
+      width: 100,
+      render: (value) => value.toFixed(4),
+    },
+    {
+      title: '阈值',
+      dataIndex: 'threshold_value',
+      width: 100,
+      render: (value) => value.toFixed(4),
+    },
     {
       title: '关联会话',
       dataIndex: 'sample_conversation_ids_json',
@@ -309,7 +340,14 @@ export default function Observability() {
         return (
           <Space size={4} wrap>
             {ids.slice(0, 5).map((id) => (
-              <Button key={id} type="link" size="small" onClick={() => navigate(`/conversations/${id}`)}>#{id}</Button>
+              <Button
+                key={id}
+                type="link"
+                size="small"
+                onClick={() => navigate(`/conversations/${id}`)}
+              >
+                #{id}
+              </Button>
             ))}
           </Space>
         );
@@ -320,9 +358,17 @@ export default function Observability() {
     {
       title: '操作',
       width: 110,
-      render: (_, row) => row.status === 'open'
-        ? <Button size="small" icon={<CheckOutlined />} loading={alertLoading} onClick={() => ackAlert(row.id)}>确认</Button>
-        : null,
+      render: (_, row) =>
+        row.status === 'open' ? (
+          <Button
+            size="small"
+            icon={<CheckOutlined />}
+            loading={alertLoading}
+            onClick={() => ackAlert(row.id)}
+          >
+            确认
+          </Button>
+        ) : null,
     },
   ];
 
@@ -332,9 +378,14 @@ export default function Observability() {
       title: '会话',
       dataIndex: 'conversation_id',
       width: 110,
-      render: (value) => value
-        ? <Button size="small" type="link" onClick={() => navigate(`/conversations/${value}`)}>#{value}</Button>
-        : '-',
+      render: (value) =>
+        value ? (
+          <Button size="small" type="link" onClick={() => navigate(`/conversations/${value}`)}>
+            #{value}
+          </Button>
+        ) : (
+          '-'
+        ),
     },
     { title: '语言', dataIndex: 'language', width: 100, render: (value) => value || '-' },
     { title: '意图', dataIndex: 'primary_intent', width: 180, render: (value) => value || '-' },
@@ -348,14 +399,28 @@ export default function Observability() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'center', flexWrap: 'wrap' }}>
+      <div
+        style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          gap: 16,
+          alignItems: 'center',
+          flexWrap: 'wrap',
+        }}
+      >
         <div>
-          <Title level={3} style={{ margin: 0 }}>监控看板</Title>
+          <Title level={3} style={{ margin: 0 }}>
+            监控看板
+          </Title>
           <Text type="secondary">客服响应质量、链路耗时、模型调用和告警事件</Text>
         </div>
         <Space>
-          <Button icon={<DownloadOutlined />} onClick={exportData} loading={exportLoading}>导出</Button>
-          <Button icon={<ReloadOutlined />} onClick={loadData} loading={loading}>刷新</Button>
+          <Button icon={<DownloadOutlined />} onClick={exportData} loading={exportLoading}>
+            导出
+          </Button>
+          <Button icon={<ReloadOutlined />} onClick={loadData} loading={loading}>
+            刷新
+          </Button>
         </Space>
       </div>
 
@@ -364,7 +429,12 @@ export default function Observability() {
       ) : null}
 
       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-        <Select value={range} onChange={setRange} options={[...RANGE_OPTIONS]} style={{ width: 150 }} />
+        <Select
+          value={range}
+          onChange={setRange}
+          options={[...RANGE_OPTIONS]}
+          style={{ width: 150 }}
+        />
         <Select
           value={botId}
           allowClear
@@ -373,9 +443,24 @@ export default function Observability() {
           style={{ width: 180 }}
           options={bots.map((bot) => ({ label: bot.name, value: bot.id }))}
         />
-        <Select value={language} onChange={setLanguage} options={LANGUAGE_OPTIONS} style={{ width: 150 }} />
-        <Select value={intent} onChange={setIntent} options={INTENT_OPTIONS} style={{ width: 180 }} />
-        <Select value={responseKind} onChange={setResponseKind} options={RESPONSE_KIND_OPTIONS} style={{ width: 190 }} />
+        <Select
+          value={language}
+          onChange={setLanguage}
+          options={LANGUAGE_OPTIONS}
+          style={{ width: 150 }}
+        />
+        <Select
+          value={intent}
+          onChange={setIntent}
+          options={INTENT_OPTIONS}
+          style={{ width: 180 }}
+        />
+        <Select
+          value={responseKind}
+          onChange={setResponseKind}
+          options={RESPONSE_KIND_OPTIONS}
+          style={{ width: 190 }}
+        />
       </div>
 
       <Row gutter={[12, 12]}>
@@ -388,18 +473,28 @@ export default function Observability() {
         <Col xs={24} sm={12} lg={6}>
           <div style={{ background: '#fff', borderRadius: 8, padding: 16 }}>
             <Statistic title="成功率" value={formatRate(kpis?.success_rate)} />
-            <Progress percent={Math.round((kpis?.success_rate || 0) * 100)} size="small" status={(kpis?.success_rate || 0) >= 0.95 ? 'success' : 'active'} />
+            <Progress
+              percent={Math.round((kpis?.success_rate || 0) * 100)}
+              size="small"
+              status={(kpis?.success_rate || 0) >= 0.95 ? 'success' : 'active'}
+            />
           </div>
         </Col>
         <Col xs={24} sm={12} lg={6}>
           <div style={{ background: '#fff', borderRadius: 8, padding: 16 }}>
-            <Statistic title="首响 P95 / P99" value={`${formatLatency(kpis?.first_response_p95_ms)} / ${formatLatency(kpis?.first_response_p99_ms)}`} />
+            <Statistic
+              title="首响 P95 / P99"
+              value={`${formatLatency(kpis?.first_response_p95_ms)} / ${formatLatency(kpis?.first_response_p99_ms)}`}
+            />
             <Text type="secondary">文本 P95 {formatLatency(kpis?.text_first_response_p95_ms)}</Text>
           </div>
         </Col>
         <Col xs={24} sm={12} lg={6}>
           <div style={{ background: '#fff', borderRadius: 8, padding: 16 }}>
-            <Statistic title="总耗时 P95 / P99" value={`${formatLatency(kpis?.total_p95_ms)} / ${formatLatency(kpis?.total_p99_ms)}`} />
+            <Statistic
+              title="总耗时 P95 / P99"
+              value={`${formatLatency(kpis?.total_p95_ms)} / ${formatLatency(kpis?.total_p99_ms)}`}
+            />
             <Text type="secondary">P50 {formatLatency(kpis?.total_p50_ms)}</Text>
           </div>
         </Col>
@@ -412,27 +507,44 @@ export default function Observability() {
         <Col xs={24} sm={12} lg={6}>
           <div style={{ background: '#fff', borderRadius: 8, padding: 16 }}>
             <Statistic title="RAG 空命中率" value={formatRate(kpis?.rag_empty_rate)} />
-            <Text type="secondary">{kpis?.rag_empty_count || 0}/{kpis?.rag_lookup_count || 0}</Text>
+            <Text type="secondary">
+              {kpis?.rag_empty_count || 0}/{kpis?.rag_lookup_count || 0}
+            </Text>
           </div>
         </Col>
         <Col xs={24} sm={12} lg={6}>
           <div style={{ background: '#fff', borderRadius: 8, padding: 16 }}>
             <Statistic title="LLM 失败率" value={formatRate(kpis?.llm_failure_rate)} />
-            <Text type="secondary">{kpis?.llm_failure_count || 0}/{kpis?.llm_call_count || 0}</Text>
+            <Text type="secondary">
+              {kpis?.llm_failure_count || 0}/{kpis?.llm_call_count || 0}
+            </Text>
           </div>
         </Col>
         <Col xs={24} sm={12} lg={6}>
           <div style={{ background: '#fff', borderRadius: 8, padding: 16 }}>
             <Statistic title="场景图失败率" value={formatRate(kpis?.scene_failure_rate)} />
-            <Text type="secondary">{kpis?.scene_failure_count || 0}/{kpis?.scene_generation_count || 0}</Text>
+            <Text type="secondary">
+              {kpis?.scene_failure_count || 0}/{kpis?.scene_generation_count || 0}
+            </Text>
           </div>
         </Col>
       </Row>
 
       <div style={{ background: '#fff', borderRadius: 8, padding: 16 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap', marginBottom: 12 }}>
+        <div
+          style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            gap: 12,
+            alignItems: 'center',
+            flexWrap: 'wrap',
+            marginBottom: 12,
+          }}
+        >
           <div>
-            <Title level={5} style={{ margin: 0 }}>阶段耗时趋势</Title>
+            <Title level={5} style={{ margin: 0 }}>
+              阶段耗时趋势
+            </Title>
             <Text type="secondary">按意图查看各阶段在当前时间范围内的耗时变化</Text>
           </div>
           <Segmented
@@ -444,26 +556,48 @@ export default function Observability() {
         {trends?.intents?.length ? (
           <Space direction="vertical" size={18} style={{ width: '100%' }}>
             {trends.intents.map((group: ObservabilityIntentStageTrend) => {
-              const selectedKeys = stageSelections[group.intent] || group.stages.slice(0, 5).map((stage) => stage.stage_key);
+              const selectedKeys =
+                stageSelections[group.intent] ||
+                group.stages.slice(0, 5).map((stage) => stage.stage_key);
               return (
                 <div key={group.intent} style={{ borderTop: '1px solid #f0f0f0', paddingTop: 14 }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap', marginBottom: 8 }}>
+                  <div
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      gap: 12,
+                      alignItems: 'center',
+                      flexWrap: 'wrap',
+                      marginBottom: 8,
+                    }}
+                  >
                     <Space direction="vertical" size={0}>
                       <Text strong>{group.intent_label}</Text>
-                      <Text type="secondary" style={{ fontSize: 12 }}>共 {group.stages.reduce((sum, stage) => sum + stage.count, 0)} 个阶段样本</Text>
+                      <Text type="secondary" style={{ fontSize: 12 }}>
+                        共 {group.stages.reduce((sum, stage) => sum + stage.count, 0)} 个阶段样本
+                      </Text>
                     </Space>
                     <Select
                       mode="multiple"
                       maxTagCount="responsive"
                       value={selectedKeys}
-                      onChange={(values) => setStageSelections((prev) => ({ ...prev, [group.intent]: values }))}
-                      options={group.stages.map((stage) => ({ label: stage.stage_label || stage.stage_key, value: stage.stage_key }))}
+                      onChange={(values) =>
+                        setStageSelections((prev) => ({ ...prev, [group.intent]: values }))
+                      }
+                      options={group.stages.map((stage) => ({
+                        label: stage.stage_label || stage.stage_key,
+                        value: stage.stage_key,
+                      }))}
                       style={{ minWidth: 280, maxWidth: 520 }}
                       placeholder="选择阶段"
                     />
                   </div>
                   {selectedKeys.length ? (
-                    <StageTrendChart stages={group.stages} selectedStageKeys={selectedKeys} metricKey={trendMetric} />
+                    <StageTrendChart
+                      stages={group.stages}
+                      selectedStageKeys={selectedKeys}
+                      metricKey={trendMetric}
+                    />
                   ) : (
                     <Empty description="请选择至少一个阶段" />
                   )}
@@ -477,7 +611,9 @@ export default function Observability() {
       </div>
 
       <div style={{ background: '#fff', borderRadius: 8, padding: 16 }}>
-        <Title level={5} style={{ marginTop: 0 }}>阶段耗时</Title>
+        <Title level={5} style={{ marginTop: 0 }}>
+          阶段耗时
+        </Title>
         <Table
           rowKey="stage_key"
           size="small"
@@ -490,7 +626,9 @@ export default function Observability() {
       </div>
 
       <div style={{ background: '#fff', borderRadius: 8, padding: 16 }}>
-        <Title level={5} style={{ marginTop: 0 }}>LLM 调用</Title>
+        <Title level={5} style={{ marginTop: 0 }}>
+          LLM 调用
+        </Title>
         <Table
           rowKey={(row) => `${row.operation}-${row.model}`}
           size="small"
@@ -503,7 +641,9 @@ export default function Observability() {
       </div>
 
       <div style={{ background: '#fff', borderRadius: 8, padding: 16 }}>
-        <Title level={5} style={{ marginTop: 0 }}>告警列表</Title>
+        <Title level={5} style={{ marginTop: 0 }}>
+          告警列表
+        </Title>
         <Table
           rowKey="id"
           size="small"
@@ -516,7 +656,9 @@ export default function Observability() {
       </div>
 
       <div style={{ background: '#fff', borderRadius: 8, padding: 16 }}>
-        <Title level={5} style={{ marginTop: 0 }}>最近失败样本</Title>
+        <Title level={5} style={{ marginTop: 0 }}>
+          最近失败样本
+        </Title>
         <Table
           rowKey={(row, index) => `${row.source}-${row.conversation_id || 'none'}-${index}`}
           size="small"

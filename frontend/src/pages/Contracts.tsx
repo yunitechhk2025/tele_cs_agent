@@ -92,8 +92,7 @@ export default function Contracts() {
   const loadContracts = useCallback(async () => {
     setLoading(true);
     try {
-      const params =
-        statusFilter === 'all' ? undefined : { status: statusFilter };
+      const params = statusFilter === 'all' ? undefined : { status: statusFilter };
       const res = await contractApi.list(params);
       setContracts(res.data);
     } catch {
@@ -270,9 +269,7 @@ export default function Contracts() {
       dataIndex: 'status',
       key: 'status',
       width: 130,
-      render: (s: string) => (
-        <Tag color={statusTagColor(s)}>{formatStatusLabel(s)}</Tag>
-      ),
+      render: (s: string) => <Tag color={statusTagColor(s)}>{formatStatusLabel(s)}</Tag>,
     },
     {
       title: '创建时间',

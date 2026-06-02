@@ -1,15 +1,6 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import {
-  Card,
-  Form,
-  Input,
-  Button,
-  Typography,
-  message,
-  Space,
-  theme,
-} from 'antd';
+import { Card, Form, Input, Button, Typography, message, Space, theme } from 'antd';
 import { UserOutlined, LockOutlined, RobotOutlined } from '@ant-design/icons';
 import { authApi } from '../api';
 import type { AxiosError } from 'axios';
@@ -54,8 +45,7 @@ export default function Login() {
         alignItems: 'center',
         justifyContent: 'center',
         padding: '24px 16px',
-        background:
-          'linear-gradient(135deg, #229ED9 0%, #5B4FCF 45%, #7C3AED 100%)',
+        background: 'linear-gradient(135deg, #229ED9 0%, #5B4FCF 45%, #7C3AED 100%)',
         boxSizing: 'border-box',
       }}
     >

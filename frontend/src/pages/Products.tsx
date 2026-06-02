@@ -41,10 +41,20 @@ const { TextArea } = Input;
 
 function tagColor(label: string) {
   const map: Record<string, string> = {
-    客厅: 'blue', 餐厅: 'green', 卧室: 'purple', 书房: 'cyan',
-    儿童房: 'orange', 玄关: 'geekblue', 其他: 'default',
-    现代: 'blue', 简约: 'cyan', 北欧: 'green', 新中式: 'gold',
-    欧式: 'purple', 美式: 'orange', 轻奢: 'magenta',
+    客厅: 'blue',
+    餐厅: 'green',
+    卧室: 'purple',
+    书房: 'cyan',
+    儿童房: 'orange',
+    玄关: 'geekblue',
+    其他: 'default',
+    现代: 'blue',
+    简约: 'cyan',
+    北欧: 'green',
+    新中式: 'gold',
+    欧式: 'purple',
+    美式: 'orange',
+    轻奢: 'magenta',
   };
   return map[label] || 'default';
 }
@@ -85,12 +95,15 @@ export default function Products() {
 
   // Load filter options once on mount
   useEffect(() => {
-    productApi.meta().then((res) => {
-      setMetaBrands(res.data.brands ?? []);
-      setMetaSpaces(res.data.spaces);
-      setMetaStyles(res.data.styles);
-      setMetaSeries(res.data.series);
-    }).catch(() => {});
+    productApi
+      .meta()
+      .then((res) => {
+        setMetaBrands(res.data.brands ?? []);
+        setMetaSpaces(res.data.spaces);
+        setMetaStyles(res.data.styles);
+        setMetaSeries(res.data.series);
+      })
+      .catch(() => {});
   }, []);
 
   const fetchProducts = useCallback(async () => {
@@ -145,8 +158,7 @@ export default function Products() {
     }
   };
 
-  const getImageSrc = (p: ProductEntry, order = 0) =>
-    `/api/products/${p.id}/images/${order}`;
+  const getImageSrc = (p: ProductEntry, order = 0) => `/api/products/${p.id}/images/${order}`;
 
   // --- Scene Generator helpers ---
   const fetchGenBrowse = useCallback(async (kw?: string, brand?: string) => {
@@ -154,7 +166,9 @@ export default function Products() {
     try {
       const res = await productApi.list({ keyword: kw || undefined, brand, limit: 100 });
       setGenBrowseList(res.data);
-    } catch { /* ignore */ } finally {
+    } catch {
+      /* ignore */
+    } finally {
       setGenBrowseLoading(false);
     }
   }, []);
@@ -192,8 +206,13 @@ export default function Products() {
 
   const toggleGenImage = (ref: ProductImageRef) => {
     setGenSelectedImages((prev) => {
-      const exists = prev.find((r) => r.product_id === ref.product_id && r.image_order === ref.image_order);
-      if (exists) return prev.filter((r) => !(r.product_id === ref.product_id && r.image_order === ref.image_order));
+      const exists = prev.find(
+        (r) => r.product_id === ref.product_id && r.image_order === ref.image_order,
+      );
+      if (exists)
+        return prev.filter(
+          (r) => !(r.product_id === ref.product_id && r.image_order === ref.image_order),
+        );
       const sameProductIndex = prev.findIndex((r) => r.product_id === ref.product_id);
       if (sameProductIndex >= 0) {
         const next = [...prev];
@@ -201,7 +220,10 @@ export default function Products() {
         message.info('每个产品仅保留 1 张参考图，已替换为新选择的图片');
         return next;
       }
-      if (prev.length >= 4) { message.warning('最多选择 1 个主产品和 3 个副产品'); return prev; }
+      if (prev.length >= 4) {
+        message.warning('最多选择 1 个主产品和 3 个副产品');
+        return prev;
+      }
       return [...prev, ref];
     });
   };
@@ -210,7 +232,10 @@ export default function Products() {
     genSelectedImages.some((r) => r.product_id === pid && r.image_order === order);
 
   const handleGenGenerate = async () => {
-    if (genSelectedImages.length === 0) { message.warning('请至少选择 1 张产品图片'); return; }
+    if (genSelectedImages.length === 0) {
+      message.warning('请至少选择 1 张产品图片');
+      return;
+    }
     setGenGenerating(true);
     setGenStep(2);
     try {
@@ -277,7 +302,9 @@ export default function Products() {
             optionFilterProp="children"
           >
             {metaBrands.map((b) => (
-              <Option key={b} value={b}>{b}</Option>
+              <Option key={b} value={b}>
+                {b}
+              </Option>
             ))}
           </Select>
           <Input
@@ -298,7 +325,9 @@ export default function Products() {
             optionFilterProp="children"
           >
             {metaSpaces.map((s) => (
-              <Option key={s} value={s}>{s}</Option>
+              <Option key={s} value={s}>
+                {s}
+              </Option>
             ))}
           </Select>
           <Select
@@ -311,7 +340,9 @@ export default function Products() {
             optionFilterProp="children"
           >
             {metaStyles.map((s) => (
-              <Option key={s} value={s}>{s}</Option>
+              <Option key={s} value={s}>
+                {s}
+              </Option>
             ))}
           </Select>
           <Select
@@ -324,21 +355,15 @@ export default function Products() {
             optionFilterProp="children"
           >
             {metaSeries.map((s) => (
-              <Option key={s} value={s}>{s}</Option>
+              <Option key={s} value={s}>
+                {s}
+              </Option>
             ))}
           </Select>
-          <Button
-            type="primary"
-            icon={<PictureOutlined />}
-            onClick={openGenModal}
-          >
+          <Button type="primary" icon={<PictureOutlined />} onClick={openGenModal}>
             场景生成器
           </Button>
-          <Button
-            icon={<ReloadOutlined />}
-            loading={importing}
-            onClick={handleImport}
-          >
+          <Button icon={<ReloadOutlined />} loading={importing} onClick={handleImport}>
             重新导入
           </Button>
         </Space>
@@ -397,7 +422,10 @@ export default function Products() {
                     >
                       {p.product_name || '—'}
                     </Text>
-                    <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 6 }}>
+                    <Text
+                      type="secondary"
+                      style={{ fontSize: 12, display: 'block', marginBottom: 6 }}
+                    >
                       {p.series_name || ''}
                     </Text>
                     <Space size={4} wrap style={{ marginBottom: 6 }}>
@@ -455,13 +483,19 @@ export default function Products() {
             <Descriptions column={2} bordered size="small" style={{ marginBottom: 16 }}>
               <Descriptions.Item label="品牌">{selected.brand}</Descriptions.Item>
               <Descriptions.Item label="官网 ID">{selected.product_id_ext}</Descriptions.Item>
-              <Descriptions.Item label="产品名" span={2}>{selected.product_name}</Descriptions.Item>
-              <Descriptions.Item label="系列" span={2}>{selected.series_name}</Descriptions.Item>
+              <Descriptions.Item label="产品名" span={2}>
+                {selected.product_name}
+              </Descriptions.Item>
+              <Descriptions.Item label="系列" span={2}>
+                {selected.series_name}
+              </Descriptions.Item>
               <Descriptions.Item label="空间">{selected.space}</Descriptions.Item>
               <Descriptions.Item label="风格">{selected.style}</Descriptions.Item>
               <Descriptions.Item label="颜色">{selected.color}</Descriptions.Item>
               <Descriptions.Item label="材质">{selected.material}</Descriptions.Item>
-              <Descriptions.Item label="尺寸" span={2}>{selected.size}</Descriptions.Item>
+              <Descriptions.Item label="尺寸" span={2}>
+                {selected.size}
+              </Descriptions.Item>
               <Descriptions.Item label="展示价">{selected.price_display}</Descriptions.Item>
               <Descriptions.Item label="原价">{selected.original_price}</Descriptions.Item>
               <Descriptions.Item label="型号">{selected.serial_number}</Descriptions.Item>
@@ -470,12 +504,18 @@ export default function Products() {
                   <Link href={selected.buy_url} target="_blank">
                     <ShoppingCartOutlined /> 立即购买
                   </Link>
-                ) : '—'}
+                ) : (
+                  '—'
+                )}
               </Descriptions.Item>
               <Descriptions.Item label="详情页" span={2}>
                 {selected.detail_url ? (
-                  <Link href={selected.detail_url} target="_blank">{selected.detail_url}</Link>
-                ) : '—'}
+                  <Link href={selected.detail_url} target="_blank">
+                    {selected.detail_url}
+                  </Link>
+                ) : (
+                  '—'
+                )}
               </Descriptions.Item>
             </Descriptions>
 
@@ -517,7 +557,6 @@ export default function Products() {
                 </div>
               </div>
             )}
-
           </div>
         )}
       </Drawer>
@@ -526,7 +565,9 @@ export default function Products() {
       <Modal
         title="场景生成器"
         open={genModalOpen}
-        onCancel={() => { if (!genGenerating) setGenModalOpen(false); }}
+        onCancel={() => {
+          if (!genGenerating) setGenModalOpen(false);
+        }}
         footer={null}
         width={900}
         destroyOnClose
@@ -536,11 +577,7 @@ export default function Products() {
           current={genStep}
           size="small"
           style={{ marginBottom: 20 }}
-          items={[
-            { title: '选择产品图片' },
-            { title: '配置生成参数' },
-            { title: '生成结果' },
-          ]}
+          items={[{ title: '选择产品图片' }, { title: '配置生成参数' }, { title: '生成结果' }]}
         />
 
         {/* Step 0: select products & images */}
@@ -563,12 +600,17 @@ export default function Products() {
                 allowClear
                 style={{ width: 130 }}
                 value={genBrowseBrand}
-                onChange={(v) => { setGenBrowseBrand(v); fetchGenBrowse(genBrowseKw, v); }}
+                onChange={(v) => {
+                  setGenBrowseBrand(v);
+                  fetchGenBrowse(genBrowseKw, v);
+                }}
                 showSearch
                 optionFilterProp="children"
               >
                 {metaBrands.map((b) => (
-                  <Option key={b} value={b}>{b}</Option>
+                  <Option key={b} value={b}>
+                    {b}
+                  </Option>
                 ))}
               </Select>
               <Button
@@ -586,11 +628,16 @@ export default function Products() {
 
             {/* Scrollable product grid */}
             <Spin spinning={genBrowseLoading}>
-              <div style={{
-                maxHeight: 320, overflowY: 'auto',
-                border: '1px solid #f0f0f0', borderRadius: 8,
-                padding: 8, background: '#fafafa',
-              }}>
+              <div
+                style={{
+                  maxHeight: 320,
+                  overflowY: 'auto',
+                  border: '1px solid #f0f0f0',
+                  borderRadius: 8,
+                  padding: 8,
+                  background: '#fafafa',
+                }}
+              >
                 {genBrowseList.length === 0 && !genBrowseLoading ? (
                   <Empty description="暂无产品" style={{ padding: 20 }} />
                 ) : (
@@ -614,27 +661,55 @@ export default function Products() {
                             <img
                               src={`/api/products/${p.id}/images/0`}
                               alt={p.product_name}
-                              style={{ width: '100%', height: 100, objectFit: 'cover', display: 'block' }}
-                              onError={(e) => { (e.target as HTMLImageElement).style.opacity = '0.15'; }}
+                              style={{
+                                width: '100%',
+                                height: 100,
+                                objectFit: 'cover',
+                                display: 'block',
+                              }}
+                              onError={(e) => {
+                                (e.target as HTMLImageElement).style.opacity = '0.15';
+                              }}
                             />
                             {added && (
-                              <div style={{
-                                position: 'absolute', top: 4, right: 4,
-                                background: '#1890ff', borderRadius: '50%',
-                                width: 22, height: 22, display: 'flex',
-                                alignItems: 'center', justifyContent: 'center',
-                              }}>
+                              <div
+                                style={{
+                                  position: 'absolute',
+                                  top: 4,
+                                  right: 4,
+                                  background: '#1890ff',
+                                  borderRadius: '50%',
+                                  width: 22,
+                                  height: 22,
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                }}
+                              >
                                 <CheckCircleOutlined style={{ color: '#fff', fontSize: 14 }} />
                               </div>
                             )}
                             <div style={{ padding: '4px 6px' }}>
-                              <div style={{
-                                fontSize: 11, fontWeight: 600,
-                                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                              }}>
+                              <div
+                                style={{
+                                  fontSize: 11,
+                                  fontWeight: 600,
+                                  overflow: 'hidden',
+                                  textOverflow: 'ellipsis',
+                                  whiteSpace: 'nowrap',
+                                }}
+                              >
                                 {p.product_name || '—'}
                               </div>
-                              <div style={{ fontSize: 10, color: '#999', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              <div
+                                style={{
+                                  fontSize: 10,
+                                  color: '#999',
+                                  overflow: 'hidden',
+                                  textOverflow: 'ellipsis',
+                                  whiteSpace: 'nowrap',
+                                }}
+                              >
                                 {[p.brand, p.space, p.style].filter(Boolean).join(' · ')}
                               </div>
                             </div>
@@ -651,23 +726,48 @@ export default function Products() {
             {genProducts.length > 0 && (
               <div style={{ marginTop: 14 }}>
                 <Text strong style={{ fontSize: 13 }}>
-                  选择参考图（主产品 1 个，副产品 0~3 个；每个产品仅选 1 张，当前 {genSelectedImages.length}/4）
+                  选择参考图（主产品 1 个，副产品 0~3 个；每个产品仅选 1 张，当前{' '}
+                  {genSelectedImages.length}/4）
                 </Text>
-                <div style={{
-                  marginTop: 8, maxHeight: 200, overflowY: 'auto',
-                  display: 'flex', flexDirection: 'column', gap: 10,
-                }}>
+                <div
+                  style={{
+                    marginTop: 8,
+                    maxHeight: 200,
+                    overflowY: 'auto',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 10,
+                  }}
+                >
                   {genProducts.map((p) => (
-                    <div key={p.id} style={{
-                      display: 'flex', alignItems: 'center', gap: 8,
-                      padding: '6px 10px', background: '#f7f9fc', borderRadius: 6,
-                      border: '1px solid #e8ecf1',
-                    }}>
+                    <div
+                      key={p.id}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 8,
+                        padding: '6px 10px',
+                        background: '#f7f9fc',
+                        borderRadius: 6,
+                        border: '1px solid #e8ecf1',
+                      }}
+                    >
                       <div style={{ minWidth: 100, fontSize: 12, fontWeight: 600 }}>
-                        <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 100 }}>
+                        <div
+                          style={{
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                            maxWidth: 100,
+                          }}
+                        >
                           {p.product_name}
                         </div>
-                        {p.brand && <Tag color="blue" style={{ fontSize: 10, marginTop: 2 }}>{p.brand}</Tag>}
+                        {p.brand && (
+                          <Tag color="blue" style={{ fontSize: 10, marginTop: 2 }}>
+                            {p.brand}
+                          </Tag>
+                        )}
                       </div>
                       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', flex: 1 }}>
                         {p.images && p.images.length > 0 ? (
@@ -676,11 +776,18 @@ export default function Products() {
                             return (
                               <div
                                 key={img.id}
-                                onClick={() => toggleGenImage({ product_id: p.id, image_order: img.display_order })}
+                                onClick={() =>
+                                  toggleGenImage({
+                                    product_id: p.id,
+                                    image_order: img.display_order,
+                                  })
+                                }
                                 style={{
                                   position: 'relative',
-                                  width: 64, height: 50,
-                                  borderRadius: 5, overflow: 'hidden',
+                                  width: 64,
+                                  height: 50,
+                                  borderRadius: 5,
+                                  overflow: 'hidden',
                                   border: sel ? '3px solid #1890ff' : '2px solid #eee',
                                   cursor: 'pointer',
                                   opacity: !sel && genSelectedImages.length >= 4 ? 0.35 : 1,
@@ -690,15 +797,28 @@ export default function Products() {
                                 <img
                                   src={`/api/products/${p.id}/images/${img.display_order}`}
                                   alt=""
-                                  style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+                                  style={{
+                                    width: '100%',
+                                    height: '100%',
+                                    objectFit: 'cover',
+                                    display: 'block',
+                                  }}
                                 />
                                 {sel && (
-                                  <div style={{
-                                    position: 'absolute', top: 1, right: 1,
-                                    background: '#1890ff', borderRadius: '50%',
-                                    width: 16, height: 16, display: 'flex',
-                                    alignItems: 'center', justifyContent: 'center',
-                                  }}>
+                                  <div
+                                    style={{
+                                      position: 'absolute',
+                                      top: 1,
+                                      right: 1,
+                                      background: '#1890ff',
+                                      borderRadius: '50%',
+                                      width: 16,
+                                      height: 16,
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      justifyContent: 'center',
+                                    }}
+                                  >
                                     <CheckCircleOutlined style={{ color: '#fff', fontSize: 10 }} />
                                   </div>
                                 )}
@@ -706,7 +826,9 @@ export default function Products() {
                             );
                           })
                         ) : (
-                          <Text type="secondary" style={{ fontSize: 11 }}>暂无图片</Text>
+                          <Text type="secondary" style={{ fontSize: 11 }}>
+                            暂无图片
+                          </Text>
                         )}
                       </div>
                       <Button
@@ -741,14 +863,25 @@ export default function Products() {
         {genStep === 1 && (
           <div>
             <div style={{ marginBottom: 12 }}>
-              <Text strong style={{ display: 'block', marginBottom: 4 }}>已选图片预览</Text>
+              <Text strong style={{ display: 'block', marginBottom: 4 }}>
+                已选图片预览
+              </Text>
               <Text type="secondary" style={{ display: 'block', marginBottom: 8, fontSize: 12 }}>
                 第 1 个为主产品，其余最多 3 个作为副产品参考图，一并送入 omni 模型约束外观。
               </Text>
               <Space wrap>
                 {genSelectedImages.map((ref, idx) => (
                   <div key={idx} style={{ position: 'relative', width: 92, borderRadius: 6 }}>
-                    <div style={{ position: 'relative', width: 92, height: 60, borderRadius: 6, overflow: 'hidden', border: '2px solid #1890ff' }}>
+                    <div
+                      style={{
+                        position: 'relative',
+                        width: 92,
+                        height: 60,
+                        borderRadius: 6,
+                        overflow: 'hidden',
+                        border: '2px solid #1890ff',
+                      }}
+                    >
                       <img
                         src={`/api/products/${ref.product_id}/images/${ref.image_order}`}
                         alt=""
@@ -756,7 +889,10 @@ export default function Products() {
                       />
                     </div>
                     <div style={{ marginTop: 4, textAlign: 'center' }}>
-                      <Tag color={idx === 0 ? 'geekblue' : 'orange'} style={{ marginRight: 0, fontSize: 11 }}>
+                      <Tag
+                        color={idx === 0 ? 'geekblue' : 'orange'}
+                        style={{ marginRight: 0, fontSize: 11 }}
+                      >
                         {idx === 0 ? '主产品' : `副产品 ${idx}`}
                       </Tag>
                     </div>
@@ -809,7 +945,9 @@ export default function Products() {
               <div style={{ textAlign: 'center', padding: 60 }}>
                 <Spin size="large" />
                 <div style={{ marginTop: 16, color: '#666' }}>场景图生成中，请耐心等待...</div>
-                <div style={{ marginTop: 8, color: '#999', fontSize: 12 }}>任务创建后会自动转入“场景图管理”的生成中列表</div>
+                <div style={{ marginTop: 8, color: '#999', fontSize: 12 }}>
+                  任务创建后会自动转入“场景图管理”的生成中列表
+                </div>
               </div>
             ) : genResult ? (
               <div>
@@ -822,7 +960,15 @@ export default function Products() {
                       style={{ padding: '12px 0' }}
                     />
                     <Image.PreviewGroup>
-                      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', justifyContent: 'center', marginBottom: 16 }}>
+                      <div
+                        style={{
+                          display: 'flex',
+                          gap: 12,
+                          flexWrap: 'wrap',
+                          justifyContent: 'center',
+                          marginBottom: 16,
+                        }}
+                      >
                         {genResult.image_urls.map((url, idx) => (
                           <Image
                             key={idx}
@@ -837,10 +983,15 @@ export default function Products() {
 
                     {genResult.related_products.length > 0 && (
                       <div style={{ marginBottom: 16 }}>
-                        <Text type="secondary" style={{ fontSize: 12 }}>搭配产品：</Text>
+                        <Text type="secondary" style={{ fontSize: 12 }}>
+                          搭配产品：
+                        </Text>
                         <Space wrap style={{ marginTop: 4 }}>
                           {genResult.related_products.map((rp) => (
-                            <Tag key={rp.id}>{rp.brand ? `[${rp.brand}] ` : ''}{rp.product_name}</Tag>
+                            <Tag key={rp.id}>
+                              {rp.brand ? `[${rp.brand}] ` : ''}
+                              {rp.product_name}
+                            </Tag>
                           ))}
                         </Space>
                       </div>
@@ -850,7 +1001,13 @@ export default function Products() {
                       <Space size={16}>
                         <Button
                           type={genResult.in_library ? 'default' : 'primary'}
-                          icon={genResult.in_library ? <StarFilled style={{ color: '#faad14' }} /> : <StarOutlined />}
+                          icon={
+                            genResult.in_library ? (
+                              <StarFilled style={{ color: '#faad14' }} />
+                            ) : (
+                              <StarOutlined />
+                            )
+                          }
                           onClick={() => handleToggleLibrary(genResult.id)}
                         >
                           {genResult.in_library ? '已在场景库' : '加入场景库'}
@@ -891,7 +1048,9 @@ export default function Products() {
                     title="生成失败"
                     subTitle={genResult.error_message || '未知错误'}
                     extra={[
-                      <Button key="retry" onClick={() => setGenStep(1)}>返回重试</Button>,
+                      <Button key="retry" onClick={() => setGenStep(1)}>
+                        返回重试
+                      </Button>,
                     ]}
                   />
                 )}

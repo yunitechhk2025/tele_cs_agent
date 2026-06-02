@@ -61,7 +61,8 @@ function readPersistedState(): PersistedSimulatorState | null {
     return {
       conversationId: typeof parsed.conversationId === 'number' ? parsed.conversationId : null,
       selectedBotId: typeof parsed.selectedBotId === 'number' ? parsed.selectedBotId : null,
-      language: typeof parsed.language === 'string' && parsed.language ? parsed.language : 'zh-Hans',
+      language:
+        typeof parsed.language === 'string' && parsed.language ? parsed.language : 'zh-Hans',
       ephemeralEvents: Array.isArray(parsed.ephemeralEvents) ? parsed.ephemeralEvents : [],
     };
   } catch {
@@ -79,7 +80,9 @@ function clearPersistedState() {
   window.localStorage.removeItem(SIMULATOR_STORAGE_KEY);
 }
 
-function isMediaEvent(event: SimulatorOutgoingEvent): event is SimulatorOutgoingEvent & { type: 'photo' | 'document' } {
+function isMediaEvent(
+  event: SimulatorOutgoingEvent,
+): event is SimulatorOutgoingEvent & { type: 'photo' | 'document' } {
   return event.type === 'photo' || event.type === 'document';
 }
 
@@ -126,7 +129,9 @@ function Bubble({ item }: { item: TimelineItem }) {
           <Text style={{ color: TG_ACCENT, fontSize: 12, fontWeight: 600 }}>{name}</Text>
         </div>
         {item.kind === 'text' && (
-          <div style={{ whiteSpace: 'pre-wrap' }}><RichText text={item.content} /></div>
+          <div style={{ whiteSpace: 'pre-wrap' }}>
+            <RichText text={item.content} />
+          </div>
         )}
         {item.kind === 'photo' && (
           <div>
@@ -144,12 +149,7 @@ function Bubble({ item }: { item: TimelineItem }) {
         )}
         {item.kind === 'document' && (
           <div>
-            <a
-              href={item.url}
-              target="_blank"
-              rel="noreferrer"
-              style={{ color: '#9fd4ff' }}
-            >
+            <a href={item.url} target="_blank" rel="noreferrer" style={{ color: '#9fd4ff' }}>
               <LinkOutlined /> {item.filename || 'Document'}
             </a>
             {item.caption && (
@@ -198,13 +198,16 @@ export default function TelegramSimulator() {
   const loadEvents = useCallback(async (targetConversationId: number) => {
     const { data } = await simulatorApi.getEvents(targetConversationId);
     const items = (Array.isArray(data) ? data : [])
-      .filter((event) => event.type === 'text' || event.type === 'photo' || event.type === 'document')
+      .filter(
+        (event) => event.type === 'text' || event.type === 'photo' || event.type === 'document',
+      )
       .map<TimelineItem>((event) => {
         if (event.type === 'text') {
           return {
             id: event.id,
             kind: 'text',
-            role: event.role === 'human_agent' ? 'human_agent' : (event.role as 'user' | 'assistant'),
+            role:
+              event.role === 'human_agent' ? 'human_agent' : (event.role as 'user' | 'assistant'),
             content: event.text || '',
             created_at: event.created_at,
           };
@@ -250,13 +253,16 @@ export default function TelegramSimulator() {
 
   useEffect(() => {
     if (queryConversationId == null) return;
-    conversationApi.get(queryConversationId).then(({ data }) => {
-      setSelectedBotId(data.bot_id ?? null);
-      setLanguage(data.language || 'zh-Hans');
-      setConversationId(data.id);
-    }).catch(() => {
-      message.error('加载指定模拟会话失败');
-    });
+    conversationApi
+      .get(queryConversationId)
+      .then(({ data }) => {
+        setSelectedBotId(data.bot_id ?? null);
+        setLanguage(data.language || 'zh-Hans');
+        setConversationId(data.id);
+      })
+      .catch(() => {
+        message.error('加载指定模拟会话失败');
+      });
   }, [queryConversationId]);
 
   useEffect(() => {
@@ -288,7 +294,12 @@ export default function TelegramSimulator() {
 
   useEffect(() => {
     if (!restoredRef.current) return;
-    if (!conversationId && !selectedBotId && language === 'zh-Hans' && ephemeralEvents.length === 0) {
+    if (
+      !conversationId &&
+      !selectedBotId &&
+      language === 'zh-Hans' &&
+      ephemeralEvents.length === 0
+    ) {
       clearPersistedState();
       return;
     }
@@ -353,7 +364,9 @@ export default function TelegramSimulator() {
           persisted.url === item.url,
       );
     });
-    return [...textItems, ...persistedEvents, ...dedupedEphemeral].sort((a, b) => a.created_at.localeCompare(b.created_at));
+    return [...textItems, ...persistedEvents, ...dedupedEphemeral].sort((a, b) =>
+      a.created_at.localeCompare(b.created_at),
+    );
   }, [messages, persistedEvents, ephemeralEvents]);
 
   const startSession = async () => {
@@ -390,7 +403,10 @@ export default function TelegramSimulator() {
           ...(event.type === 'text'
             ? {
                 kind: 'text' as const,
-                role: event.role === 'human_agent' ? 'human_agent' : (event.role as 'user' | 'assistant'),
+                role:
+                  event.role === 'human_agent'
+                    ? 'human_agent'
+                    : (event.role as 'user' | 'assistant'),
                 content: event.text || '',
                 created_at: event.created_at,
               }
@@ -482,10 +498,14 @@ export default function TelegramSimulator() {
           <Space>
             {conversationId && (
               <Link to={`/conversations/${conversationId}`}>
-                <Button size="small" icon={<LinkOutlined />}>打开会话</Button>
+                <Button size="small" icon={<LinkOutlined />}>
+                  打开会话
+                </Button>
               </Link>
             )}
-            <Button size="small" icon={<ReloadOutlined />} onClick={resetSession}>重置</Button>
+            <Button size="small" icon={<ReloadOutlined />} onClick={resetSession}>
+              重置
+            </Button>
           </Space>
         </div>
 
@@ -528,9 +548,7 @@ export default function TelegramSimulator() {
               开始模拟
             </Button>
             {conversationId && (
-              <Text style={{ color: TG_SECONDARY }}>
-                已恢复模拟会话 #{conversationId}
-              </Text>
+              <Text style={{ color: TG_SECONDARY }}>已恢复模拟会话 #{conversationId}</Text>
             )}
           </div>
         ) : (
