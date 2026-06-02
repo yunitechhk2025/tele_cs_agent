@@ -35,6 +35,20 @@ ignore = [
 [tool.ruff.lint.isort]
 known-first-party = ["app", "scripts", "tests"]
 
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI uses these calls as declarative parameter metadata at import time.
+extend-immutable-calls = [
+  "fastapi.Body",
+  "fastapi.Cookie",
+  "fastapi.Depends",
+  "fastapi.File",
+  "fastapi.Form",
+  "fastapi.Header",
+  "fastapi.Path",
+  "fastapi.Query",
+  "fastapi.Security",
+]
+
 [tool.mypy]
 python_version = "3.12"
 ignore_missing_imports = true
