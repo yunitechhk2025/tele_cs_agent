@@ -23,17 +23,17 @@ from sqlalchemy import delete, select
 from app.config import get_settings
 from app.database import AsyncSessionLocal
 from app.models import ProductEntry, ProductImage, SceneGenerationImage, SceneGenerationRecord
-from app.services.llm_service import (
-    build_image_client,
-    get_llm_settings,
-    select_scene_bundle_products,
-)
 from app.services.background_job_service import (
     SCENE_GENERATION_MAX_ATTEMPTS,
     cancel_jobs_for_entity,
     enqueue_job,
 )
 from app.services.conversation_monitoring import set_conversation_stage
+from app.services.llm_service import (
+    build_image_client,
+    get_llm_settings,
+    select_scene_bundle_products,
+)
 from app.services.observability_service import record_llm_call
 from app.services.product_taxonomy import product_category_values
 
@@ -1144,7 +1144,7 @@ async def _run_scene_generation_for_record(
                 ),
                 timeout=SCENE_BUNDLE_SELECTION_TIMEOUT_SECONDS,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             selected_related_ids = []
             logger.warning(
                 "Scene bundle selection timed out after %ss for record %s primary=%s; falling back to heuristic shortlist",
@@ -1228,7 +1228,7 @@ async def _run_scene_generation_for_record(
             await db.commit()
             await db.refresh(current)
             return current
-    except asyncio.TimeoutError:
+    except TimeoutError:
         duration_ms = int((time.perf_counter() - total_start) * 1000)
         shutil.rmtree(_scene_upload_root() / str(record_id), ignore_errors=True)
         timeout_message = f"Scene generation timed out after {timeout_seconds} seconds"

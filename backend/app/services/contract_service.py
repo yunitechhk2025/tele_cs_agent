@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.models import Conversation, Contract, ContractTemplate
+from app.models import Contract, ContractTemplate, Conversation
 from app.services.llm_service import generate_contract
 
 logger = logging.getLogger(__name__)

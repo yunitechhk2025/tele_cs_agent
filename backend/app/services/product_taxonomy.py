@@ -3,7 +3,6 @@ import re
 import unicodedata
 from typing import Any
 
-
 PROFILE_DIMENSIONS = ("categories", "spaces", "styles", "colors", "materials", "brands")
 
 PRODUCT_CATEGORY_TERMS = {
@@ -710,7 +709,7 @@ def canonicalize_values(dimension: str, values: Any, limit: int = 6) -> list[str
         return []
     if isinstance(values, str):
         raw_values = [values]
-    elif isinstance(values, (list, tuple, set)):
+    elif isinstance(values, list | tuple | set):
         raw_values = list(values)
     else:
         return []

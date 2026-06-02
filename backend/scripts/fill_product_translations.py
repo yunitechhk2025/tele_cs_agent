@@ -29,7 +29,6 @@ from app.services.product_i18n import (
     product_entry_to_payload,
 )
 
-
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 

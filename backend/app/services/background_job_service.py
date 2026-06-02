@@ -9,7 +9,6 @@ from sqlalchemy import select, update
 from app.database import AsyncSessionLocal
 from app.models import BackgroundJob
 
-
 JOB_STATUS_QUEUED = "queued"
 JOB_STATUS_RUNNING = "running"
 JOB_STATUS_SUCCEEDED = "succeeded"

@@ -1,20 +1,24 @@
 import enum
 from datetime import datetime
+
 from sqlalchemy import (
-    Column,
-    Integer,
-    String,
-    Text,
-    DateTime,
     BigInteger,
     Boolean,
-    ForeignKey,
-    Enum as SQLEnum,
-    LargeBinary,
+    Column,
+    DateTime,
     Float,
+    ForeignKey,
+    Integer,
+    LargeBinary,
+    String,
+    Text,
     UniqueConstraint,
 )
+from sqlalchemy import (
+    Enum as SQLEnum,
+)
 from sqlalchemy.orm import relationship
+
 from app.database import Base
 
 

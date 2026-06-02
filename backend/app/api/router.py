@@ -11,98 +11,93 @@ import logging
 import os
 import shutil
 import uuid
-from io import BytesIO
 from datetime import datetime, timedelta
+from io import BytesIO
 from typing import Any, Optional
 
 import jwt
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, Response
-from sqlalchemy import select, func, desc, delete
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy import delete, desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.config import get_settings
-from app.database import get_db, AsyncSessionLocal
+from app.database import AsyncSessionLocal, get_db
 from app.models import (
-    Conversation,
-    Message,
-    KnowledgeEntry,
     Contract,
     ContractTemplate,
-    FileEntry,
-    TelegramBot,
+    Conversation,
+    ConversationOutboundEvent,
+    ConversationProcessingState,
+    ConversationRecommendationTurn,
+    ConversationSceneState,
     ConversationStatus,
+    ConversationTurnMetric,
+    ConversationTurnStepMetric,
+    FileEntry,
+    KnowledgeEntry,
+    Message,
     MessageRole,
+    PendingAIReply,
     ProductEntry,
     ProductEntryTranslation,
     ProductImage,
     SceneGenerationImage,
     SceneGenerationRecord,
-    ConversationSceneState,
-    ConversationOutboundEvent,
-    PendingAIReply,
-    ConversationProcessingState,
-    ConversationTurnMetric,
-    ConversationTurnStepMetric,
-    ConversationRecommendationTurn,
+    TelegramBot,
 )
 from app.schemas import (
-    LoginRequest,
-    TokenResponse,
-    ConversationSchema,
-    ConversationDetailSchema,
-    ReplyRequest,
-    KnowledgeEntrySchema,
-    KnowledgeCreateRequest,
-    MessageSchema,
-    ContractSchema,
-    ContractUpdateRequest,
     ContractGenerateRequest,
-    SendContractRequest,
-    DashboardStats,
-    TelegramSimulatorSessionCreate,
-    TelegramSimulatorSessionResponse,
-    TelegramSimulatorSendRequest,
-    TelegramSimulatorSendResponse,
-    TelegramSimulatorEventSchema,
-    PendingAIReplySchema,
-    SendPendingAIReplyRequest,
+    ContractSchema,
+    ContractTemplateSchema,
+    ContractUpdateRequest,
+    ConversationDetailSchema,
+    ConversationSchema,
     ConversationTurnMetricSchema,
     ConversationTurnStepMetricSchema,
     CustomerServiceSettingsSchema,
     CustomerServiceSettingsUpdateRequest,
-    LLMSettingsSchema,
-    LLMSettingsUpdateRequest,
+    DashboardStats,
     FileEntrySchema,
     FileEntryUpdateRequest,
-    TelegramBotSchema,
-    TelegramBotCreateRequest,
-    TelegramBotUpdateRequest,
-    ContractTemplateSchema,
-    ProductEntrySchema,
-    ProductEntryListSchema,
-    ProductImageSchema,
-    SceneGenerationRequest,
-    SceneGenerationRecordSchema,
-    SceneLibraryItemSchema,
-    SceneGeneratorRequest,
-    SceneBatchActionRequest,
-    SceneBatchActionResponse,
-    ObservabilitySummarySchema,
-    ObservabilityStageMetricSchema,
-    ObservabilityLLMMetricSchema,
+    KnowledgeCreateRequest,
+    KnowledgeEntrySchema,
+    LLMSettingsSchema,
+    LLMSettingsUpdateRequest,
+    LoginRequest,
+    MessageSchema,
     ObservabilityAlertSchema,
     ObservabilityAlertSettingsSchema,
+    ObservabilityLLMMetricSchema,
+    ObservabilityStageMetricSchema,
     ObservabilityStageTrendResponseSchema,
+    ObservabilitySummarySchema,
+    PendingAIReplySchema,
+    ProductEntryListSchema,
+    ProductEntrySchema,
+    ProductImageSchema,
+    ReplyRequest,
+    SceneBatchActionRequest,
+    SceneBatchActionResponse,
+    SceneGenerationRecordSchema,
+    SceneGenerationRequest,
+    SceneGeneratorRequest,
+    SceneLibraryItemSchema,
+    SendContractRequest,
+    SendPendingAIReplyRequest,
+    TelegramBotCreateRequest,
+    TelegramBotSchema,
+    TelegramBotUpdateRequest,
+    TelegramSimulatorEventSchema,
+    TelegramSimulatorSendRequest,
+    TelegramSimulatorSendResponse,
+    TelegramSimulatorSessionCreate,
+    TelegramSimulatorSessionResponse,
+    TokenResponse,
 )
-from app.services.rag_service import (
-    add_to_knowledge_base,
-    remove_from_knowledge_base,
-    add_file_to_index,
-    remove_file_from_index,
-)
+from app.services import bot_manager
 from app.services.contract_service import (
     create_contract_from_conversation,
     export_contract_to_docx_bytes,
@@ -110,17 +105,20 @@ from app.services.contract_service import (
     looks_like_ooxml_docx,
     sanitize_contract_filename,
 )
-from app.services.llm_service import (
-    get_llm_settings,
-    save_llm_settings,
-    invalidate_llm_cache,
-    test_llm_connection,
-    test_embedding_connection,
-    test_image_connection,
-    test_profile_llm_connection,
-    LLM_SETTING_KEYS,
-    translate_text,
-    detect_language,
+from app.services.conversation_monitoring import (
+    attach_turn_user_message,
+    record_turn_step,
+    set_conversation_stage,
+    start_turn_metric,
+)
+from app.services.customer_service_service import (
+    cancel_pending_ai_reply,
+    dispatch_due_pending_ai_replies,
+    get_customer_service_settings,
+    get_pending_ai_reply,
+    pause_pending_ai_reply,
+    save_customer_service_settings,
+    send_pending_ai_reply,
 )
 from app.services.i18n import (
     DEFAULT_LANGUAGE,
@@ -128,32 +126,15 @@ from app.services.i18n import (
     get_localized_static_text,
     normalize_language_code,
 )
-from app.services.scene_service import (
-    build_scene_record_response,
-    start_scene_generation,
-    _get_selected_reference_items,
-    cancel_scene_generation_task,
-    cleanup_stale_pending_scene_generations,
-)
-from app.services.customer_service_service import (
-    get_customer_service_settings,
-    save_customer_service_settings,
-    get_pending_ai_reply,
-    send_pending_ai_reply,
-    pause_pending_ai_reply,
-    cancel_pending_ai_reply,
-    dispatch_due_pending_ai_replies,
-)
-from app.services.product_i18n import (
-    localize_product_payload,
-    product_entry_to_payload,
-    translation_map_from_entries,
-)
-from app.services.conversation_monitoring import (
-    attach_turn_user_message,
-    record_turn_step,
-    set_conversation_stage,
-    start_turn_metric,
+from app.services.llm_service import (
+    detect_language,
+    get_llm_settings,
+    save_llm_settings,
+    test_embedding_connection,
+    test_image_connection,
+    test_llm_connection,
+    test_profile_llm_connection,
+    translate_text,
 )
 from app.services.observability_service import (
     acknowledge_alert,
@@ -161,25 +142,44 @@ from app.services.observability_service import (
     build_observability_export_zip,
     list_alerts,
     load_alert_settings,
-    load_observability_summary,
     load_observability_stage_trends,
+    load_observability_summary,
     reset_observability_context,
     save_alert_settings,
     set_observability_context,
 )
-from app.services import bot_manager
+from app.services.product_i18n import (
+    localize_product_payload,
+    product_entry_to_payload,
+    translation_map_from_entries,
+)
+from app.services.rag_service import (
+    add_file_to_index,
+    add_to_knowledge_base,
+    remove_file_from_index,
+    remove_from_knowledge_base,
+)
+from app.services.scene_service import (
+    _get_selected_reference_items,
+    build_scene_record_response,
+    cancel_scene_generation_task,
+    cleanup_stale_pending_scene_generations,
+    start_scene_generation,
+)
 from app.telegram_bot import (
-    process_customer_text_message,
-    SimulatorOutbound,
-    save_message as tg_save_message,
-    get_or_create_conversation,
-    get_scene_state,
-    resolve_turn_language,
-    ui_scene_language,
-    localize_scene_name,
-    SCENE_RESULT_MESSAGES,
     SCENE_FAILED_MESSAGES,
     SCENE_RESULT_LINK_LABELS,
+    SCENE_RESULT_MESSAGES,
+    SimulatorOutbound,
+    get_or_create_conversation,
+    get_scene_state,
+    localize_scene_name,
+    process_customer_text_message,
+    resolve_turn_language,
+    ui_scene_language,
+)
+from app.telegram_bot import (
+    save_message as tg_save_message,
 )
 
 logger = logging.getLogger(__name__)

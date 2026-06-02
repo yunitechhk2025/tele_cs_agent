@@ -13,9 +13,10 @@ import time
 import unicodedata
 from typing import Any
 
-from openai import AsyncOpenAI
 from anthropic import AsyncAnthropic
+from openai import AsyncOpenAI
 from sqlalchemy import select
+
 from app.config import get_settings
 from app.database import AsyncSessionLocal
 from app.models import SystemSetting
@@ -26,12 +27,12 @@ from app.services.i18n import (
     normalize_language_code,
     to_traditional_chinese,
 )
+from app.services.observability_service import record_llm_call, timed_llm_call
 from app.services.product_i18n import product_search_text
+from app.services.product_reference_parser import is_product_selection_only_text
 from app.services.product_taxonomy import (
     match_normalized_product_value,
 )
-from app.services.product_reference_parser import is_product_selection_only_text
-from app.services.observability_service import record_llm_call, timed_llm_call
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -389,23 +390,6 @@ def _fast_intent_from_rules(
     normalized = (text or "").strip().lower()
     if not normalized:
         return None
-    compact = re.sub(r"\s+", "", normalized).translate(
-        str.maketrans(
-            {
-                "１": "1",
-                "２": "2",
-                "３": "3",
-                "４": "4",
-                "５": "5",
-                "６": "6",
-                "７": "7",
-                "８": "8",
-                "９": "9",
-                "＃": "#",
-                "﹟": "#",
-            }
-        )
-    )
 
     def has_any(patterns: list[str]) -> bool:
         return any(re.search(pattern, normalized, flags=re.IGNORECASE) for pattern in patterns)
@@ -2371,7 +2355,7 @@ def _coerce_product_request_profile(
         raw_values = request_profile.get(dimension) or []
         if isinstance(raw_values, str):
             raw_iterable = [raw_values]
-        elif isinstance(raw_values, (list, tuple, set)):
+        elif isinstance(raw_values, list | tuple | set):
             raw_iterable = raw_values
         else:
             raw_iterable = []
@@ -2995,7 +2979,7 @@ async def ai_select_products(
                 break
         reconciled = _reconcile_product_selection(out, candidates, fallback_ids, profile)
         return reconciled or fallback_ids
-    except asyncio.TimeoutError:
+    except TimeoutError:
         logger.warning(
             "Product AI selection timed out after %ss; falling back to local ranking ids=%s",
             PRODUCT_MATCH_LLM_TIMEOUT_SECONDS,
@@ -3274,8 +3258,6 @@ async def test_image_connection(
     api_key: str, base_url: str, model: str, size: str, quality: str
 ) -> dict:
     """Test the image generation model. Returns {ok, message}."""
-    import httpx, asyncio
-    from urllib.parse import urlparse
 
     if model.startswith("kling/"):
         return await _test_dashscope_kling(api_key, base_url, model, size)
@@ -3297,8 +3279,10 @@ async def test_image_connection(
 
 async def _test_dashscope_kling(api_key: str, base_url: str, model: str, size: str) -> dict:
     """Test DashScope Kling image generation with a minimal request."""
-    import httpx, asyncio
+    import asyncio
     from urllib.parse import urlparse
+
+    import httpx
 
     parsed = urlparse(base_url)
     root = (

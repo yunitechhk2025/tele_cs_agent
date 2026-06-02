@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from typing import Iterable
-
+from collections.abc import Iterable
 
 DEFAULT_LANGUAGE = "en"
 SUPPORTED_LANGUAGES = ("zh-Hans", "zh-Hant", "en", "ja", "ko", "es", "fr")

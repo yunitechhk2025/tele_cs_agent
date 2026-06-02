@@ -5,8 +5,8 @@ import os
 from datetime import datetime, timedelta
 from typing import Any
 
-from telegram import Bot
 from sqlalchemy import select, update
+from telegram import Bot
 
 from app.database import AsyncSessionLocal
 from app.models import (

@@ -16,67 +16,24 @@ from datetime import datetime
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Protocol
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, constants
-from telegram.ext import ContextTypes
+
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, constants
+from telegram.ext import ContextTypes
+
 from app.config import get_settings
 from app.database import AsyncSessionLocal
 from app.models import (
     Conversation,
-    Message,
-    FileEntry,
-    TelegramBot,
+    ConversationMemory,
+    ConversationSceneState,
     ConversationStatus,
+    FileEntry,
+    Message,
     MessageRole,
     ProductEntry,
-    ConversationSceneState,
-    ConversationMemory,
-)
-from app.services.llm_service import (
-    detect_language,
-    check_file_request,
-    generate_response,
-    classify_customer_intent,
-    classify_customer_intent_fast,
-    ai_select_products,
-    resolve_recent_product_reference,
-    analyze_scene_image_request,
-    build_product_constraint_notice,
-    PRODUCT_SPACE_TERMS,
-    PRODUCT_STYLE_TERMS,
-)
-from app.services.profile_parser_service import (
-    parse_product_request_profile,
-    parse_scene_request_profile,
-)
-from app.services.i18n import (
-    DEFAULT_LANGUAGE,
-    SUPPORTED_LANGUAGE_SET,
-    get_localized_static_dict,
-    get_localized_static_text,
-    normalize_language_code,
-    resolve_reply_language as resolve_supported_reply_language,
-)
-from app.services.product_i18n import (
-    localize_product_payload,
-    product_entry_to_payload,
-)
-from app.services.rag_service import search_knowledge_for_bot
-from app.services.scene_service import build_scene_record_response, start_scene_generation
-from app.services.product_reference_parser import (
-    is_product_selection_only_text,
-    parse_product_reference,
-)
-from app.services.customer_service_service import (
-    create_pending_ai_delivery,
-    get_customer_service_settings,
-    create_pending_ai_reply,
-)
-from app.services.recommendation_memory import (
-    get_recent_recommendation_turns,
-    record_recommendation_turn,
-    resolve_product_reference_from_history,
+    TelegramBot,
 )
 from app.services.conversation_monitoring import (
     attach_turn_user_message,
@@ -89,10 +46,57 @@ from app.services.conversation_monitoring import (
     set_conversation_stage,
     start_turn_metric,
 )
+from app.services.customer_service_service import (
+    create_pending_ai_delivery,
+    create_pending_ai_reply,
+    get_customer_service_settings,
+)
+from app.services.i18n import (
+    DEFAULT_LANGUAGE,
+    SUPPORTED_LANGUAGE_SET,
+    get_localized_static_dict,
+    get_localized_static_text,
+    normalize_language_code,
+)
+from app.services.i18n import (
+    resolve_reply_language as resolve_supported_reply_language,
+)
+from app.services.llm_service import (
+    PRODUCT_SPACE_TERMS,
+    PRODUCT_STYLE_TERMS,
+    ai_select_products,
+    analyze_scene_image_request,
+    build_product_constraint_notice,
+    check_file_request,
+    classify_customer_intent,
+    classify_customer_intent_fast,
+    detect_language,
+    generate_response,
+    resolve_recent_product_reference,
+)
 from app.services.observability_service import (
     reset_observability_context,
     set_observability_context,
 )
+from app.services.product_i18n import (
+    localize_product_payload,
+    product_entry_to_payload,
+)
+from app.services.product_reference_parser import (
+    is_product_selection_only_text,
+    parse_product_reference,
+)
+from app.services.profile_parser_service import (
+    parse_product_request_profile,
+    parse_scene_request_profile,
+)
+from app.services.rag_service import search_knowledge_for_bot
+from app.services.recommendation_memory import (
+    get_recent_recommendation_turns,
+    record_recommendation_turn,
+    resolve_product_reference_from_history,
+)
+from app.services.scene_service import build_scene_record_response, start_scene_generation
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -665,7 +669,7 @@ async def keep_typing(chat_id: int, bot, stop_event: asyncio.Event):
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=4.0)
             break
-        except asyncio.TimeoutError:
+        except TimeoutError:
             pass
 
 
@@ -2946,7 +2950,7 @@ async def process_customer_text_message(
             [
                 int(x)
                 for x in router_file_ids
-                if isinstance(x, (int, float, str)) and str(x).strip().isdigit()
+                if isinstance(x, int | float | str) and str(x).strip().isdigit()
             ]
             if isinstance(router_file_ids, list)
             else []

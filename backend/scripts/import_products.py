@@ -18,7 +18,6 @@ import argparse
 import asyncio
 import csv
 import logging
-import os
 import re
 import shutil
 import sys
@@ -29,7 +28,8 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from sqlalchemy import select
-from app.database import AsyncSessionLocal, engine, Base
+
+from app.database import AsyncSessionLocal, Base, engine
 from app.models import ProductEntry, ProductEntryTranslation, ProductImage
 from app.services.product_taxonomy import apply_inferred_metadata
 

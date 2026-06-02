@@ -646,7 +646,7 @@ def _export_value(value: Any) -> str:
         return ""
     if isinstance(value, datetime):
         return value.isoformat(sep=" ", timespec="seconds")
-    if isinstance(value, (list, dict)):
+    if isinstance(value, list | dict):
         return json.dumps(value, ensure_ascii=False)
     return str(value)
 

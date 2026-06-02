@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Any, Iterable
+from collections.abc import Iterable
+from typing import Any
 
 from app.services.i18n import (
     SUPPORTED_LANGUAGE_SET,
@@ -8,7 +9,6 @@ from app.services.i18n import (
     to_traditional_chinese,
 )
 from app.services.product_taxonomy import infer_product_metadata
-
 
 PRODUCT_TRANSLATABLE_FIELDS = (
     "name",

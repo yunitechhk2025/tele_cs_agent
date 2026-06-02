@@ -8,6 +8,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from sqlalchemy import select
+
 from app.database import AsyncSessionLocal
 from app.models import ProductEntry
 from app.services.scene_service import generate_scene_images

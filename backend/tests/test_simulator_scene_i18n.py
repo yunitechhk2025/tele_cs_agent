@@ -2,7 +2,6 @@ import ast
 import unittest
 from pathlib import Path
 
-
 ROUTER_PATH = Path(__file__).resolve().parents[1] / "app" / "api" / "router.py"
 
 
@@ -10,7 +9,7 @@ def _function_source(name: str) -> str:
     source = ROUTER_PATH.read_text(encoding="utf-8")
     tree = ast.parse(source)
     for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.name == name:
             return ast.get_source_segment(source, node) or ""
     raise AssertionError(f"{name} not found in router.py")
 

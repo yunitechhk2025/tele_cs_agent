@@ -6,13 +6,13 @@ import time
 from typing import Any
 
 from app.services.i18n import DEFAULT_LANGUAGE, normalize_language_code
+from app.services.product_reference_parser import parse_product_reference
 from app.services.product_taxonomy import (
     PROFILE_DIMENSIONS,
     canonicalize_values,
     contains_any,
     normalize_text,
 )
-from app.services.product_reference_parser import parse_product_reference
 
 logger = logging.getLogger(__name__)
 
@@ -214,7 +214,7 @@ async def parse_product_request_profile(
     conversation_memory: str = "",
     timeout_seconds: float | None = None,
 ) -> dict[str, Any]:
-    from app.services.llm_service import profile_chat_completion, get_llm_settings
+    from app.services.llm_service import get_llm_settings, profile_chat_completion
 
     fallback = build_fallback_product_request_profile(user_message, language)
     cfg = await get_llm_settings()
@@ -334,7 +334,7 @@ async def parse_scene_request_profile(
     conversation_memory: str = "",
     timeout_seconds: float | None = None,
 ) -> dict[str, Any]:
-    from app.services.llm_service import profile_chat_completion, get_llm_settings
+    from app.services.llm_service import get_llm_settings, profile_chat_completion
 
     cfg = await get_llm_settings()
     timeout = float(timeout_seconds or cfg.get("profile_llm_timeout_seconds") or 4)

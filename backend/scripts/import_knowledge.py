@@ -90,7 +90,7 @@ def main() -> None:
     if not os.path.isfile(in_path):
         raise SystemExit(f"Input file not found: {in_path}")
 
-    with open(in_path, "r", encoding="utf-8") as f:
+    with open(in_path, encoding="utf-8") as f:
         entries = json.load(f)
     if not isinstance(entries, list):
         raise SystemExit(f"Expected JSON array in {in_path}")

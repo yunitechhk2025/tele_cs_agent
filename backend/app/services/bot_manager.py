@@ -1,10 +1,10 @@
 import logging
 from typing import Optional
 
+from sqlalchemy import select
 from telegram import Bot
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 
-from sqlalchemy import select
 from app.database import AsyncSessionLocal
 from app.models import TelegramBot
 
@@ -14,7 +14,7 @@ _running_bots: dict[int, Application] = {}
 
 
 def _make_handlers(bot_id: int):
-    from app.telegram_bot import make_start_handler, make_message_handler, make_close_handler
+    from app.telegram_bot import make_close_handler, make_message_handler, make_start_handler
 
     return [
         CommandHandler("start", make_start_handler(bot_id)),

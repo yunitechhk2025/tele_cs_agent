@@ -6,6 +6,7 @@ import logging
 import os
 import signal
 import uuid
+from contextlib import suppress
 from typing import Any
 
 from sqlalchemy import select
@@ -223,20 +224,16 @@ async def run_worker() -> None:
 
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
-        try:
+        with suppress(NotImplementedError):
             loop.add_signal_handler(sig, _stop)
-        except NotImplementedError:
-            pass
 
     logger.info("Background worker started worker_id=%s", worker_id)
     while not stop_event.is_set():
         await requeue_stale_jobs(stale_after_seconds=DEFAULT_STALE_AFTER_SECONDS)
         jobs = await claim_due_jobs(worker_id, limit=DEFAULT_CLAIM_LIMIT)
         if not jobs:
-            try:
+            with suppress(TimeoutError):
                 await asyncio.wait_for(stop_event.wait(), timeout=DEFAULT_WORKER_POLL_SECONDS)
-            except asyncio.TimeoutError:
-                pass
             continue
         for job in jobs:
             await process_background_job(job)

@@ -19,7 +19,6 @@ from app.database import AsyncSessionLocal
 from app.models import ProductEntry
 from app.services.product_taxonomy import infer_product_metadata
 
-
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 

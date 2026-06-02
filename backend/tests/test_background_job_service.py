@@ -3,7 +3,7 @@ import unittest
 import uuid
 from datetime import datetime, timedelta
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, update
 
 from app.database import AsyncSessionLocal, engine
 from app.models import BackgroundJob
