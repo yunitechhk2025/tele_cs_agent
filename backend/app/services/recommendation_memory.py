@@ -353,10 +353,7 @@ async def _legacy_turns_from_outbound_events(
             product_id = _event_product_id(event.url)
             if not slot or not product_id:
                 continue
-            if slot == 1 and current:
-                groups.append(current)
-                current = []
-            elif current and slot <= last_slot:
+            if current and (slot == 1 or slot <= last_slot):
                 groups.append(current)
                 current = []
             current.append(event)

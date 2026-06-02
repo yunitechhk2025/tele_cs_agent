@@ -1043,13 +1043,11 @@ def _is_context_language_reply(text: str) -> bool:
         return True
     if len(stripped) <= 24 and re.fullmatch(r"[A-Za-z]?\d[\w#-]*", stripped):
         return True
-    if (
+    return (
         len(stripped) <= 24
-        and re.fullmatch(r"[#A-Za-z0-9_-]+", stripped)
+        and re.fullmatch(r"[#A-Za-z0-9_-]+", stripped) is not None
         and not re.search(r"[A-Za-z]{3,}", stripped)
-    ):
-        return True
-    return False
+    )
 
 
 def resolve_turn_language(

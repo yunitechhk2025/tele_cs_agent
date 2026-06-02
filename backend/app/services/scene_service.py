@@ -1228,7 +1228,7 @@ async def _run_scene_generation_for_record(
             await db.commit()
             await db.refresh(current)
             return current
-    except TimeoutError:
+    except TimeoutError as exc:
         duration_ms = int((time.perf_counter() - total_start) * 1000)
         shutil.rmtree(_scene_upload_root() / str(record_id), ignore_errors=True)
         timeout_message = f"Scene generation timed out after {timeout_seconds} seconds"
@@ -1241,7 +1241,7 @@ async def _run_scene_generation_for_record(
         current = await _mark_scene_generation_failed(record_id, duration_ms, timeout_message)
         if current:
             return current
-        raise RuntimeError(timeout_message)
+        raise RuntimeError(timeout_message) from exc
     except asyncio.CancelledError:
         shutil.rmtree(_scene_upload_root() / str(record_id), ignore_errors=True)
         logger.info("Scene generation task %s was cancelled", record_id)

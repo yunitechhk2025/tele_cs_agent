@@ -57,10 +57,7 @@ OUTPUT_FIELD_ALIASES = {
 def _read_value(source: Any, field: str) -> str:
     aliases = SOURCE_FIELD_ALIASES.get(field, (field,))
     for key in aliases:
-        if isinstance(source, dict):
-            value = source.get(key)
-        else:
-            value = getattr(source, key, None)
+        value = source.get(key) if isinstance(source, dict) else getattr(source, key, None)
         if value:
             return str(value).strip()
     return ""

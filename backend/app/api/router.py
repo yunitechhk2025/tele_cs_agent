@@ -368,10 +368,10 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
         if not username:
             raise HTTPException(status_code=401, detail="Invalid token")
         return username
-    except jwt.ExpiredSignatureError:
-        raise HTTPException(status_code=401, detail="Token expired")
-    except jwt.InvalidTokenError:
-        raise HTTPException(status_code=401, detail="Invalid token")
+    except jwt.ExpiredSignatureError as exc:
+        raise HTTPException(status_code=401, detail="Token expired") from exc
+    except jwt.InvalidTokenError as exc:
+        raise HTTPException(status_code=401, detail="Invalid token") from exc
 
 
 @router.post("/auth/login", response_model=TokenResponse)
@@ -722,9 +722,11 @@ async def reply_to_conversation(
         chat_id = int(conversation.telegram_chat_id)
         try:
             await bot_instance.send_message(chat_id=chat_id, text=req.content)
-        except Exception as e:
-            logger.error(f"Failed to send reply via Telegram: {e}")
-            raise HTTPException(status_code=500, detail="Failed to send message via Telegram")
+        except Exception as exc:
+            logger.error(f"Failed to send reply via Telegram: {exc}")
+            raise HTTPException(
+                status_code=500, detail="Failed to send message via Telegram"
+            ) from exc
 
         agent_lang = await detect_language(req.content)
         logger.info(

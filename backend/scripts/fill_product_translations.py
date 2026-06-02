@@ -114,10 +114,7 @@ def _strip_json_fence(raw: str) -> str:
 
 def parse_translation_response(raw: str) -> dict[tuple[int, str], dict[str, str]]:
     data = json.loads(_strip_json_fence(raw))
-    if isinstance(data, dict):
-        rows = data.get("translations") or data.get("items") or []
-    else:
-        rows = data
+    rows = (data.get("translations") or data.get("items") or []) if isinstance(data, dict) else data
     if not isinstance(rows, list):
         raise ValueError("translation response must contain a translations array")
 
