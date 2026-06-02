@@ -831,16 +831,18 @@ export default function Conversations() {
     loadDetail(selectedId);
   }, [selectedId, loadDetail]);
 
+  const aiDraft = detail?.ai_draft;
+
   useEffect(() => {
-    if (!detail?.ai_draft) {
+    if (!aiDraft) {
       setEditingAiDraft(false);
       setAiDraftText('');
       return;
     }
     if (!editingAiDraft) {
-      setAiDraftText(detail.ai_draft.draft_text || '');
+      setAiDraftText(aiDraft.draft_text || '');
     }
-  }, [detail?.ai_draft?.id, detail?.ai_draft?.draft_text, editingAiDraft]);
+  }, [aiDraft, editingAiDraft]);
 
   useEffect(() => {
     if (!detail?.ai_draft?.auto_send_at) {

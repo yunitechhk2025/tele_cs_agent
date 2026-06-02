@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Alert,
@@ -156,7 +156,7 @@ export default function Observability() {
     response_kind: responseKind || undefined,
   }), [range, botId, language, intent, responseKind]);
 
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
     setLoading(true);
     try {
       const [{ data: summaryData }, { data: alertData }, { data: trendData }] = await Promise.all([
@@ -180,7 +180,7 @@ export default function Observability() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [params]);
 
   const loadBots = async () => {
     try {
@@ -208,7 +208,7 @@ export default function Observability() {
 
   useEffect(() => {
     loadData();
-  }, [params]);
+  }, [loadData]);
 
   const ackAlert = async (id: number) => {
     setAlertLoading(true);
