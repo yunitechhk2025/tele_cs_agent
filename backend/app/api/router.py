@@ -13,7 +13,7 @@ import shutil
 import uuid
 from datetime import datetime, timedelta
 from io import BytesIO
-from typing import Any, Optional
+from typing import Any
 
 import jwt
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
@@ -432,10 +432,10 @@ async def dashboard_stats(
 @router.get("/observability/summary", response_model=ObservabilitySummarySchema)
 async def observability_summary(
     range_key: str = Query("24h", alias="range"),
-    bot_id: Optional[int] = Query(None),
-    language: Optional[str] = Query(None),
-    intent: Optional[str] = Query(None),
-    response_kind: Optional[str] = Query(None),
+    bot_id: int | None = Query(None),
+    language: str | None = Query(None),
+    intent: str | None = Query(None),
+    response_kind: str | None = Query(None),
     db: AsyncSession = Depends(get_db),
     _: str = Depends(get_current_user),
 ):
@@ -452,10 +452,10 @@ async def observability_summary(
 @router.get("/observability/stages", response_model=list[ObservabilityStageMetricSchema])
 async def observability_stages(
     range_key: str = Query("24h", alias="range"),
-    bot_id: Optional[int] = Query(None),
-    language: Optional[str] = Query(None),
-    intent: Optional[str] = Query(None),
-    response_kind: Optional[str] = Query(None),
+    bot_id: int | None = Query(None),
+    language: str | None = Query(None),
+    intent: str | None = Query(None),
+    response_kind: str | None = Query(None),
     db: AsyncSession = Depends(get_db),
     _: str = Depends(get_current_user),
 ):
@@ -473,10 +473,10 @@ async def observability_stages(
 @router.get("/observability/stage-trends", response_model=ObservabilityStageTrendResponseSchema)
 async def observability_stage_trends(
     range_key: str = Query("24h", alias="range"),
-    bot_id: Optional[int] = Query(None),
-    language: Optional[str] = Query(None),
-    intent: Optional[str] = Query(None),
-    response_kind: Optional[str] = Query(None),
+    bot_id: int | None = Query(None),
+    language: str | None = Query(None),
+    intent: str | None = Query(None),
+    response_kind: str | None = Query(None),
     db: AsyncSession = Depends(get_db),
     _: str = Depends(get_current_user),
 ):
@@ -493,10 +493,10 @@ async def observability_stage_trends(
 @router.get("/observability/llm-calls", response_model=list[ObservabilityLLMMetricSchema])
 async def observability_llm_calls(
     range_key: str = Query("24h", alias="range"),
-    bot_id: Optional[int] = Query(None),
-    language: Optional[str] = Query(None),
-    intent: Optional[str] = Query(None),
-    response_kind: Optional[str] = Query(None),
+    bot_id: int | None = Query(None),
+    language: str | None = Query(None),
+    intent: str | None = Query(None),
+    response_kind: str | None = Query(None),
     db: AsyncSession = Depends(get_db),
     _: str = Depends(get_current_user),
 ):
@@ -514,10 +514,10 @@ async def observability_llm_calls(
 @router.get("/observability/export")
 async def observability_export(
     range_key: str = Query("24h", alias="range"),
-    bot_id: Optional[int] = Query(None),
-    language: Optional[str] = Query(None),
-    intent: Optional[str] = Query(None),
-    response_kind: Optional[str] = Query(None),
+    bot_id: int | None = Query(None),
+    language: str | None = Query(None),
+    intent: str | None = Query(None),
+    response_kind: str | None = Query(None),
     db: AsyncSession = Depends(get_db),
     _: str = Depends(get_current_user),
 ):
@@ -546,7 +546,7 @@ async def observability_export(
 
 @router.get("/observability/alerts", response_model=list[ObservabilityAlertSchema])
 async def observability_alerts(
-    status: Optional[str] = Query(None),
+    status: str | None = Query(None),
     limit: int = Query(100, ge=1, le=500),
     db: AsyncSession = Depends(get_db),
     _: str = Depends(get_current_user),
@@ -588,8 +588,8 @@ async def observability_update_alert_settings(
 
 @router.get("/conversations", response_model=list[ConversationSchema])
 async def list_conversations(
-    status: Optional[str] = Query(None),
-    search: Optional[str] = Query(None),
+    status: str | None = Query(None),
+    search: str | None = Query(None),
     skip: int = 0,
     limit: int = 50,
     db: AsyncSession = Depends(get_db),
@@ -1346,8 +1346,8 @@ async def simulator_get_events(
 
 @router.get("/knowledge", response_model=list[KnowledgeEntrySchema])
 async def list_knowledge(
-    category: Optional[str] = Query(None),
-    search: Optional[str] = Query(None),
+    category: str | None = Query(None),
+    search: str | None = Query(None),
     skip: int = 0,
     limit: int = 50,
     db: AsyncSession = Depends(get_db),
@@ -1446,7 +1446,7 @@ def _knowledge_text_from_upload(filename: str | None, content: bytes) -> str:
 @router.post("/knowledge/upload")
 async def upload_knowledge_file(
     file: UploadFile = File(...),
-    category: Optional[str] = Query(None),
+    category: str | None = Query(None),
     db: AsyncSession = Depends(get_db),
     _: str = Depends(get_current_user),
 ):
@@ -1493,8 +1493,8 @@ def _split_text_into_chunks(text: str, max_chunk_size: int = 1500) -> list[str]:
 
 @router.get("/contracts", response_model=list[ContractSchema])
 async def list_contracts(
-    status: Optional[str] = Query(None),
-    conversation_id: Optional[int] = Query(None),
+    status: str | None = Query(None),
+    conversation_id: int | None = Query(None),
     skip: int = 0,
     limit: int = 50,
     db: AsyncSession = Depends(get_db),
@@ -1843,8 +1843,8 @@ def _ensure_upload_dir():
 
 @router.get("/files", response_model=list[FileEntrySchema])
 async def list_files(
-    category: Optional[str] = Query(None),
-    search: Optional[str] = Query(None),
+    category: str | None = Query(None),
+    search: str | None = Query(None),
     skip: int = 0,
     limit: int = 50,
     db: AsyncSession = Depends(get_db),
@@ -1868,7 +1868,7 @@ async def upload_file(
     file: UploadFile = File(...),
     description: str = Query(""),
     tags: str = Query(""),
-    category: Optional[str] = Query(None),
+    category: str | None = Query(None),
     db: AsyncSession = Depends(get_db),
     _: str = Depends(get_current_user),
 ):
@@ -2136,12 +2136,12 @@ async def get_products_meta(
 
 @router.get("/products", response_model=list[ProductEntryListSchema])
 async def list_products(
-    keyword: Optional[str] = Query(None),
-    brand: Optional[str] = Query(None),
-    space: Optional[str] = Query(None),
-    style: Optional[str] = Query(None),
-    series: Optional[str] = Query(None),
-    color: Optional[str] = Query(None),
+    keyword: str | None = Query(None),
+    brand: str | None = Query(None),
+    space: str | None = Query(None),
+    style: str | None = Query(None),
+    series: str | None = Query(None),
+    color: str | None = Query(None),
     skip: int = Query(0, ge=0),
     limit: int = Query(40, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
@@ -2711,10 +2711,10 @@ async def scene_library_filters(
 @router.get("/scene-library", response_model=list[SceneLibraryItemSchema])
 async def list_scene_library(
     view: str = Query("library", pattern="^(library|review|generating|failed)$"),
-    brand: Optional[str] = Query(None),
-    space: Optional[str] = Query(None),
-    style: Optional[str] = Query(None),
-    scene_name: Optional[str] = Query(None),
+    brand: str | None = Query(None),
+    space: str | None = Query(None),
+    style: str | None = Query(None),
+    scene_name: str | None = Query(None),
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
     db: AsyncSession = Depends(get_db),

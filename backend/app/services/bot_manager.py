@@ -1,5 +1,4 @@
 import logging
-from typing import Optional
 
 from sqlalchemy import select
 from telegram import Bot
@@ -94,7 +93,7 @@ async def stop_all_bots():
     logger.info("All bots stopped")
 
 
-def get_bot_instance(bot_id: int) -> Optional[Bot]:
+def get_bot_instance(bot_id: int) -> Bot | None:
     app = _running_bots.get(bot_id)
     return app.bot if app else None
 
@@ -107,7 +106,7 @@ def get_running_bot_ids() -> list[int]:
     return list(_running_bots.keys())
 
 
-def get_any_bot_instance() -> Optional[Bot]:
+def get_any_bot_instance() -> Bot | None:
     if _running_bots:
         return next(iter(_running_bots.values())).bot
     return None
