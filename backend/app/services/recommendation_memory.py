@@ -224,7 +224,7 @@ def resolve_product_reference_from_history(
     products_by_id: dict[int, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Resolve references like "second bed" against recommendation turns."""
-    empty = {
+    empty: dict[str, Any] = {
         "target_product_id": None,
         "turn_id": None,
         "turn_index": None,

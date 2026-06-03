@@ -1083,7 +1083,12 @@ async def _run_scene_generation_for_record(
     timeout_seconds: int = BACKEND_SCENE_TIMEOUT_SECONDS,
     conversation_id: int | None = None,
 ) -> SceneGenerationRecord:
-    """执行单条场景图记录的完整后台生成流程."""
+    """执行单条场景图记录的完整后台生成流程.
+
+    流程先为主商品选择跨品类搭配，再持久化 prompt 和关联商品，最后调用图像模型。
+    搭配选择允许超时降级到启发式候选，图像生成则必须在失败或超时时标记记录状态
+    并清理临时上传目录，保证前端、后台任务和客户投递路径看到同一个最终状态。
+    """
     total_start = time.perf_counter()
     cfg = await get_llm_settings()
     default_scene, default_style = _scene_defaults(primary_product)
@@ -1170,6 +1175,7 @@ async def _run_scene_generation_for_record(
     reference_items = reference_image_items or await _build_default_reference_items(
         primary_product, related_products
     )
+    # prompt 在写入记录后才进入图像阶段，便于后台排查失败任务时复现第三方请求意图。
     prompt = _build_scene_prompt(
         primary_product,
         related_products,

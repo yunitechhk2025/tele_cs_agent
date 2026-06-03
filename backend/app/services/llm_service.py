@@ -11,6 +11,7 @@ import logging
 import re
 import time
 import unicodedata
+from collections.abc import Iterable
 from typing import Any
 
 from anthropic import AsyncAnthropic
@@ -846,7 +847,8 @@ async def classify_customer_intent(
             operation="intent_classification",
         )
         data = _extract_json_object(raw)
-        slots = data.get("slots") if isinstance(data.get("slots"), dict) else {}
+        raw_slots = data.get("slots")
+        slots: dict[str, Any] = raw_slots if isinstance(raw_slots, dict) else {}
         target_id = slots.get("target_product_id")
         if target_id is not None:
             try:
@@ -1099,7 +1101,7 @@ async def analyze_scene_image_request(
         }
 
     recent_product_ids = recent_product_ids or []
-    recent_lines = []
+    recent_lines: list[str] = []
     for p in products:
         if p.get("id") in recent_product_ids:
             recent_lines.append(
@@ -2353,6 +2355,7 @@ def _coerce_product_request_profile(
     profile: dict[str, set[str]] = {dimension: set() for dimension in PRODUCT_MATCH_TABLES}
     for dimension in PRODUCT_MATCH_TABLES:
         raw_values = request_profile.get(dimension) or []
+        raw_iterable: Iterable[Any]
         if isinstance(raw_values, str):
             raw_iterable = [raw_values]
         elif isinstance(raw_values, list | tuple | set):
@@ -2644,6 +2647,12 @@ def _score_product_candidate(
     profile: dict[str, set[str]],
     query_terms: list[str] | None = None,
 ) -> int:
+    """按客户约束、商品可展示性和精确查询词给候选商品打分.
+
+    分类约束承担硬过滤的近似职责，命中会明显加分，不命中会重罚；风格、空间、
+    颜色等软约束只做较小扣分，避免因为资料缺失误杀可推荐商品。图片和链接是
+    客户可理解推荐的关键资产，因此在同等匹配度下提升可展示商品的排序。
+    """
     product_text = _product_match_text(product)
     has_constraints = any(profile.values())
     score = 0
@@ -2730,8 +2739,11 @@ def _local_product_candidates(
 def _fallback_product_ids(candidates: list[tuple[dict, int]], count: int = 3) -> list[int]:
     ids: list[int] = []
     for product, _score in candidates:
+        product_id = product.get("id")
+        if product_id is None:
+            continue
         try:
-            pid = int(product.get("id"))
+            pid = int(product_id)
         except (TypeError, ValueError):
             continue
         if pid not in ids:
@@ -2808,8 +2820,11 @@ def _reconcile_product_selection(
     candidate_by_id: dict[int, dict[str, Any]] = {}
     score_by_id: dict[int, int] = {}
     for product, score in candidates:
+        product_id = product.get("id")
+        if product_id is None:
+            continue
         try:
-            pid = int(product.get("id"))
+            pid = int(product_id)
         except (TypeError, ValueError):
             continue
         candidate_by_id[pid] = product
@@ -2855,8 +2870,11 @@ def _protected_exact_product_ids(
         product_text = _product_match_text(product)
         if not any(term in product_text for term in query_terms):
             continue
+        product_id = product.get("id")
+        if product_id is None:
+            continue
         try:
-            pid = int(product.get("id"))
+            pid = int(product_id)
         except (TypeError, ValueError):
             continue
         if pid not in ids:

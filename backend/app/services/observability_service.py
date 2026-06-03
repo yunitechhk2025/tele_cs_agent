@@ -14,6 +14,7 @@ import logging
 import time
 import zipfile
 from collections import defaultdict
+from collections.abc import Sequence
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -109,7 +110,7 @@ def _safe_ratio(numerator: int, denominator: int) -> float:
     return _round_rate(numerator / denominator)
 
 
-def percentile(values: list[int | None], percent: int) -> int | None:
+def percentile(values: Sequence[int | None], percent: int) -> int | None:
     clean = sorted(int(value) for value in values if value is not None)
     if not clean:
         return None
@@ -117,7 +118,7 @@ def percentile(values: list[int | None], percent: int) -> int | None:
     return clean[rank - 1]
 
 
-def _avg(values: list[int | None]) -> int:
+def _avg(values: Sequence[int | None]) -> int:
     clean = [int(value) for value in values if value is not None]
     if not clean:
         return 0
@@ -216,7 +217,12 @@ def build_observability_summary(
     llm_calls: list[dict[str, Any]],
     scenes: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """把原始观测行聚合为后台首页使用的 KPI、阶段表、LLM 表和告警样本."""
+    """把原始观测行聚合为后台首页使用的 KPI、阶段表、LLM 表和告警样本.
+
+    聚合结果同时服务页面展示、导出和告警判定，所以这里保留 stage/intent 的
+    code key，并只在返回结构里补充展示标签。所有百分位和失败率都允许空窗口，
+    以便新部署或筛选条件很窄时仍返回稳定 schema。
+    """
     total_turns = len(turns)
     success_count = sum(1 for row in turns if bool(_get(row, "success", True)))
     failed_count = total_turns - success_count
@@ -260,6 +266,7 @@ def build_observability_summary(
         labels = [
             str(_get(row, "stage_label", "")) for row in rows if str(_get(row, "stage_label", ""))
         ]
+        # 历史记录中的 label 可能来自旧版本，最终展示统一按当前 STAGE_LABELS 兜底映射。
         stage_metrics.append(
             {
                 "stage_key": stage_key,

@@ -185,7 +185,10 @@ def get_localized_static_text(mapping: dict[str, str], language: str | None) -> 
             return mapping["zh-Hant"]
         if "zh" in mapping:
             return to_traditional_chinese(mapping["zh"])
-    return mapping.get(lang) or mapping.get(DEFAULT_LANGUAGE) or next(iter(mapping.values()), "")
+    fallback_text = mapping.get(lang) or mapping.get(DEFAULT_LANGUAGE)
+    if fallback_text is not None:
+        return fallback_text
+    return next(iter(mapping.values()), "")
 
 
 def get_localized_static_dict(
@@ -201,4 +204,7 @@ def get_localized_static_dict(
             return mapping["zh-Hant"]
         if "zh" in mapping:
             return {key: to_traditional_chinese(value) for key, value in mapping["zh"].items()}
-    return mapping.get(lang) or mapping.get(DEFAULT_LANGUAGE) or next(iter(mapping.values()), {})
+    fallback_dict = mapping.get(lang) or mapping.get(DEFAULT_LANGUAGE)
+    if fallback_dict is not None:
+        return fallback_dict
+    return next(iter(mapping.values()), {})

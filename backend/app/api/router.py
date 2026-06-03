@@ -1033,7 +1033,12 @@ async def _build_simulator_scene_events(
     conversation_language: str,
     db: AsyncSession,
 ) -> list[TelegramSimulatorEventSchema]:
-    """根据场景图记录重建模拟器时间线中的图片、文案和商品链接事件."""
+    """根据场景图记录重建模拟器时间线中的图片、文案和商品链接事件.
+
+    模拟器回放的是历史会话，不是当前界面的即时语言。场景图记录会优先回溯触发
+    它的用户消息语言，再生成同语言的 intro、失败文案和商品链接，避免历史回放
+    因当前 conversation.language 改变而漂移。
+    """
     record_language = await _resolve_scene_record_language(record, conversation_language, db)
     ui_lang = ui_scene_language(record_language)
     created_at = record.updated_at or record.created_at or datetime.utcnow()

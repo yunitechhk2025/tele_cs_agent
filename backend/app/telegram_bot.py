@@ -1889,6 +1889,13 @@ async def process_customer_text_message(
     typing_task: asyncio.Task,
     metric_id: int | None = None,
 ):
+    """编排单条客户文本消息从意图识别到回复发送的完整链路.
+
+    这个函数是 Telegram、后台模拟器和人工协作模式共用的入口。它必须在同一条
+    turn metric 中记录阶段耗时，并在商品推荐、商品详情、场景图、文件请求、
+    转人工和普通问答之间保持上下文连续。失败时要停止 typing、关闭当前阶段、
+    标记会话失败，并尽量发出本地化兜底文案，避免客户侧一直等待。
+    """
     first_response_marked = False
     current_step_key: str | None = None
     current_step_detail = ""
@@ -1899,6 +1906,7 @@ async def process_customer_text_message(
 
     async def stage(stage_key: str, detail: str = "") -> None:
         nonlocal current_step_key, current_step_detail, current_step_started_at, current_step_metadata, step_index
+        # 每次切换阶段时先关闭上一阶段，保证观测面板能看到完整的串行耗时。
         now = datetime.utcnow()
         if current_step_key and current_step_started_at:
             await record_turn_step(
@@ -2257,6 +2265,7 @@ async def process_customer_text_message(
         product_request_profile: dict[str, Any] | None = None
         scene_request_profile: dict[str, Any] | None = None
         scene_reference_product_ids = latest_recommended_product_ids or recent_scene_product_ids
+        # 推荐轮次历史优先于旧的 scene_state，避免客户说“第二个/上一款”时被旧扁平记忆误导。
         history_reference = resolve_product_reference_from_history(
             user_message,
             recommendation_turns,
