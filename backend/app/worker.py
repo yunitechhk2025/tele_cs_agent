@@ -84,8 +84,9 @@ async def _deliver_scene_generation(record: SceneGenerationRecord, payload: dict
         return
 
     language = payload.get("reply_language") or conversation.language or "en"
-    delivery_context = (
-        payload.get("delivery_context") if isinstance(payload.get("delivery_context"), dict) else {}
+    raw_delivery_context = payload.get("delivery_context")
+    delivery_context: dict[str, Any] = (
+        raw_delivery_context if isinstance(raw_delivery_context, dict) else {}
     )
     from app.telegram_bot import build_scene_result_delivery
 

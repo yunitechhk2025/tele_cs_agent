@@ -52,23 +52,7 @@ def extract_recommendation_profile(text: str) -> dict[str, list[str]]:
 
 def _normalize_message(text: str) -> str:
     return _normalize_match_text(
-        str(text or "").translate(
-            str.maketrans(
-                {
-                    "１": "1",
-                    "２": "2",
-                    "３": "3",
-                    "４": "4",
-                    "５": "5",
-                    "６": "6",
-                    "７": "7",
-                    "８": "8",
-                    "９": "9",
-                    "＃": "#",
-                    "﹟": "#",
-                }
-            )
-        )
+        str(text or "").translate(str.maketrans("１２３４５６７８９＃﹟", "123456789##"))
     )
 
 
@@ -116,6 +100,8 @@ def _turn_matches_categories(
         if not isinstance(item, dict):
             continue
         product_id = item.get("product_id")
+        if product_id is None:
+            continue
         try:
             product = products_by_id.get(int(product_id))
         except (TypeError, ValueError):
@@ -191,8 +177,11 @@ def _match_product_name(
         for item in turn.get("items") or []:
             if not isinstance(item, dict):
                 continue
+            raw_product_id = item.get("product_id")
+            if raw_product_id is None:
+                continue
             try:
-                product_id = int(item.get("product_id"))
+                product_id = int(raw_product_id)
             except (TypeError, ValueError):
                 continue
             product = products_by_id.get(product_id)
@@ -287,8 +276,9 @@ def resolve_product_reference_from_history(
             "needs_clarification": True,
             "reason": "slot_out_of_range_for_recommendation_turn",
         }
+    raw_product_id = item.get("product_id")
     try:
-        product_id = int(item.get("product_id"))
+        product_id = int(raw_product_id) if raw_product_id is not None else None
     except (TypeError, ValueError):
         product_id = None
     return {
