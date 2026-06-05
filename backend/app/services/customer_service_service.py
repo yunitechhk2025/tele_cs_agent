@@ -43,6 +43,7 @@ DEFAULT_CUSTOMER_SERVICE_MODE = "ai_auto"
 DEFAULT_AUTO_SEND_SECONDS = 10
 
 PENDING_AI_REPLY_SEND_LOCKS: dict[int, asyncio.Lock] = {}
+TelegramDeliveryTarget = tuple[Bot, str]
 
 
 def _sequence_clock():
@@ -98,6 +99,32 @@ async def _resolve_bot_for_conversation(db, conversation: Conversation) -> Bot |
     return Bot(token=token)
 
 
+async def _prepare_telegram_delivery_target(
+    db,
+    conversation: Conversation,
+    draft: PendingAIReply,
+) -> TelegramDeliveryTarget | None:
+    """解析 Telegram 投递目标；不可投递时保留草稿，等待人工处理或重试."""
+    bot_instance = await _resolve_bot_for_conversation(db, conversation)
+    telegram_chat_id = conversation.telegram_chat_id
+    if bot_instance is not None and telegram_chat_id:
+        return bot_instance, telegram_chat_id
+
+    draft.status = "pending"
+    draft.error_message = "Telegram bot not available"
+    await db.commit()
+    return None
+
+
+def _require_telegram_delivery_target(
+    target: TelegramDeliveryTarget | None,
+) -> TelegramDeliveryTarget:
+    """阻止非模拟器发送分支绕过前置的 Bot 与 chat id 校验."""
+    if target is None:
+        raise RuntimeError("Telegram delivery target missing after preflight")
+    return target
+
+
 async def _append_outbound_event(
     db,
     conversation_id: int,
@@ -140,13 +167,10 @@ async def _send_product_recommendation_payload(
     is_simulator = (conversation.telegram_chat_id or "").startswith("sim-")
     next_created_at = _sequence_clock()
 
-    bot_instance = None
+    telegram_target = None
     if not is_simulator:
-        bot_instance = await _resolve_bot_for_conversation(db, conversation)
-        if not bot_instance or not conversation.telegram_chat_id:
-            draft.status = "pending"
-            draft.error_message = "Telegram bot not available"
-            await db.commit()
+        telegram_target = await _prepare_telegram_delivery_target(db, conversation, draft)
+        if telegram_target is None:
             return None
 
     if intro_text:
@@ -161,9 +185,8 @@ async def _send_product_recommendation_payload(
                 )
             )
         else:
-            await bot_instance.send_message(
-                chat_id=int(conversation.telegram_chat_id), text=intro_text
-            )
+            bot_instance, telegram_chat_id = _require_telegram_delivery_target(telegram_target)
+            await bot_instance.send_message(chat_id=int(telegram_chat_id), text=intro_text)
             db.add(
                 Message(
                     conversation_id=conversation.id,
@@ -202,12 +225,13 @@ async def _send_product_recommendation_payload(
                     )
                 )
         else:
+            bot_instance, telegram_chat_id = _require_telegram_delivery_target(telegram_target)
             if image_path:
                 full = os.path.join("/app", image_path)
                 if os.path.exists(full):
                     with open(full, "rb") as fh:
                         await bot_instance.send_photo(
-                            chat_id=int(conversation.telegram_chat_id),
+                            chat_id=int(telegram_chat_id),
                             photo=fh,
                             caption=caption or None,
                             parse_mode=parse_mode,
@@ -225,7 +249,7 @@ async def _send_product_recommendation_payload(
                     continue
             if caption:
                 await bot_instance.send_message(
-                    chat_id=int(conversation.telegram_chat_id),
+                    chat_id=int(telegram_chat_id),
                     text=caption,
                     parse_mode=parse_mode,
                 )
@@ -242,9 +266,8 @@ async def _send_product_recommendation_payload(
                 )
             )
         else:
-            await bot_instance.send_message(
-                chat_id=int(conversation.telegram_chat_id), text=followup_text
-            )
+            bot_instance, telegram_chat_id = _require_telegram_delivery_target(telegram_target)
+            await bot_instance.send_message(chat_id=int(telegram_chat_id), text=followup_text)
             db.add(
                 Message(
                     conversation_id=conversation.id,
@@ -315,13 +338,10 @@ async def _send_scene_result_payload(
     is_simulator = (conversation.telegram_chat_id or "").startswith("sim-")
     next_created_at = _sequence_clock()
 
-    bot_instance = None
+    telegram_target = None
     if not is_simulator:
-        bot_instance = await _resolve_bot_for_conversation(db, conversation)
-        if not bot_instance or not conversation.telegram_chat_id:
-            draft.status = "pending"
-            draft.error_message = "Telegram bot not available"
-            await db.commit()
+        telegram_target = await _prepare_telegram_delivery_target(db, conversation, draft)
+        if telegram_target is None:
             return None
 
     if intro_text:
@@ -336,9 +356,8 @@ async def _send_scene_result_payload(
                 )
             )
         else:
-            await bot_instance.send_message(
-                chat_id=int(conversation.telegram_chat_id), text=intro_text
-            )
+            bot_instance, telegram_chat_id = _require_telegram_delivery_target(telegram_target)
+            await bot_instance.send_message(chat_id=int(telegram_chat_id), text=intro_text)
             db.add(
                 Message(
                     conversation_id=conversation.id,
@@ -367,7 +386,8 @@ async def _send_scene_result_payload(
         if not os.path.exists(full):
             continue
         with open(full, "rb") as fh:
-            await bot_instance.send_photo(chat_id=int(conversation.telegram_chat_id), photo=fh)
+            bot_instance, telegram_chat_id = _require_telegram_delivery_target(telegram_target)
+            await bot_instance.send_photo(chat_id=int(telegram_chat_id), photo=fh)
         await _append_outbound_event(
             db,
             conversation.id,
@@ -389,8 +409,9 @@ async def _send_scene_result_payload(
                 )
             )
         else:
+            bot_instance, telegram_chat_id = _require_telegram_delivery_target(telegram_target)
             await bot_instance.send_message(
-                chat_id=int(conversation.telegram_chat_id),
+                chat_id=int(telegram_chat_id),
                 text=links_text,
                 parse_mode=parse_mode,
                 disable_web_page_preview=True,
