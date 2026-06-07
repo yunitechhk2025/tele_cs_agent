@@ -15,7 +15,7 @@ import re
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, TypedDict
 
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
@@ -100,6 +100,17 @@ from app.services.scene_service import build_scene_record_response, start_scene_
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
+
+
+class SceneRequestState(TypedDict):
+    """客户场景图请求在主路由中的规范化中间态."""
+
+    is_scene_request: bool
+    scene_name: str
+    style_hint: str
+    target_product_id: int | None
+    reason: str
+
 
 WELCOME_MESSAGES = {
     "zh": "您好！👋 我是智能客服助手。有什么可以帮助您的吗？",
@@ -1109,28 +1120,66 @@ def resolve_recommended_product_reference_locally(
 
 
 def _context_text(user_message: str) -> str:
-    return (
-        (user_message or "")
-        .strip()
-        .lower()
-        .translate(
-            str.maketrans(
-                {
-                    "１": "1",
-                    "２": "2",
-                    "３": "3",
-                    "４": "4",
-                    "５": "5",
-                    "６": "6",
-                    "７": "7",
-                    "８": "8",
-                    "９": "9",
-                    "＃": "#",
-                    "﹟": "#",
-                }
-            )
-        )
-    )
+    full_width_translation: dict[str, str | int | None] = {
+        "１": "1",
+        "２": "2",
+        "３": "3",
+        "４": "4",
+        "５": "5",
+        "６": "6",
+        "７": "7",
+        "８": "8",
+        "９": "9",
+        "＃": "#",
+        "﹟": "#",
+    }
+    return (user_message or "").strip().lower().translate(str.maketrans(full_width_translation))
+
+
+def _dict_value(value: Any) -> dict[str, Any]:
+    """把 LLM/router 的动态对象收敛成字符串 key 字典，避免下游路由读到 None."""
+    if not isinstance(value, dict):
+        return {}
+    return {str(key): item for key, item in value.items()}
+
+
+def _string_list(value: Any) -> list[str]:
+    """规范化 router secondary_intents，保证后续意图集合判断只处理字符串."""
+    if not isinstance(value, list):
+        return []
+    normalized: list[str] = []
+    for item in value:
+        text = str(item or "").strip()
+        if text:
+            normalized.append(text)
+    return normalized
+
+
+def _int_value(value: Any) -> int | None:
+    """把 LLM 返回的 ID/slot 值收敛成 int；不可安全转换时保留未命中语义."""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value) if value.is_integer() else None
+    text = str(value).strip()
+    return int(text) if text.isdigit() else None
+
+
+def _int_list(value: Any) -> list[int]:
+    if not isinstance(value, list):
+        return []
+    result: list[int] = []
+    for item in value:
+        parsed = _int_value(item)
+        if parsed is not None:
+            result.append(parsed)
+    return result
+
+
+def _text_value(value: Any) -> str:
+    return str(value or "").strip()
 
 
 def is_recent_product_followup(user_message: str) -> bool:
@@ -2073,12 +2122,8 @@ async def process_customer_text_message(
             )
         intent_name = intent.get("primary_intent") or "general_question"
         intent_confidence = float(intent.get("confidence") or 0.0)
-        intent_slots = intent.get("slots") if isinstance(intent.get("slots"), dict) else {}
-        secondary_intents = (
-            intent.get("secondary_intents")
-            if isinstance(intent.get("secondary_intents"), list)
-            else []
-        )
+        intent_slots = _dict_value(intent.get("slots"))
+        secondary_intents = _string_list(intent.get("secondary_intents"))
         is_product_recommendation_intent = (
             intent_name == "product_recommendation" or "product_recommendation" in secondary_intents
         ) and intent_confidence >= 0.55
@@ -2271,10 +2316,8 @@ async def process_customer_text_message(
             recommendation_turns,
             products_by_id_for_memory,
         )
-        history_target_product_id = history_reference.get("target_product_id")
-        history_turn_product_ids = [
-            int(x) for x in (history_reference.get("turn_product_ids") or []) if str(x).isdigit()
-        ]
+        history_target_product_id = _int_value(history_reference.get("target_product_id"))
+        history_turn_product_ids = _int_list(history_reference.get("turn_product_ids"))
         history_reference_is_relevant = (
             bool(history_target_product_id)
             and not is_product_recommendation_intent
@@ -2292,11 +2335,9 @@ async def process_customer_text_message(
             )
         )
         if not context_product_id:
-            target_slot = intent_slots.get("target_product_id")
-            if target_slot is not None and str(target_slot).strip().isdigit():
-                context_product_id = int(target_slot)
+            context_product_id = _int_value(intent_slots.get("target_product_id"))
         if history_reference_is_relevant:
-            context_product_id = int(history_target_product_id)
+            context_product_id = history_target_product_id
         if (
             not context_product_id
             and not is_product_recommendation_intent
@@ -2314,20 +2355,20 @@ async def process_customer_text_message(
                 all_products,
                 scene_reference_product_ids,
             )
-            context_product_id = resolved_ref.get("target_product_id")
+            context_product_id = _int_value(resolved_ref.get("target_product_id"))
 
-        scene_req = {
+        scene_req: SceneRequestState = {
             "is_scene_request": (
                 intent_name == "scene_image_request" or "scene_image_request" in secondary_intents
             )
             and intent_confidence >= 0.55,
-            "scene_name": str(intent_slots.get("scene_name") or ""),
-            "style_hint": str(intent_slots.get("style_hint") or ""),
-            "target_product_id": intent_slots.get("target_product_id"),
-            "reason": str(intent.get("reason") or ""),
+            "scene_name": _text_value(intent_slots.get("scene_name")),
+            "style_hint": _text_value(intent_slots.get("style_hint")),
+            "target_product_id": _int_value(intent_slots.get("target_product_id")),
+            "reason": _text_value(intent.get("reason")),
         }
         if history_reference_is_relevant:
-            scene_req["target_product_id"] = int(history_target_product_id)
+            scene_req["target_product_id"] = history_target_product_id
         if (
             intent_name in {"scene_image_request", "scene_image_confirmation"}
             or "scene_image_request" in secondary_intents
@@ -2348,17 +2389,16 @@ async def process_customer_text_message(
                 scene_req["is_scene_request"] or scene_request_profile.get("is_scene_request")
             )
             slot = scene_request_profile.get("target_product_slot")
-            if slot and not scene_req.get("target_product_id"):
+            if slot and not scene_req["target_product_id"]:
                 try:
                     slot_index = int(slot) - 1
                 except (TypeError, ValueError):
                     slot_index = -1
                 if 0 <= slot_index < len(scene_reference_product_ids):
                     scene_req["target_product_id"] = scene_reference_product_ids[slot_index]
-            if scene_request_profile.get("target_product_id") and not scene_req.get(
-                "target_product_id"
-            ):
-                scene_req["target_product_id"] = scene_request_profile.get("target_product_id")
+            profile_target_id = _int_value(scene_request_profile.get("target_product_id"))
+            if profile_target_id and not scene_req["target_product_id"]:
+                scene_req["target_product_id"] = profile_target_id
             if scene_request_profile.get("scene_name") and not scene_req["scene_name"]:
                 scene_req["scene_name"] = str(scene_request_profile.get("scene_name") or "")
             if scene_request_profile.get("style_hint") and not scene_req["style_hint"]:
@@ -2395,8 +2435,9 @@ async def process_customer_text_message(
                     scene_req["scene_name"] = str(analyzed_scene.get("scene_name") or "")
                 if analyzed_scene.get("style_hint") and not scene_req["style_hint"]:
                     scene_req["style_hint"] = str(analyzed_scene.get("style_hint") or "")
-                if analyzed_scene.get("target_product_id") and not scene_req["target_product_id"]:
-                    scene_req["target_product_id"] = analyzed_scene.get("target_product_id")
+                analyzed_target_id = _int_value(analyzed_scene.get("target_product_id"))
+                if analyzed_target_id and not scene_req["target_product_id"]:
+                    scene_req["target_product_id"] = analyzed_target_id
                 if analyzed_scene.get("reason") and not scene_req["reason"]:
                     scene_req["reason"] = str(analyzed_scene.get("reason") or "")
 
@@ -2404,7 +2445,7 @@ async def process_customer_text_message(
             bool(history_reference.get("needs_clarification"))
             and not is_product_recommendation_intent
             and (
-                bool(scene_req.get("is_scene_request"))
+                scene_req["is_scene_request"]
                 or intent_name
                 in {"product_intro", "scene_image_request", "scene_image_confirmation"}
                 or "product_intro" in secondary_intents
@@ -2454,14 +2495,14 @@ async def process_customer_text_message(
                 scene_reference_product_ids,
             )
             referenced_id = (
-                scene_req.get("target_product_id")
+                scene_req["target_product_id"]
                 or history_target_product_id
                 or local_referenced_id
                 or resolved_ref.get("target_product_id")
             )
             selection_only = is_product_selection_only(user_message)
             is_scene_followup_intent = (
-                bool(scene_req.get("is_scene_request"))
+                scene_req["is_scene_request"]
                 or intent_name in {"scene_image_request", "scene_image_confirmation"}
                 or "scene_image_request" in secondary_intents
             )
@@ -2476,14 +2517,14 @@ async def process_customer_text_message(
                 )
             )
             wants_scene = (
-                scene_req.get("is_scene_request")
+                scene_req["is_scene_request"]
                 or (referenced_id is not None and selection_only)
                 or (intent_name == "scene_image_confirmation" and intent_confidence >= 0.55)
             ) and not product_detail_followup
             if wants_scene:
                 await stage("resolving_product_reference")
                 primary_id = (
-                    scene_req.get("target_product_id")
+                    scene_req["target_product_id"]
                     or referenced_id
                     or scene_state.primary_product_id
                     or (scene_reference_product_ids[0] if scene_reference_product_ids else None)
@@ -2493,8 +2534,8 @@ async def process_customer_text_message(
                     async with AsyncSessionLocal() as db:
                         primary_product = await db.get(ProductEntry, primary_id)
                 if primary_product:
-                    requested_scene = (scene_req.get("scene_name") or "").strip()
-                    requested_style = (scene_req.get("style_hint") or "").strip()
+                    requested_scene = scene_req["scene_name"].strip()
+                    requested_style = scene_req["style_hint"].strip()
                     default_scene = requested_scene or (
                         scene_state.suggested_scene
                         if not referenced_id or referenced_id == scene_state.primary_product_id
@@ -2522,7 +2563,7 @@ async def process_customer_text_message(
                         all_products=all_products,
                         user_request=(
                             user_message
-                            if (referenced_id or scene_req.get("is_scene_request"))
+                            if (referenced_id or scene_req["is_scene_request"])
                             else (scene_state.last_customer_request or user_message)
                         ),
                         scene_name=default_scene or primary_product.space,
@@ -2564,7 +2605,7 @@ async def process_customer_text_message(
         product_detail_request = (
             bool(context_product_id)
             and not is_product_recommendation_intent
-            and not scene_req.get("is_scene_request")
+            and not scene_req["is_scene_request"]
             and intent_confidence >= 0.55
             and (
                 intent_name == "product_intro"
@@ -2575,7 +2616,7 @@ async def process_customer_text_message(
                 )
             )
         )
-        if product_detail_request:
+        if product_detail_request and context_product_id is not None:
             await stage("loading_product_detail")
             async with AsyncSessionLocal() as db:
                 result = await db.execute(
@@ -2584,7 +2625,7 @@ async def process_customer_text_message(
                         selectinload(ProductEntry.images),
                         selectinload(ProductEntry.translations),
                     )
-                    .where(ProductEntry.id == int(context_product_id))
+                    .where(ProductEntry.id == context_product_id)
                 )
                 context_product = result.scalar_one_or_none()
             if context_product:
@@ -2634,7 +2675,7 @@ async def process_customer_text_message(
                 await finish("product_detail", "商品详情已发送")
                 return
 
-        if scene_req.get("is_scene_request"):
+        if scene_req["is_scene_request"]:
             await stage("resolving_product_reference")
             resolved_ref = await resolve_recent_product_reference(
                 user_message,
@@ -2643,7 +2684,7 @@ async def process_customer_text_message(
             )
             referenced_id = resolved_ref.get("target_product_id")
             target_id = (
-                scene_req.get("target_product_id")
+                scene_req["target_product_id"]
                 or history_target_product_id
                 or referenced_id
                 or (scene_state.primary_product_id if scene_state else None)
@@ -2663,14 +2704,14 @@ async def process_customer_text_message(
                         )
                     await stage(
                         "scene_image_generation",
-                        scene_req.get("scene_name") or primary_product.space or "",
+                        scene_req["scene_name"] or primary_product.space or "",
                     )
                     record = await start_scene_generation(
                         primary_product=primary_product,
                         all_products=all_products,
                         user_request=user_message,
-                        scene_name=scene_req.get("scene_name") or primary_product.space,
-                        style_hint=scene_req.get("style_hint") or primary_product.style,
+                        scene_name=scene_req["scene_name"] or primary_product.space,
+                        style_hint=scene_req["style_hint"] or primary_product.style,
                         conversation_id=conversation_id,
                         deliver_to_customer=True,
                         reply_language=language,
@@ -2679,10 +2720,8 @@ async def process_customer_text_message(
                             "scene_state_payload": {
                                 "primary_product_id": primary_product.id,
                                 "recommended_product_ids": [primary_product.id],
-                                "suggested_scene": scene_req.get("scene_name")
-                                or primary_product.space,
-                                "suggested_style": scene_req.get("style_hint")
-                                or primary_product.style,
+                                "suggested_scene": scene_req["scene_name"] or primary_product.space,
+                                "suggested_style": scene_req["style_hint"] or primary_product.style,
                                 "pending_confirmation": False,
                                 "reply_language": language,
                                 "last_customer_request": user_message,
