@@ -45,6 +45,21 @@ class FillProductTranslationsTests(unittest.TestCase):
         self.assertEqual(parsed[(10, "fr")]["name"], "Canapé chinois")
         self.assertEqual(parsed[(10, "fr")]["material"], "bois massif")
 
+    def test_parse_translation_response_accepts_flat_fields_and_skips_incomplete_rows(self):
+        raw = json.dumps(
+            {
+                "items": [
+                    {"product_id": None, "language": "en", "name": "Missing product"},
+                    {"product_id": 11, "language": "en", "name": "Chinese sofa"},
+                    {"product_id": 12, "language": "", "name": "Missing language"},
+                ]
+            }
+        )
+
+        parsed = parse_translation_response(raw)
+
+        self.assertEqual(parsed, {(11, "en"): {"name": "Chinese sofa"}})
+
     def test_traditional_rows_from_products_uses_local_conversion(self):
         rows = traditional_rows_from_products(
             [

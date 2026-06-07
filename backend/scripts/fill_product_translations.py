@@ -113,6 +113,7 @@ def _strip_json_fence(raw: str) -> str:
 
 
 def parse_translation_response(raw: str) -> dict[tuple[int, str], dict[str, str]]:
+    """解析离线翻译批次响应，跳过 LLM 返回的不完整行."""
     data = json.loads(_strip_json_fence(raw))
     rows = (data.get("translations") or data.get("items") or []) if isinstance(data, dict) else data
     if not isinstance(rows, list):
@@ -122,14 +123,21 @@ def parse_translation_response(raw: str) -> dict[tuple[int, str], dict[str, str]
     for row in rows:
         if not isinstance(row, dict):
             continue
+        normalized_row = {str(key): value for key, value in row.items()}
         try:
-            product_id = int(row.get("product_id"))
+            product_id = int(normalized_row["product_id"])
         except (TypeError, ValueError):
             continue
-        language = normalize_language_code(row.get("language"), fallback=None)
+        language = normalize_language_code(normalized_row.get("language"), fallback=None)
         if not language:
             continue
-        raw_fields = row.get("fields") if isinstance(row.get("fields"), dict) else row
+        # LLM 偶尔会把翻译字段平铺到 row 顶层；这里保留兼容，同时保证后续读取的是 dict。
+        raw_fields_value = normalized_row.get("fields")
+        raw_fields: dict[str, Any] = (
+            {str(key): value for key, value in raw_fields_value.items()}
+            if isinstance(raw_fields_value, dict)
+            else normalized_row
+        )
         fields = {
             field: str(raw_fields.get(field) or "").strip()
             for field in PRODUCT_TRANSLATABLE_FIELDS
