@@ -4,7 +4,6 @@ from pathlib import Path
 
 from app.services.i18n import get_localized_static_text
 
-
 TELEGRAM_BOT_PATH = Path(__file__).resolve().parents[1] / "app" / "telegram_bot.py"
 SCENE_MESSAGE_MAPS = (
     "SCENE_FOLLOWUP_MESSAGES",

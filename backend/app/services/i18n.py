@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from typing import Iterable
-
+from collections.abc import Iterable
 
 DEFAULT_LANGUAGE = "en"
 SUPPORTED_LANGUAGES = ("zh-Hans", "zh-Hant", "en", "ja", "ko", "es", "fr")
@@ -23,81 +22,83 @@ _SIMPLIFIED_TO_TRADITIONAL_PHRASES = {
     "链接": "連結",
 }
 
-_SIMPLIFIED_TO_TRADITIONAL_CHARS = str.maketrans({
-    "为": "為",
-    "这": "這",
-    "个": "個",
-    "问": "問",
-    "请": "請",
-    "吗": "嗎",
-    "么": "麼",
-    "柜": "櫃",
-    "橱": "櫥",
-    "门": "門",
-    "体": "體",
-    "价": "價",
-    "钱": "錢",
-    "质": "質",
-    "实": "實",
-    "装": "裝",
-    "运": "運",
-    "达": "達",
-    "联": "聯",
-    "苹": "蘋",
-    "风": "風",
-    "灯": "燈",
-    "台": "臺",
-    "墙": "牆",
-    "颜": "顏",
-    "号": "號",
-    "后": "後",
-    "开": "開",
-    "关": "關",
-    "买": "買",
-    "卖": "賣",
-    "荐": "薦",
-    "发": "發",
-    "产": "產",
-    "资": "資",
-    "详": "詳",
-    "说": "說",
-    "适": "適",
-    "广": "廣",
-    "厅": "廳",
-    "卧": "臥",
-    "卫": "衛",
-    "儿": "兒",
-    "书": "書",
-    "办": "辦",
-    "阳": "陽",
-    "边": "邊",
-    "类": "類",
-    "现": "現",
-    "暂": "暫",
-    "没": "沒",
-    "统": "統",
-    "迟": "遲",
-    "间": "間",
-    "图": "圖",
-    "张": "張",
-    "导": "導",
-    "处": "處",
-    "补": "補",
-    "复": "複",
-    "单": "單",
-    "绍": "紹",
-    "与": "與",
-    "虑": "慮",
-    "议": "議",
-    "项": "項",
-    "务": "務",
-    "转": "轉",
-    "优": "優",
-    "级": "級",
-    "络": "絡",
-    "线": "線",
-    "户": "戶",
-})
+_SIMPLIFIED_TO_TRADITIONAL_CHARS = str.maketrans(
+    {
+        "为": "為",
+        "这": "這",
+        "个": "個",
+        "问": "問",
+        "请": "請",
+        "吗": "嗎",
+        "么": "麼",
+        "柜": "櫃",
+        "橱": "櫥",
+        "门": "門",
+        "体": "體",
+        "价": "價",
+        "钱": "錢",
+        "质": "質",
+        "实": "實",
+        "装": "裝",
+        "运": "運",
+        "达": "達",
+        "联": "聯",
+        "苹": "蘋",
+        "风": "風",
+        "灯": "燈",
+        "台": "臺",
+        "墙": "牆",
+        "颜": "顏",
+        "号": "號",
+        "后": "後",
+        "开": "開",
+        "关": "關",
+        "买": "買",
+        "卖": "賣",
+        "荐": "薦",
+        "发": "發",
+        "产": "產",
+        "资": "資",
+        "详": "詳",
+        "说": "說",
+        "适": "適",
+        "广": "廣",
+        "厅": "廳",
+        "卧": "臥",
+        "卫": "衛",
+        "儿": "兒",
+        "书": "書",
+        "办": "辦",
+        "阳": "陽",
+        "边": "邊",
+        "类": "類",
+        "现": "現",
+        "暂": "暫",
+        "没": "沒",
+        "统": "統",
+        "迟": "遲",
+        "间": "間",
+        "图": "圖",
+        "张": "張",
+        "导": "導",
+        "处": "處",
+        "补": "補",
+        "复": "複",
+        "单": "單",
+        "绍": "紹",
+        "与": "與",
+        "虑": "慮",
+        "议": "議",
+        "项": "項",
+        "务": "務",
+        "转": "轉",
+        "优": "優",
+        "级": "級",
+        "络": "絡",
+        "线": "線",
+        "户": "戶",
+    }
+)
 
 
 def detect_chinese_script(text: str | None) -> str | None:
@@ -184,10 +185,15 @@ def get_localized_static_text(mapping: dict[str, str], language: str | None) -> 
             return mapping["zh-Hant"]
         if "zh" in mapping:
             return to_traditional_chinese(mapping["zh"])
-    return mapping.get(lang) or mapping.get(DEFAULT_LANGUAGE) or next(iter(mapping.values()), "")
+    fallback_text = mapping.get(lang) or mapping.get(DEFAULT_LANGUAGE)
+    if fallback_text is not None:
+        return fallback_text
+    return next(iter(mapping.values()), "")
 
 
-def get_localized_static_dict(mapping: dict[str, dict[str, str]], language: str | None) -> dict[str, str]:
+def get_localized_static_dict(
+    mapping: dict[str, dict[str, str]], language: str | None
+) -> dict[str, str]:
     lang = normalize_language_code(language, fallback=DEFAULT_LANGUAGE) or DEFAULT_LANGUAGE
     if lang in mapping:
         return mapping[lang]
@@ -198,4 +204,7 @@ def get_localized_static_dict(mapping: dict[str, dict[str, str]], language: str 
             return mapping["zh-Hant"]
         if "zh" in mapping:
             return {key: to_traditional_chinese(value) for key, value in mapping["zh"].items()}
-    return mapping.get(lang) or mapping.get(DEFAULT_LANGUAGE) or next(iter(mapping.values()), {})
+    fallback_dict = mapping.get(lang) or mapping.get(DEFAULT_LANGUAGE)
+    if fallback_dict is not None:
+        return fallback_dict
+    return next(iter(mapping.values()), {})

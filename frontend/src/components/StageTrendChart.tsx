@@ -16,7 +16,11 @@ function formatLatency(value: number | null | undefined) {
   return `${value}ms`;
 }
 
-export default function StageTrendChart({ stages, selectedStageKeys, metricKey }: StageTrendChartProps) {
+export default function StageTrendChart({
+  stages,
+  selectedStageKeys,
+  metricKey,
+}: StageTrendChartProps) {
   const chartRef = useRef<HTMLDivElement | null>(null);
 
   const option = useMemo(() => {
@@ -31,7 +35,9 @@ export default function StageTrendChart({ stages, selectedStageKeys, metricKey }
         }
       });
     });
-    bucketLabels.sort((a, b) => String(bucketOrder.get(a)).localeCompare(String(bucketOrder.get(b))));
+    bucketLabels.sort((a, b) =>
+      String(bucketOrder.get(a)).localeCompare(String(bucketOrder.get(b))),
+    );
 
     return {
       tooltip: {
@@ -60,7 +66,9 @@ export default function StageTrendChart({ stages, selectedStageKeys, metricKey }
         },
       },
       series: selected.map((stage) => {
-        const pointMap = new Map(stage.points.map((point) => [point.bucket_label, point[metricKey]]));
+        const pointMap = new Map(
+          stage.points.map((point) => [point.bucket_label, point[metricKey]]),
+        );
         return {
           name: stage.stage_label || stage.stage_key,
           type: 'line',

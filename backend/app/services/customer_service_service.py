@@ -5,8 +5,8 @@ import os
 from datetime import datetime, timedelta
 from typing import Any
 
-from telegram import Bot
 from sqlalchemy import select, update
+from telegram import Bot
 
 from app.database import AsyncSessionLocal
 from app.models import (
@@ -43,6 +43,7 @@ DEFAULT_CUSTOMER_SERVICE_MODE = "ai_auto"
 DEFAULT_AUTO_SEND_SECONDS = 10
 
 PENDING_AI_REPLY_SEND_LOCKS: dict[int, asyncio.Lock] = {}
+TelegramDeliveryTarget = tuple[Bot, str]
 
 
 def _sequence_clock():
@@ -84,7 +85,7 @@ async def _resolve_bot_for_conversation(db, conversation: Conversation) -> Bot |
         result = await db.execute(
             select(TelegramBot)
             .where(
-                TelegramBot.is_active == True,
+                TelegramBot.is_active.is_(True),
                 TelegramBot.token != "",
                 TelegramBot.token != "your_bot_token_here",
             )
@@ -96,6 +97,32 @@ async def _resolve_bot_for_conversation(db, conversation: Conversation) -> Bot |
     if not token or token == "your_bot_token_here":
         return None
     return Bot(token=token)
+
+
+async def _prepare_telegram_delivery_target(
+    db,
+    conversation: Conversation,
+    draft: PendingAIReply,
+) -> TelegramDeliveryTarget | None:
+    """解析 Telegram 投递目标；不可投递时保留草稿，等待人工处理或重试."""
+    bot_instance = await _resolve_bot_for_conversation(db, conversation)
+    telegram_chat_id = conversation.telegram_chat_id
+    if bot_instance is not None and telegram_chat_id:
+        return bot_instance, telegram_chat_id
+
+    draft.status = "pending"
+    draft.error_message = "Telegram bot not available"
+    await db.commit()
+    return None
+
+
+def _require_telegram_delivery_target(
+    target: TelegramDeliveryTarget | None,
+) -> TelegramDeliveryTarget:
+    """阻止非模拟器发送分支绕过前置的 Bot 与 chat id 校验."""
+    if target is None:
+        raise RuntimeError("Telegram delivery target missing after preflight")
+    return target
 
 
 async def _append_outbound_event(
@@ -140,33 +167,35 @@ async def _send_product_recommendation_payload(
     is_simulator = (conversation.telegram_chat_id or "").startswith("sim-")
     next_created_at = _sequence_clock()
 
-    bot_instance = None
+    telegram_target = None
     if not is_simulator:
-        bot_instance = await _resolve_bot_for_conversation(db, conversation)
-        if not bot_instance or not conversation.telegram_chat_id:
-            draft.status = "pending"
-            draft.error_message = "Telegram bot not available"
-            await db.commit()
+        telegram_target = await _prepare_telegram_delivery_target(db, conversation, draft)
+        if telegram_target is None:
             return None
 
     if intro_text:
         if is_simulator:
-            db.add(Message(
-                conversation_id=conversation.id,
-                role=message_role,
-                content=intro_text,
-                language=draft.language,
-                created_at=next_created_at(),
-            ))
+            db.add(
+                Message(
+                    conversation_id=conversation.id,
+                    role=message_role,
+                    content=intro_text,
+                    language=draft.language,
+                    created_at=next_created_at(),
+                )
+            )
         else:
-            await bot_instance.send_message(chat_id=int(conversation.telegram_chat_id), text=intro_text)
-            db.add(Message(
-                conversation_id=conversation.id,
-                role=message_role,
-                content=intro_text,
-                language=draft.language,
-                created_at=next_created_at(),
-            ))
+            bot_instance, telegram_chat_id = _require_telegram_delivery_target(telegram_target)
+            await bot_instance.send_message(chat_id=int(telegram_chat_id), text=intro_text)
+            db.add(
+                Message(
+                    conversation_id=conversation.id,
+                    role=message_role,
+                    content=intro_text,
+                    language=draft.language,
+                    created_at=next_created_at(),
+                )
+            )
 
     for card in cards:
         caption = (card.get("caption") or "").strip()
@@ -186,20 +215,23 @@ async def _send_product_recommendation_payload(
                     created_at=next_created_at(),
                 )
             elif caption:
-                db.add(Message(
-                    conversation_id=conversation.id,
-                    role=message_role,
-                    content=caption,
-                    language=draft.language,
-                    created_at=next_created_at(),
-                ))
+                db.add(
+                    Message(
+                        conversation_id=conversation.id,
+                        role=message_role,
+                        content=caption,
+                        language=draft.language,
+                        created_at=next_created_at(),
+                    )
+                )
         else:
+            bot_instance, telegram_chat_id = _require_telegram_delivery_target(telegram_target)
             if image_path:
                 full = os.path.join("/app", image_path)
                 if os.path.exists(full):
                     with open(full, "rb") as fh:
                         await bot_instance.send_photo(
-                            chat_id=int(conversation.telegram_chat_id),
+                            chat_id=int(telegram_chat_id),
                             photo=fh,
                             caption=caption or None,
                             parse_mode=parse_mode,
@@ -217,35 +249,42 @@ async def _send_product_recommendation_payload(
                     continue
             if caption:
                 await bot_instance.send_message(
-                    chat_id=int(conversation.telegram_chat_id),
+                    chat_id=int(telegram_chat_id),
                     text=caption,
                     parse_mode=parse_mode,
                 )
 
     if followup_text:
         if is_simulator:
-            db.add(Message(
-                conversation_id=conversation.id,
-                role=message_role,
-                content=followup_text,
-                language=draft.language,
-                created_at=next_created_at(),
-            ))
+            db.add(
+                Message(
+                    conversation_id=conversation.id,
+                    role=message_role,
+                    content=followup_text,
+                    language=draft.language,
+                    created_at=next_created_at(),
+                )
+            )
         else:
-            await bot_instance.send_message(chat_id=int(conversation.telegram_chat_id), text=followup_text)
-            db.add(Message(
-                conversation_id=conversation.id,
-                role=message_role,
-                content=followup_text,
-                language=draft.language,
-                created_at=next_created_at(),
-            ))
+            bot_instance, telegram_chat_id = _require_telegram_delivery_target(telegram_target)
+            await bot_instance.send_message(chat_id=int(telegram_chat_id), text=followup_text)
+            db.add(
+                Message(
+                    conversation_id=conversation.id,
+                    role=message_role,
+                    content=followup_text,
+                    language=draft.language,
+                    created_at=next_created_at(),
+                )
+            )
 
     scene_state = payload.get("scene_state") or {}
     if scene_state:
         from app.telegram_bot import save_scene_state
 
-        scene_state_product_ids = [int(x) for x in (scene_state.get("recommended_product_ids") or [])]
+        scene_state_product_ids = [
+            int(x) for x in (scene_state.get("recommended_product_ids") or [])
+        ]
         await save_scene_state(
             conversation_id=conversation.id,
             primary_product_id=scene_state.get("primary_product_id"),
@@ -270,7 +309,12 @@ async def _send_product_recommendation_payload(
         await record_recommendation_turn(
             conversation_id=conversation.id,
             request_text=scene_state.get("last_customer_request") or draft.draft_text or "",
-            product_ids=scene_state_product_ids or [int(card["product_id"]) for card in cards if str(card.get("product_id") or "").isdigit()],
+            product_ids=scene_state_product_ids
+            or [
+                int(card["product_id"])
+                for card in cards
+                if str(card.get("product_id") or "").isdigit()
+            ],
             language=scene_state.get("reply_language") or draft.language,
             products=card_products,
             category_profile=scene_state.get("category_profile") or None,
@@ -294,33 +338,35 @@ async def _send_scene_result_payload(
     is_simulator = (conversation.telegram_chat_id or "").startswith("sim-")
     next_created_at = _sequence_clock()
 
-    bot_instance = None
+    telegram_target = None
     if not is_simulator:
-        bot_instance = await _resolve_bot_for_conversation(db, conversation)
-        if not bot_instance or not conversation.telegram_chat_id:
-            draft.status = "pending"
-            draft.error_message = "Telegram bot not available"
-            await db.commit()
+        telegram_target = await _prepare_telegram_delivery_target(db, conversation, draft)
+        if telegram_target is None:
             return None
 
     if intro_text:
         if is_simulator:
-            db.add(Message(
-                conversation_id=conversation.id,
-                role=message_role,
-                content=intro_text,
-                language=draft.language,
-                created_at=next_created_at(),
-            ))
+            db.add(
+                Message(
+                    conversation_id=conversation.id,
+                    role=message_role,
+                    content=intro_text,
+                    language=draft.language,
+                    created_at=next_created_at(),
+                )
+            )
         else:
-            await bot_instance.send_message(chat_id=int(conversation.telegram_chat_id), text=intro_text)
-            db.add(Message(
-                conversation_id=conversation.id,
-                role=message_role,
-                content=intro_text,
-                language=draft.language,
-                created_at=next_created_at(),
-            ))
+            bot_instance, telegram_chat_id = _require_telegram_delivery_target(telegram_target)
+            await bot_instance.send_message(chat_id=int(telegram_chat_id), text=intro_text)
+            db.add(
+                Message(
+                    conversation_id=conversation.id,
+                    role=message_role,
+                    content=intro_text,
+                    language=draft.language,
+                    created_at=next_created_at(),
+                )
+            )
 
     for index, image_url in enumerate(image_urls):
         if is_simulator:
@@ -340,7 +386,8 @@ async def _send_scene_result_payload(
         if not os.path.exists(full):
             continue
         with open(full, "rb") as fh:
-            await bot_instance.send_photo(chat_id=int(conversation.telegram_chat_id), photo=fh)
+            bot_instance, telegram_chat_id = _require_telegram_delivery_target(telegram_target)
+            await bot_instance.send_photo(chat_id=int(telegram_chat_id), photo=fh)
         await _append_outbound_event(
             db,
             conversation.id,
@@ -352,27 +399,32 @@ async def _send_scene_result_payload(
 
     if links_text:
         if is_simulator:
-            db.add(Message(
-                conversation_id=conversation.id,
-                role=message_role,
-                content=links_text,
-                language=draft.language,
-                created_at=next_created_at(),
-            ))
+            db.add(
+                Message(
+                    conversation_id=conversation.id,
+                    role=message_role,
+                    content=links_text,
+                    language=draft.language,
+                    created_at=next_created_at(),
+                )
+            )
         else:
+            bot_instance, telegram_chat_id = _require_telegram_delivery_target(telegram_target)
             await bot_instance.send_message(
-                chat_id=int(conversation.telegram_chat_id),
+                chat_id=int(telegram_chat_id),
                 text=links_text,
                 parse_mode=parse_mode,
                 disable_web_page_preview=True,
             )
-            db.add(Message(
-                conversation_id=conversation.id,
-                role=message_role,
-                content=links_text,
-                language=draft.language,
-                created_at=next_created_at(),
-            ))
+            db.add(
+                Message(
+                    conversation_id=conversation.id,
+                    role=message_role,
+                    content=links_text,
+                    language=draft.language,
+                    created_at=next_created_at(),
+                )
+            )
 
     record_id = payload.get("record_id")
     if record_id:
@@ -384,13 +436,17 @@ async def _send_scene_result_payload(
     state_payload = payload.get("scene_state_payload") or {}
     if state_action == "clear":
         from app.telegram_bot import clear_scene_state
+
         await clear_scene_state(conversation.id)
     elif state_action == "save":
         from app.telegram_bot import save_scene_state
+
         await save_scene_state(
             conversation_id=conversation.id,
             primary_product_id=state_payload.get("primary_product_id"),
-            recommended_product_ids=[int(x) for x in (state_payload.get("recommended_product_ids") or [])],
+            recommended_product_ids=[
+                int(x) for x in (state_payload.get("recommended_product_ids") or [])
+            ],
             suggested_scene=state_payload.get("suggested_scene") or "",
             suggested_style=state_payload.get("suggested_style") or "",
             pending_confirmation=bool(state_payload.get("pending_confirmation")),
@@ -407,19 +463,26 @@ async def get_customer_service_settings() -> dict[str, Any]:
     async with AsyncSessionLocal() as db:
         rows = await db.execute(
             select(SystemSetting).where(
-                SystemSetting.key.in_([
-                    CUSTOMER_SERVICE_MODE_KEY,
-                    CUSTOMER_SERVICE_AUTO_SEND_SECONDS_KEY,
-                ])
+                SystemSetting.key.in_(
+                    [
+                        CUSTOMER_SERVICE_MODE_KEY,
+                        CUSTOMER_SERVICE_AUTO_SEND_SECONDS_KEY,
+                    ]
+                )
             )
         )
         raw = {row.key: row.value for row in rows.scalars().all()}
 
-    mode = raw.get(CUSTOMER_SERVICE_MODE_KEY, DEFAULT_CUSTOMER_SERVICE_MODE) or DEFAULT_CUSTOMER_SERVICE_MODE
+    mode = (
+        raw.get(CUSTOMER_SERVICE_MODE_KEY, DEFAULT_CUSTOMER_SERVICE_MODE)
+        or DEFAULT_CUSTOMER_SERVICE_MODE
+    )
     if mode not in CUSTOMER_SERVICE_MODES:
         mode = DEFAULT_CUSTOMER_SERVICE_MODE
     try:
-        auto_send_seconds = int(raw.get(CUSTOMER_SERVICE_AUTO_SEND_SECONDS_KEY, str(DEFAULT_AUTO_SEND_SECONDS)))
+        auto_send_seconds = int(
+            raw.get(CUSTOMER_SERVICE_AUTO_SEND_SECONDS_KEY, str(DEFAULT_AUTO_SEND_SECONDS))
+        )
     except Exception:
         auto_send_seconds = DEFAULT_AUTO_SEND_SECONDS
     auto_send_seconds = max(1, min(auto_send_seconds, 600))
@@ -525,7 +588,7 @@ async def _send_pending_ai_reply_record_unlocked(
             PendingAIReply.status == "pending",
         ]
         if respect_auto_pause:
-            conditions.append(PendingAIReply.auto_send_paused == False)
+            conditions.append(PendingAIReply.auto_send_paused.is_(False))
         claim_result = await db.execute(
             update(PendingAIReply)
             .where(*conditions)
@@ -560,7 +623,9 @@ async def _send_pending_ai_reply_record_unlocked(
         message_role = MessageRole.HUMAN_AGENT if send_as_human_agent else MessageRole.ASSISTANT
         try:
             if draft.content_kind == "product_recommendation":
-                sent_text = await _send_product_recommendation_payload(db, conversation, draft, payload, message_role)
+                sent_text = await _send_product_recommendation_payload(
+                    db, conversation, draft, payload, message_role
+                )
                 if sent_text is None:
                     if draft.status == "sending":
                         draft.status = "pending"
@@ -569,7 +634,9 @@ async def _send_pending_ai_reply_record_unlocked(
                     return draft
                 text = sent_text or text
             elif draft.content_kind == "scene_result":
-                sent_text = await _send_scene_result_payload(db, conversation, draft, payload, message_role)
+                sent_text = await _send_scene_result_payload(
+                    db, conversation, draft, payload, message_role
+                )
                 if sent_text is None:
                     if draft.status == "sending":
                         draft.status = "pending"
@@ -579,12 +646,14 @@ async def _send_pending_ai_reply_record_unlocked(
                 text = sent_text or text
             else:
                 if (conversation.telegram_chat_id or "").startswith("sim-"):
-                    db.add(Message(
-                        conversation_id=conversation.id,
-                        role=message_role,
-                        content=text,
-                        language=draft.language,
-                    ))
+                    db.add(
+                        Message(
+                            conversation_id=conversation.id,
+                            role=message_role,
+                            content=text,
+                            language=draft.language,
+                        )
+                    )
                 else:
                     bot_instance = await _resolve_bot_for_conversation(db, conversation)
                     if not bot_instance or not conversation.telegram_chat_id:
@@ -592,13 +661,17 @@ async def _send_pending_ai_reply_record_unlocked(
                         draft.error_message = "Telegram bot not available"
                         await db.commit()
                         return draft
-                    await bot_instance.send_message(chat_id=int(conversation.telegram_chat_id), text=text)
-                    db.add(Message(
-                        conversation_id=conversation.id,
-                        role=message_role,
-                        content=text,
-                        language=draft.language,
-                    ))
+                    await bot_instance.send_message(
+                        chat_id=int(conversation.telegram_chat_id), text=text
+                    )
+                    db.add(
+                        Message(
+                            conversation_id=conversation.id,
+                            role=message_role,
+                            content=text,
+                            language=draft.language,
+                        )
+                    )
         except Exception as exc:
             draft.status = "pending"
             draft.error_message = str(exc)[:1000]
@@ -640,7 +713,11 @@ async def _schedule_pending_ai_reply_task(
     *,
     dedupe_prefix: str | None = None,
 ) -> None:
-    dedupe_key = f"{dedupe_prefix}:pending_ai_autosend:{record_id}" if dedupe_prefix else f"pending_ai_autosend:{record_id}"
+    dedupe_key = (
+        f"{dedupe_prefix}:pending_ai_autosend:{record_id}"
+        if dedupe_prefix
+        else f"pending_ai_autosend:{record_id}"
+    )
     await enqueue_job(
         job_type="pending_ai_autosend",
         entity_type="pending_ai_reply",
@@ -716,7 +793,7 @@ async def dispatch_due_pending_ai_replies() -> int:
         rows = await db.execute(
             select(PendingAIReply.id).where(
                 PendingAIReply.status == "pending",
-                PendingAIReply.auto_send_paused == False,
+                PendingAIReply.auto_send_paused.is_(False),
                 PendingAIReply.auto_send_at <= now,
             )
         )
@@ -732,7 +809,7 @@ async def restore_pending_ai_reply_tasks() -> None:
         rows = await db.execute(
             select(PendingAIReply).where(
                 PendingAIReply.status == "pending",
-                PendingAIReply.auto_send_paused == False,
+                PendingAIReply.auto_send_paused.is_(False),
             )
         )
         drafts = rows.scalars().all()

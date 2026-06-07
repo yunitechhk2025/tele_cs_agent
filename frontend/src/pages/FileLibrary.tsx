@@ -56,11 +56,7 @@ function fileTypeIcon(mime: string | null): ReactNode {
   if (m === 'application/pdf' || m.includes('pdf')) {
     return <FilePdfOutlined style={{ color: '#ff4d4f' }} />;
   }
-  if (
-    m.includes('word') ||
-    m.includes('msword') ||
-    m.includes('wordprocessingml')
-  ) {
+  if (m.includes('word') || m.includes('msword') || m.includes('wordprocessingml')) {
     return <FileWordOutlined style={{ color: '#1677ff' }} />;
   }
   return <FileOutlined style={{ color: '#8c8c8c' }} />;
@@ -297,12 +293,7 @@ export default function FileLibrary() {
           >
             下载
           </Button>
-          <Button
-            type="link"
-            size="small"
-            icon={<EditOutlined />}
-            onClick={() => openEdit(record)}
-          >
+          <Button type="link" size="small" icon={<EditOutlined />} onClick={() => openEdit(record)}>
             编辑
           </Button>
           <Popconfirm
@@ -333,16 +324,17 @@ export default function FileLibrary() {
         }}
       >
         <Space direction="vertical" size={12} style={{ width: '100%' }}>
-          <Space align="start" style={{ width: '100%', justifyContent: 'space-between', flexWrap: 'wrap', gap: 16 }}>
+          <Space
+            align="start"
+            style={{ width: '100%', justifyContent: 'space-between', flexWrap: 'wrap', gap: 16 }}
+          >
             <Space align="start">
               <FolderOutlined style={{ fontSize: 26, color: '#1677ff', marginTop: 4 }} />
               <div>
                 <Title level={4} style={{ margin: 0 }}>
                   文件库
                 </Title>
-                <Text type="secondary">
-                  上传文件供 AI 根据客户需求自动发送
-                </Text>
+                <Text type="secondary">上传文件供 AI 根据客户需求自动发送</Text>
               </div>
             </Space>
             <Space wrap align="center">

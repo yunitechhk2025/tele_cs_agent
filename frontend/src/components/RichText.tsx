@@ -1,10 +1,8 @@
 import { useMemo } from 'react';
 
-const RICH_TOKEN_RE = /\[([^\[\]\n`]+?)\]\((https?:\/\/[^\s)]+)\)|(https?:\/\/[^\s<>()"']+)/g;
+const RICH_TOKEN_RE = /\[([^\]\n`[]+?)\]\((https?:\/\/[^\s)]+)\)|(https?:\/\/[^\s<>()"']+)/g;
 
-type Segment =
-  | { kind: 'text'; value: string }
-  | { kind: 'link'; label: string; href: string };
+type Segment = { kind: 'text'; value: string } | { kind: 'link'; label: string; href: string };
 
 function parseRichSegments(text: string): Segment[] {
   if (!text) return [];

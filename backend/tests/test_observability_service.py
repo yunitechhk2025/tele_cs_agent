@@ -328,7 +328,13 @@ class ObservabilityServiceTests(unittest.TestCase):
         with zipfile.ZipFile(io.BytesIO(zip_bytes), "r") as zf:
             self.assertEqual(
                 sorted(zf.namelist()),
-                ["alerts.csv", "kpis.csv", "llm_metrics.csv", "recent_failures.csv", "stage_metrics.csv"],
+                [
+                    "alerts.csv",
+                    "kpis.csv",
+                    "llm_metrics.csv",
+                    "recent_failures.csv",
+                    "stage_metrics.csv",
+                ],
             )
             self.assertIn("total_turns,2", zf.read("kpis.csv").decode("utf-8-sig"))
             self.assertIn("匹配推荐商品中", zf.read("stage_metrics.csv").decode("utf-8-sig"))

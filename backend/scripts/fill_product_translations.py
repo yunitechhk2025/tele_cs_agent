@@ -29,7 +29,6 @@ from app.services.product_i18n import (
     product_entry_to_payload,
 )
 
-
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
@@ -97,7 +96,7 @@ def build_translation_messages(items: list[dict[str, Any]]) -> list[dict[str, st
         "Return strict JSON only, with no Markdown and no commentary. "
         "Preserve brand names, model numbers, URLs, measurements, and product IDs. "
         "Translate field values naturally for the target language while keeping furniture terminology precise. "
-        "Return this shape: {\"translations\":[{\"product_id\":10,\"language\":\"en\",\"fields\":{\"name\":\"...\"}}]}."
+        'Return this shape: {"translations":[{"product_id":10,"language":"en","fields":{"name":"..."}}]}.'
     )
     return [
         {"role": "system", "content": system},
@@ -114,11 +113,9 @@ def _strip_json_fence(raw: str) -> str:
 
 
 def parse_translation_response(raw: str) -> dict[tuple[int, str], dict[str, str]]:
+    """解析离线翻译批次响应，跳过 LLM 返回的不完整行."""
     data = json.loads(_strip_json_fence(raw))
-    if isinstance(data, dict):
-        rows = data.get("translations") or data.get("items") or []
-    else:
-        rows = data
+    rows = (data.get("translations") or data.get("items") or []) if isinstance(data, dict) else data
     if not isinstance(rows, list):
         raise ValueError("translation response must contain a translations array")
 
@@ -126,14 +123,21 @@ def parse_translation_response(raw: str) -> dict[tuple[int, str], dict[str, str]
     for row in rows:
         if not isinstance(row, dict):
             continue
+        normalized_row = {str(key): value for key, value in row.items()}
         try:
-            product_id = int(row.get("product_id"))
+            product_id = int(normalized_row["product_id"])
         except (TypeError, ValueError):
             continue
-        language = normalize_language_code(row.get("language"), fallback=None)
+        language = normalize_language_code(normalized_row.get("language"), fallback=None)
         if not language:
             continue
-        raw_fields = row.get("fields") if isinstance(row.get("fields"), dict) else row
+        # LLM 偶尔会把翻译字段平铺到 row 顶层；这里保留兼容，同时保证后续读取的是 dict。
+        raw_fields_value = normalized_row.get("fields")
+        raw_fields: dict[str, Any] = (
+            {str(key): value for key, value in raw_fields_value.items()}
+            if isinstance(raw_fields_value, dict)
+            else normalized_row
+        )
         fields = {
             field: str(raw_fields.get(field) or "").strip()
             for field in PRODUCT_TRANSLATABLE_FIELDS
@@ -145,17 +149,13 @@ def parse_translation_response(raw: str) -> dict[tuple[int, str], dict[str, str]
 
 
 def _source_fields(product: dict[str, Any]) -> dict[str, str]:
-    return {
-        field: str(product.get(field) or "").strip()
-        for field in PRODUCT_TRANSLATABLE_FIELDS
-    }
+    return {field: str(product.get(field) or "").strip() for field in PRODUCT_TRANSLATABLE_FIELDS}
 
 
 def _has_complete_translation(product: dict[str, Any], language: str) -> bool:
     values = (product.get("translations") or {}).get(language) or {}
     required_fields = [
-        field for field, value in _source_fields(product).items()
-        if str(value or "").strip()
+        field for field, value in _source_fields(product).items() if str(value or "").strip()
     ]
     if not required_fields:
         return True
@@ -175,8 +175,7 @@ def traditional_rows_from_products(
         if only_missing and _has_complete_translation(product, "zh-Hant"):
             continue
         rows[(int(product_id), "zh-Hant")] = {
-            field: to_traditional_chinese(value)
-            for field, value in _source_fields(product).items()
+            field: to_traditional_chinese(value) for field, value in _source_fields(product).items()
         }
     return rows
 
@@ -230,7 +229,9 @@ async def _upsert_translation_rows(rows: dict[tuple[int, str], dict[str, str]]) 
     return count
 
 
-async def _translate_batch(items: list[dict[str, Any]], *, max_tokens: int) -> dict[tuple[int, str], dict[str, str]]:
+async def _translate_batch(
+    items: list[dict[str, Any]], *, max_tokens: int
+) -> dict[tuple[int, str], dict[str, str]]:
     from app.services.llm_service import _chat_completion
 
     raw = await _chat_completion(
@@ -245,7 +246,7 @@ async def _translate_batch(items: list[dict[str, Any]], *, max_tokens: int) -> d
 
 def _chunks(items: list[dict[str, Any]], size: int):
     for index in range(0, len(items), size):
-        yield items[index:index + size]
+        yield items[index : index + size]
 
 
 async def fill_product_translations(
@@ -258,9 +259,8 @@ async def fill_product_translations(
     dry_run: bool,
 ) -> None:
     target_languages = [
-        lang for lang in (
-            normalize_language_code(language, fallback=None) for language in languages
-        )
+        lang
+        for lang in (normalize_language_code(language, fallback=None) for language in languages)
         if lang
     ]
     products = await _load_products(limit=limit)
@@ -271,7 +271,11 @@ async def fill_product_translations(
         for product in products
         if product.get("id") is not None
     }
-    traditional_rows = traditional_rows_from_products(products, only_missing=only_missing) if "zh-Hant" in target_languages else {}
+    traditional_rows = (
+        traditional_rows_from_products(products, only_missing=only_missing)
+        if "zh-Hant" in target_languages
+        else {}
+    )
     request_languages = [lang for lang in target_languages if lang not in {"zh-Hans", "zh-Hant"}]
     items = build_translation_request_items(
         products,
@@ -286,7 +290,9 @@ async def fill_product_translations(
     )
 
     if dry_run:
-        logger.info("Dry run only. First requests: %s", json.dumps(items[:3], ensure_ascii=False, indent=2))
+        logger.info(
+            "Dry run only. First requests: %s", json.dumps(items[:3], ensure_ascii=False, indent=2)
+        )
         return
 
     if "zh-Hans" in target_languages:
@@ -303,7 +309,9 @@ async def fill_product_translations(
     batch_size = max(1, batch_size)
     total_batches = (total_requests + batch_size - 1) // batch_size
     if total_requests:
-        _emit_progress(0, total_requests, batch_index=0, total_batches=total_batches, upserted_total=0)
+        _emit_progress(
+            0, total_requests, batch_index=0, total_batches=total_batches, upserted_total=0
+        )
     else:
         logger.info("No LLM translation requests to process.")
 
@@ -329,24 +337,41 @@ def parse_args() -> argparse.Namespace:
         help="Comma-separated target languages. Default: all supported languages.",
     )
     parser.add_argument("--limit", type=int, default=0, help="Optional product limit for testing.")
-    parser.add_argument("--batch-size", type=int, default=6, help="LLM translation request batch size.")
-    parser.add_argument("--max-tokens", type=int, default=12000, help="Maximum output tokens per LLM translation batch.")
-    parser.add_argument("--only-missing", action="store_true", help="Skip languages with complete existing translations.")
-    parser.add_argument("--dry-run", action="store_true", help="Print planned work without calling the LLM or writing DB rows.")
+    parser.add_argument(
+        "--batch-size", type=int, default=6, help="LLM translation request batch size."
+    )
+    parser.add_argument(
+        "--max-tokens",
+        type=int,
+        default=12000,
+        help="Maximum output tokens per LLM translation batch.",
+    )
+    parser.add_argument(
+        "--only-missing",
+        action="store_true",
+        help="Skip languages with complete existing translations.",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print planned work without calling the LLM or writing DB rows.",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
     languages = [item.strip() for item in args.languages.split(",") if item.strip()]
-    asyncio.run(fill_product_translations(
-        languages=languages,
-        limit=args.limit or None,
-        batch_size=args.batch_size,
-        max_tokens=args.max_tokens,
-        only_missing=bool(args.only_missing),
-        dry_run=bool(args.dry_run),
-    ))
+    asyncio.run(
+        fill_product_translations(
+            languages=languages,
+            limit=args.limit or None,
+            batch_size=args.batch_size,
+            max_tokens=args.max_tokens,
+            only_missing=bool(args.only_missing),
+            dry_run=bool(args.dry_run),
+        )
+    )
 
 
 if __name__ == "__main__":

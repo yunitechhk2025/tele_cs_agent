@@ -20,12 +20,7 @@ import {
   Typography,
   message,
 } from 'antd';
-import {
-  ApiOutlined,
-  SaveOutlined,
-  SettingOutlined,
-  ThunderboltOutlined,
-} from '@ant-design/icons';
+import { ApiOutlined, SaveOutlined, SettingOutlined, ThunderboltOutlined } from '@ant-design/icons';
 import { settingsApi } from '../api';
 import type { CustomerServiceSettings, LLMSettings } from '../types';
 import BotManagement from './BotManagement';
@@ -85,6 +80,7 @@ function buildLLMPayload(values: LLMSettings): Partial<LLMSettings> {
   if (values.api_key && !values.api_key.includes('****')) {
     payload.api_key = values.api_key;
   }
+  // 后端返回的密钥可能是脱敏占位符；保存时不能把占位符覆盖成真实配置。
   if (values.embedding_api_key && !values.embedding_api_key.includes('****')) {
     payload.embedding_api_key = values.embedding_api_key;
   }
@@ -122,22 +118,28 @@ export default function Settings() {
   const temperature = Form.useWatch('temperature', form) as number | undefined;
 
   const baseUrlHint = useMemo(
-    () => (provider ? BASE_URL_HINTS[provider] ?? BASE_URL_HINTS.custom : ''),
+    () => (provider ? (BASE_URL_HINTS[provider] ?? BASE_URL_HINTS.custom) : ''),
     [provider],
   );
 
   const modelPlaceholder = useMemo(
-    () => (provider ? MODEL_PLACEHOLDERS[provider] ?? MODEL_PLACEHOLDERS.custom : ''),
+    () => (provider ? (MODEL_PLACEHOLDERS[provider] ?? MODEL_PLACEHOLDERS.custom) : ''),
     [provider],
   );
 
   const profileBaseUrlHint = useMemo(
-    () => (profileProvider ? BASE_URL_HINTS[profileProvider] ?? BASE_URL_HINTS.custom : '留空则复用主模型接口地址'),
+    () =>
+      profileProvider
+        ? (BASE_URL_HINTS[profileProvider] ?? BASE_URL_HINTS.custom)
+        : '留空则复用主模型接口地址',
     [profileProvider],
   );
 
   const profileModelPlaceholder = useMemo(
-    () => (profileProvider ? MODEL_PLACEHOLDERS[profileProvider] ?? MODEL_PLACEHOLDERS.custom : '留空则复用主模型；推荐 qwen3.6-flash'),
+    () =>
+      profileProvider
+        ? (MODEL_PLACEHOLDERS[profileProvider] ?? MODEL_PLACEHOLDERS.custom)
+        : '留空则复用主模型；推荐 qwen3.6-flash',
     [profileProvider],
   );
 
@@ -197,7 +199,12 @@ export default function Settings() {
       setTestingEmbedding(true);
       const res = await settingsApi.testEmbedding(buildLLMPayload(values));
       const { ok, message: msg } = res.data;
-      setTestResult({ open: true, ok, text: msg, title: ok ? '嵌入模型连接成功' : '嵌入模型连接失败' });
+      setTestResult({
+        open: true,
+        ok,
+        text: msg,
+        title: ok ? '嵌入模型连接成功' : '嵌入模型连接失败',
+      });
     } catch (e) {
       if (e && typeof e === 'object' && 'errorFields' in e) return;
       message.error('嵌入模型测试失败');
@@ -212,7 +219,12 @@ export default function Settings() {
       setTestingImage(true);
       const res = await settingsApi.testImage(buildLLMPayload(values));
       const { ok, message: msg } = res.data;
-      setTestResult({ open: true, ok, text: msg, title: ok ? '生图模型连接成功' : '生图模型连接失败' });
+      setTestResult({
+        open: true,
+        ok,
+        text: msg,
+        title: ok ? '生图模型连接成功' : '生图模型连接失败',
+      });
     } catch (e) {
       if (e && typeof e === 'object' && 'errorFields' in e) return;
       message.error('生图模型测试失败');
@@ -227,7 +239,12 @@ export default function Settings() {
       setTestingProfile(true);
       const res = await settingsApi.testProfile(buildLLMPayload(values));
       const { ok, message: msg } = res.data;
-      setTestResult({ open: true, ok, text: msg, title: ok ? '需求解析小模型连接成功' : '需求解析小模型连接失败' });
+      setTestResult({
+        open: true,
+        ok,
+        text: msg,
+        title: ok ? '需求解析小模型连接成功' : '需求解析小模型连接失败',
+      });
     } catch (e) {
       if (e && typeof e === 'object' && 'errorFields' in e) return;
       message.error('需求解析小模型测试失败');
@@ -288,363 +305,384 @@ export default function Settings() {
                   />
 
                   <Spin spinning={loading}>
-          <Card
-            title={
-              <Space>
-                <SettingOutlined />
-                <span>客服应答模式</span>
-              </Space>
-            }
-            extra={
-              <Button type="primary" icon={<SaveOutlined />} loading={savingService} onClick={() => void handleSaveCustomerService()}>
-                保存模式
-              </Button>
-            }
-            styles={{ body: { paddingTop: 24 } }}
-          >
-            <Form<CustomerServiceSettings>
-              form={serviceForm}
-              layout="horizontal"
-              labelCol={{ span: 6 }}
-              wrapperCol={{ span: 14 }}
-              disabled={loading}
-              initialValues={{
-                feature_name: '客服应答模式',
-                mode: 'ai_auto',
-                auto_send_seconds: 10,
-              }}
-            >
-              <Form.Item label="特性名称" name="feature_name">
-                <Input disabled />
-              </Form.Item>
-              <Form.Item
-                label="应答模式"
-                name="mode"
-                rules={[{ required: true, message: '请选择应答模式' }]}
-                extra="推荐命名：客服应答模式。模式2下，AI 草稿先进入人工确认，超过设定时间后自动发出。"
-              >
-                <Radio.Group>
-                  <Space direction="vertical">
-                    <Radio value="ai_auto">模式1：全AI客服答复</Radio>
-                    <Radio value="ai_assist">模式2：人工确认AI生成内容后答复</Radio>
-                    <Radio value="human_only">模式3：无AI，完全人工客服答复</Radio>
-                  </Space>
-                </Radio.Group>
-              </Form.Item>
-              <Form.Item
-                label="自动发送秒数"
-                name="auto_send_seconds"
-                extra="仅模式2生效。超过该时间，系统会自动把 AI 草稿发送给客户。"
-              >
-                <InputNumber min={1} max={600} style={{ width: 180 }} />
-              </Form.Item>
-            </Form>
-          </Card>
+                    <Card
+                      title={
+                        <Space>
+                          <SettingOutlined />
+                          <span>客服应答模式</span>
+                        </Space>
+                      }
+                      extra={
+                        <Button
+                          type="primary"
+                          icon={<SaveOutlined />}
+                          loading={savingService}
+                          onClick={() => void handleSaveCustomerService()}
+                        >
+                          保存模式
+                        </Button>
+                      }
+                      styles={{ body: { paddingTop: 24 } }}
+                    >
+                      <Form<CustomerServiceSettings>
+                        form={serviceForm}
+                        layout="horizontal"
+                        labelCol={{ span: 6 }}
+                        wrapperCol={{ span: 14 }}
+                        disabled={loading}
+                        initialValues={{
+                          feature_name: '客服应答模式',
+                          mode: 'ai_auto',
+                          auto_send_seconds: 10,
+                        }}
+                      >
+                        <Form.Item label="特性名称" name="feature_name">
+                          <Input disabled />
+                        </Form.Item>
+                        <Form.Item
+                          label="应答模式"
+                          name="mode"
+                          rules={[{ required: true, message: '请选择应答模式' }]}
+                          extra="推荐命名：客服应答模式。模式2下，AI 草稿先进入人工确认，超过设定时间后自动发出。"
+                        >
+                          <Radio.Group>
+                            <Space direction="vertical">
+                              <Radio value="ai_auto">模式1：全AI客服答复</Radio>
+                              <Radio value="ai_assist">模式2：人工确认AI生成内容后答复</Radio>
+                              <Radio value="human_only">模式3：无AI，完全人工客服答复</Radio>
+                            </Space>
+                          </Radio.Group>
+                        </Form.Item>
+                        <Form.Item
+                          label="自动发送秒数"
+                          name="auto_send_seconds"
+                          extra="仅模式2生效。超过该时间，系统会自动把 AI 草稿发送给客户。"
+                        >
+                          <InputNumber min={1} max={600} style={{ width: 180 }} />
+                        </Form.Item>
+                      </Form>
+                    </Card>
 
-          <Card
-            title={
-              <Space>
-                <ApiOutlined />
-                <span>大模型（LLM）配置</span>
-              </Space>
-            }
-            styles={{ body: { paddingTop: 24 } }}
-          >
-            <Form<LLMSettings>
-              form={form}
-              layout="horizontal"
-              labelCol={{ span: 6 }}
-              wrapperCol={{ span: 14 }}
-              disabled={loading}
-              initialValues={{
-                provider: 'openai',
-                profile_provider: '',
-                profile_temperature: 0,
-                profile_max_tokens: 500,
-                profile_timeout_seconds: 4,
-                temperature: 0.7,
-                max_tokens: 2048,
-              }}
-            >
-              <Form.Item
-                label="服务商"
-                name="provider"
-                rules={[{ required: true, message: '请选择服务商' }]}
-              >
-                <Select options={[...PROVIDER_OPTIONS]} placeholder="选择服务商" />
-              </Form.Item>
+                    <Card
+                      title={
+                        <Space>
+                          <ApiOutlined />
+                          <span>大模型（LLM）配置</span>
+                        </Space>
+                      }
+                      styles={{ body: { paddingTop: 24 } }}
+                    >
+                      <Form<LLMSettings>
+                        form={form}
+                        layout="horizontal"
+                        labelCol={{ span: 6 }}
+                        wrapperCol={{ span: 14 }}
+                        disabled={loading}
+                        initialValues={{
+                          provider: 'openai',
+                          profile_provider: '',
+                          profile_temperature: 0,
+                          profile_max_tokens: 500,
+                          profile_timeout_seconds: 4,
+                          temperature: 0.7,
+                          max_tokens: 2048,
+                        }}
+                      >
+                        <Form.Item
+                          label="服务商"
+                          name="provider"
+                          rules={[{ required: true, message: '请选择服务商' }]}
+                        >
+                          <Select options={[...PROVIDER_OPTIONS]} placeholder="选择服务商" />
+                        </Form.Item>
 
-              <Form.Item
-                label="API 密钥"
-                name="api_key"
-                rules={[{ required: true, message: 'API 密钥为必填项' }]}
-              >
-                <Input.Password placeholder="sk-..." autoComplete="off" />
-              </Form.Item>
+                        <Form.Item
+                          label="API 密钥"
+                          name="api_key"
+                          rules={[{ required: true, message: 'API 密钥为必填项' }]}
+                        >
+                          <Input.Password placeholder="sk-..." autoComplete="off" />
+                        </Form.Item>
 
-              <Form.Item
-                label="接口地址"
-                name="base_url"
-                extra={
-                  provider === 'anthropic' ? (
-                    <Text type="secondary">
-                      仅供参考 — Anthropic 集成不使用此字段。
-                      建议值：{BASE_URL_HINTS.anthropic}
-                    </Text>
-                  ) : (
-                    <Text type="secondary">提示：{baseUrlHint}</Text>
-                  )
-                }
-              >
-                <Input placeholder={baseUrlHint} />
-              </Form.Item>
+                        <Form.Item
+                          label="接口地址"
+                          name="base_url"
+                          extra={
+                            provider === 'anthropic' ? (
+                              <Text type="secondary">
+                                仅供参考 — Anthropic 集成不使用此字段。 建议值：
+                                {BASE_URL_HINTS.anthropic}
+                              </Text>
+                            ) : (
+                              <Text type="secondary">提示：{baseUrlHint}</Text>
+                            )
+                          }
+                        >
+                          <Input placeholder={baseUrlHint} />
+                        </Form.Item>
 
-              <Form.Item
-                label="模型名称"
-                name="model"
-                rules={[{ required: true, message: '模型名称为必填项' }]}
-              >
-                <Input placeholder={modelPlaceholder} />
-              </Form.Item>
+                        <Form.Item
+                          label="模型名称"
+                          name="model"
+                          rules={[{ required: true, message: '模型名称为必填项' }]}
+                        >
+                          <Input placeholder={modelPlaceholder} />
+                        </Form.Item>
 
-              <Form.Item wrapperCol={{ offset: 6, span: 14 }}>
-                <Button
-                  icon={<ThunderboltOutlined />}
-                  onClick={() => void handleTestLLM()}
-                  loading={testingLLM}
-                  disabled={loading}
-                >
-                  测试主模型
-                </Button>
-              </Form.Item>
+                        <Form.Item wrapperCol={{ offset: 6, span: 14 }}>
+                          <Button
+                            icon={<ThunderboltOutlined />}
+                            onClick={() => void handleTestLLM()}
+                            loading={testingLLM}
+                            disabled={loading}
+                          >
+                            测试主模型
+                          </Button>
+                        </Form.Item>
 
-              <Divider orientation="left" plain>
-                需求解析小模型
-              </Divider>
+                        <Divider orientation="left" plain>
+                          需求解析小模型
+                        </Divider>
 
-              <Alert
-                type="info"
-                showIcon
-                style={{ marginBottom: 16 }}
-                message="用于把客户原话解析为商品推荐/场景图生成的结构化 profile。字段留空时复用主模型配置；推荐使用 DashScope Qwen 小模型，例如 qwen3.6-flash。"
-              />
+                        <Alert
+                          type="info"
+                          showIcon
+                          style={{ marginBottom: 16 }}
+                          message="用于把客户原话解析为商品推荐/场景图生成的结构化 profile。字段留空时复用主模型配置；推荐使用 DashScope Qwen 小模型，例如 qwen3.6-flash。"
+                        />
 
-              <Form.Item
-                label="服务商"
-                name="profile_provider"
-                extra={<Text type="secondary">留空表示复用上方主模型服务商。</Text>}
-              >
-                <Select options={[...PROFILE_PROVIDER_OPTIONS]} placeholder="复用主模型配置" />
-              </Form.Item>
+                        <Form.Item
+                          label="服务商"
+                          name="profile_provider"
+                          extra={<Text type="secondary">留空表示复用上方主模型服务商。</Text>}
+                        >
+                          <Select
+                            options={[...PROFILE_PROVIDER_OPTIONS]}
+                            placeholder="复用主模型配置"
+                          />
+                        </Form.Item>
 
-              <Form.Item label="API 密钥" name="profile_api_key">
-                <Input.Password
-                  placeholder="可选 — 不填则复用主 API 密钥"
-                  autoComplete="off"
-                />
-              </Form.Item>
+                        <Form.Item label="API 密钥" name="profile_api_key">
+                          <Input.Password
+                            placeholder="可选 — 不填则复用主 API 密钥"
+                            autoComplete="off"
+                          />
+                        </Form.Item>
 
-              <Form.Item
-                label="接口地址"
-                name="profile_base_url"
-                extra={<Text type="secondary">提示：{profileBaseUrlHint}</Text>}
-              >
-                <Input placeholder={profileBaseUrlHint} />
-              </Form.Item>
+                        <Form.Item
+                          label="接口地址"
+                          name="profile_base_url"
+                          extra={<Text type="secondary">提示：{profileBaseUrlHint}</Text>}
+                        >
+                          <Input placeholder={profileBaseUrlHint} />
+                        </Form.Item>
 
-              <Form.Item
-                label="模型名称"
-                name="profile_model"
-                extra={<Text type="secondary">推荐：qwen3.6-flash；也可使用 qwen-flash-latest / qwen-turbo-latest。</Text>}
-              >
-                <Input placeholder={profileModelPlaceholder} />
-              </Form.Item>
+                        <Form.Item
+                          label="模型名称"
+                          name="profile_model"
+                          extra={
+                            <Text type="secondary">
+                              推荐：qwen3.6-flash；也可使用 qwen-flash-latest / qwen-turbo-latest。
+                            </Text>
+                          }
+                        >
+                          <Input placeholder={profileModelPlaceholder} />
+                        </Form.Item>
 
-              <Form.Item
-                label="温度"
-                name="profile_temperature"
-                extra="结构化 JSON 解析建议保持 0。"
-              >
-                <InputNumber min={0} max={1} step={0.1} style={{ width: 180 }} />
-              </Form.Item>
+                        <Form.Item
+                          label="温度"
+                          name="profile_temperature"
+                          extra="结构化 JSON 解析建议保持 0。"
+                        >
+                          <InputNumber min={0} max={1} step={0.1} style={{ width: 180 }} />
+                        </Form.Item>
 
-              <Form.Item
-                label="最大令牌数"
-                name="profile_max_tokens"
-                extra="只用于短 JSON，通常 300-800 足够。"
-              >
-                <InputNumber min={100} max={2000} style={{ width: 180 }} />
-              </Form.Item>
+                        <Form.Item
+                          label="最大令牌数"
+                          name="profile_max_tokens"
+                          extra="只用于短 JSON，通常 300-800 足够。"
+                        >
+                          <InputNumber min={100} max={2000} style={{ width: 180 }} />
+                        </Form.Item>
 
-              <Form.Item
-                label="超时秒数"
-                name="profile_timeout_seconds"
-                extra="解析超时会自动回退到本地多语言规则。"
-              >
-                <InputNumber min={1} max={30} step={0.5} style={{ width: 180 }} />
-              </Form.Item>
+                        <Form.Item
+                          label="超时秒数"
+                          name="profile_timeout_seconds"
+                          extra="解析超时会自动回退到本地多语言规则。"
+                        >
+                          <InputNumber min={1} max={30} step={0.5} style={{ width: 180 }} />
+                        </Form.Item>
 
-              <Form.Item wrapperCol={{ offset: 6, span: 14 }}>
-                <Button
-                  icon={<ThunderboltOutlined />}
-                  onClick={() => void handleTestProfile()}
-                  loading={testingProfile}
-                  disabled={loading}
-                >
-                  测试需求解析小模型
-                </Button>
-              </Form.Item>
+                        <Form.Item wrapperCol={{ offset: 6, span: 14 }}>
+                          <Button
+                            icon={<ThunderboltOutlined />}
+                            onClick={() => void handleTestProfile()}
+                            loading={testingProfile}
+                            disabled={loading}
+                          >
+                            测试需求解析小模型
+                          </Button>
+                        </Form.Item>
 
-              <Divider orientation="left" plain>
-                向量嵌入设置
-              </Divider>
+                        <Divider orientation="left" plain>
+                          向量嵌入设置
+                        </Divider>
 
-              <Form.Item label="嵌入模型" name="embedding_model">
-                <Input placeholder="text-embedding-3-small" />
-              </Form.Item>
+                        <Form.Item label="嵌入模型" name="embedding_model">
+                          <Input placeholder="text-embedding-3-small" />
+                        </Form.Item>
 
-              <Form.Item
-                label="嵌入接口地址"
-                name="embedding_base_url"
-                extra={
-                  <Text type="secondary">
-                    当嵌入模型使用与主模型不同的端点时设置此项。
-                  </Text>
-                }
-              >
-                <Input placeholder="https://..." />
-              </Form.Item>
+                        <Form.Item
+                          label="嵌入接口地址"
+                          name="embedding_base_url"
+                          extra={
+                            <Text type="secondary">
+                              当嵌入模型使用与主模型不同的端点时设置此项。
+                            </Text>
+                          }
+                        >
+                          <Input placeholder="https://..." />
+                        </Form.Item>
 
-              <Form.Item label="嵌入 API 密钥" name="embedding_api_key">
-                <Input.Password
-                  placeholder="可选 — 仅在与主 API 密钥不同时填写"
-                  autoComplete="off"
-                />
-              </Form.Item>
+                        <Form.Item label="嵌入 API 密钥" name="embedding_api_key">
+                          <Input.Password
+                            placeholder="可选 — 仅在与主 API 密钥不同时填写"
+                            autoComplete="off"
+                          />
+                        </Form.Item>
 
-              <Form.Item wrapperCol={{ offset: 6, span: 14 }}>
-                <Button
-                  icon={<ThunderboltOutlined />}
-                  onClick={() => void handleTestEmbedding()}
-                  loading={testingEmbedding}
-                  disabled={loading}
-                >
-                  测试嵌入模型
-                </Button>
-              </Form.Item>
+                        <Form.Item wrapperCol={{ offset: 6, span: 14 }}>
+                          <Button
+                            icon={<ThunderboltOutlined />}
+                            onClick={() => void handleTestEmbedding()}
+                            loading={testingEmbedding}
+                            disabled={loading}
+                          >
+                            测试嵌入模型
+                          </Button>
+                        </Form.Item>
 
-              <Divider orientation="left" plain>
-                生成设置
-              </Divider>
+                        <Divider orientation="left" plain>
+                          生成设置
+                        </Divider>
 
-              <Form.Item label="生图模型" name="image_model">
-                <Input placeholder="gpt-image-1 / qwen-image / 你的图片模型名" />
-              </Form.Item>
+                        <Form.Item label="生图模型" name="image_model">
+                          <Input placeholder="gpt-image-1 / qwen-image / 你的图片模型名" />
+                        </Form.Item>
 
-              <Form.Item
-                label="生图接口地址"
-                name="image_base_url"
-                extra={
-                  <Text type="secondary">
-                    默认可与主模型接口一致；如图片能力走单独端点，请在此填写。
-                  </Text>
-                }
-              >
-                <Input placeholder="https://..." />
-              </Form.Item>
+                        <Form.Item
+                          label="生图接口地址"
+                          name="image_base_url"
+                          extra={
+                            <Text type="secondary">
+                              默认可与主模型接口一致；如图片能力走单独端点，请在此填写。
+                            </Text>
+                          }
+                        >
+                          <Input placeholder="https://..." />
+                        </Form.Item>
 
-              <Form.Item label="生图 API 密钥" name="image_api_key">
-                <Input.Password
-                  placeholder="可选 — 不填则复用主 API 密钥"
-                  autoComplete="off"
-                />
-              </Form.Item>
+                        <Form.Item label="生图 API 密钥" name="image_api_key">
+                          <Input.Password
+                            placeholder="可选 — 不填则复用主 API 密钥"
+                            autoComplete="off"
+                          />
+                        </Form.Item>
 
-              <Form.Item label="图片尺寸" name="image_size">
-                <Select
-                  options={[
-                    { value: '1024x1024', label: '1024 x 1024' },
-                    { value: '1536x1024', label: '1536 x 1024' },
-                    { value: '1024x1536', label: '1024 x 1536' },
-                  ]}
-                />
-              </Form.Item>
+                        <Form.Item label="图片尺寸" name="image_size">
+                          <Select
+                            options={[
+                              { value: '1024x1024', label: '1024 x 1024' },
+                              { value: '1536x1024', label: '1536 x 1024' },
+                              { value: '1024x1536', label: '1024 x 1536' },
+                            ]}
+                          />
+                        </Form.Item>
 
-              <Form.Item label="图片质量" name="image_quality">
-                <Select
-                  options={[
-                    { value: 'high', label: 'High' },
-                    { value: 'medium', label: 'Medium' },
-                    { value: 'low', label: 'Low' },
-                  ]}
-                />
-              </Form.Item>
+                        <Form.Item label="图片质量" name="image_quality">
+                          <Select
+                            options={[
+                              { value: 'high', label: 'High' },
+                              { value: 'medium', label: 'Medium' },
+                              { value: 'low', label: 'Low' },
+                            ]}
+                          />
+                        </Form.Item>
 
-              <Form.Item label="图片风格" name="image_style">
-                <Select
-                  options={[
-                    { value: 'natural', label: 'Natural' },
-                    { value: 'vivid', label: 'Vivid' },
-                  ]}
-                />
-              </Form.Item>
+                        <Form.Item label="图片风格" name="image_style">
+                          <Select
+                            options={[
+                              { value: 'natural', label: 'Natural' },
+                              { value: 'vivid', label: 'Vivid' },
+                            ]}
+                          />
+                        </Form.Item>
 
-              <Form.Item wrapperCol={{ offset: 6, span: 14 }}>
-                <Button
-                  icon={<ThunderboltOutlined />}
-                  onClick={() => void handleTestImage()}
-                  loading={testingImage}
-                  disabled={loading}
-                >
-                  测试生图模型
-                </Button>
-              </Form.Item>
+                        <Form.Item wrapperCol={{ offset: 6, span: 14 }}>
+                          <Button
+                            icon={<ThunderboltOutlined />}
+                            onClick={() => void handleTestImage()}
+                            loading={testingImage}
+                            disabled={loading}
+                          >
+                            测试生图模型
+                          </Button>
+                        </Form.Item>
 
-              <Divider orientation="left" plain>
-                生成参数
-              </Divider>
+                        <Divider orientation="left" plain>
+                          生成参数
+                        </Divider>
 
-              <Form.Item
-                label="温度"
-                name="temperature"
-                rules={[{ required: true, message: '请设置温度值' }]}
-              >
-                <Row gutter={16} align="middle" wrap={false}>
-                  <Col flex="auto">
-                    <Slider min={0} max={1} step={0.1} tooltip={{ formatter: (v) => `${v}` }} />
-                  </Col>
-                  <Col flex="none">
-                    <Text strong style={{ minWidth: 36, display: 'inline-block' }}>
-                      {temperature !== undefined && temperature !== null
-                        ? Number(temperature).toFixed(1)
-                        : '—'}
-                    </Text>
-                  </Col>
-                </Row>
-              </Form.Item>
+                        <Form.Item
+                          label="温度"
+                          name="temperature"
+                          rules={[{ required: true, message: '请设置温度值' }]}
+                        >
+                          <Row gutter={16} align="middle" wrap={false}>
+                            <Col flex="auto">
+                              <Slider
+                                min={0}
+                                max={1}
+                                step={0.1}
+                                tooltip={{ formatter: (v) => `${v}` }}
+                              />
+                            </Col>
+                            <Col flex="none">
+                              <Text strong style={{ minWidth: 36, display: 'inline-block' }}>
+                                {temperature !== undefined && temperature !== null
+                                  ? Number(temperature).toFixed(1)
+                                  : '—'}
+                              </Text>
+                            </Col>
+                          </Row>
+                        </Form.Item>
 
-              <Form.Item
-                label="最大令牌数"
-                name="max_tokens"
-                rules={[{ required: true, message: '请设置最大令牌数' }]}
-              >
-                <InputNumber min={100} max={8000} style={{ width: '100%', maxWidth: 320 }} />
-              </Form.Item>
+                        <Form.Item
+                          label="最大令牌数"
+                          name="max_tokens"
+                          rules={[{ required: true, message: '请设置最大令牌数' }]}
+                        >
+                          <InputNumber
+                            min={100}
+                            max={8000}
+                            style={{ width: '100%', maxWidth: 320 }}
+                          />
+                        </Form.Item>
 
-              <Form.Item wrapperCol={{ offset: 6, span: 14 }} style={{ marginBottom: 0 }}>
-                <Button
-                  type="primary"
-                  icon={<SaveOutlined />}
-                  onClick={() => void handleSave()}
-                  loading={saving}
-                  disabled={loading}
-                >
-                  保存设置
-                </Button>
-              </Form.Item>
-            </Form>
-          </Card>
-        </Spin>
+                        <Form.Item wrapperCol={{ offset: 6, span: 14 }} style={{ marginBottom: 0 }}>
+                          <Button
+                            type="primary"
+                            icon={<SaveOutlined />}
+                            onClick={() => void handleSave()}
+                            loading={saving}
+                            disabled={loading}
+                          >
+                            保存设置
+                          </Button>
+                        </Form.Item>
+                      </Form>
+                    </Card>
+                  </Spin>
                 </Space>
               ),
             },
@@ -662,7 +700,11 @@ export default function Settings() {
         open={testResult.open}
         onCancel={() => setTestResult((s) => ({ ...s, open: false }))}
         footer={[
-          <Button key="close" type="primary" onClick={() => setTestResult((s) => ({ ...s, open: false }))}>
+          <Button
+            key="close"
+            type="primary"
+            onClick={() => setTestResult((s) => ({ ...s, open: false }))}
+          >
             确定
           </Button>,
         ]}

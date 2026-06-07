@@ -28,48 +28,67 @@ class FillProductTranslationsTests(unittest.TestCase):
         self.assertIn('"language": "en"', messages[1]["content"])
 
     def test_parse_translation_response_accepts_array_or_object_wrapper(self):
-        raw = json.dumps({
-            "translations": [
-                {
-                    "product_id": 10,
-                    "language": "fr",
-                    "fields": {"name": "Canapé chinois", "material": "bois massif"},
-                }
-            ]
-        })
+        raw = json.dumps(
+            {
+                "translations": [
+                    {
+                        "product_id": 10,
+                        "language": "fr",
+                        "fields": {"name": "Canapé chinois", "material": "bois massif"},
+                    }
+                ]
+            }
+        )
 
         parsed = parse_translation_response(raw)
 
         self.assertEqual(parsed[(10, "fr")]["name"], "Canapé chinois")
         self.assertEqual(parsed[(10, "fr")]["material"], "bois massif")
 
-    def test_traditional_rows_from_products_uses_local_conversion(self):
-        rows = traditional_rows_from_products([
+    def test_parse_translation_response_accepts_flat_fields_and_skips_incomplete_rows(self):
+        raw = json.dumps(
             {
-                "id": 10,
-                "name": "中式沙发",
-                "material": "实木",
-                "description": "为客厅推荐的产品。",
-                "translations": {},
+                "items": [
+                    {"product_id": None, "language": "en", "name": "Missing product"},
+                    {"product_id": 11, "language": "en", "name": "Chinese sofa"},
+                    {"product_id": 12, "language": "", "name": "Missing language"},
+                ]
             }
-        ])
+        )
+
+        parsed = parse_translation_response(raw)
+
+        self.assertEqual(parsed, {(11, "en"): {"name": "Chinese sofa"}})
+
+    def test_traditional_rows_from_products_uses_local_conversion(self):
+        rows = traditional_rows_from_products(
+            [
+                {
+                    "id": 10,
+                    "name": "中式沙发",
+                    "material": "实木",
+                    "description": "为客厅推荐的产品。",
+                    "translations": {},
+                }
+            ]
+        )
 
         self.assertEqual(rows[(10, "zh-Hant")]["name"], "中式沙發")
         self.assertEqual(rows[(10, "zh-Hant")]["material"], "實木")
         self.assertEqual(rows[(10, "zh-Hant")]["description"], "為客廳推薦的產品。")
 
     def test_traditional_rows_from_products_skips_when_non_empty_source_fields_are_done(self):
-        rows = traditional_rows_from_products([
-            {
-                "id": 10,
-                "name": "中式沙发",
-                "series": "",
-                "material": "实木",
-                "translations": {
-                    "zh-Hant": {"name": "中式沙發", "material": "實木"}
-                },
-            }
-        ])
+        rows = traditional_rows_from_products(
+            [
+                {
+                    "id": 10,
+                    "name": "中式沙发",
+                    "series": "",
+                    "material": "实木",
+                    "translations": {"zh-Hant": {"name": "中式沙發", "material": "實木"}},
+                }
+            ]
+        )
 
         self.assertEqual(rows, {})
 

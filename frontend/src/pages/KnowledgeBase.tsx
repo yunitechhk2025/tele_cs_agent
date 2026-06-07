@@ -113,7 +113,9 @@ export default function KnowledgeBase() {
   const [uploadSubmitting, setUploadSubmitting] = useState(false);
   const [uploadFiles, setUploadFiles] = useState<File[]>([]);
   const [uploadFileList, setUploadFileList] = useState<UploadFile[]>([]);
-  const [uploadProgress, setUploadProgress] = useState<{ done: number; total: number } | null>(null);
+  const [uploadProgress, setUploadProgress] = useState<{ done: number; total: number } | null>(
+    null,
+  );
   const [uploadForm] = Form.useForm();
   const [viewOpen, setViewOpen] = useState(false);
   const [viewingEntry, setViewingEntry] = useState<KnowledgeEntry | null>(null);
@@ -333,9 +335,7 @@ export default function KnowledgeBase() {
     const q = search.trim().toLowerCase();
     if (!q) return filteredByCategory;
     return filteredByCategory.filter(
-      (e) =>
-        e.title.toLowerCase().includes(q) ||
-        e.content.toLowerCase().includes(q),
+      (e) => e.title.toLowerCase().includes(q) || e.content.toLowerCase().includes(q),
     );
   }, [filteredByCategory, search]);
 
@@ -371,7 +371,10 @@ export default function KnowledgeBase() {
         okCount += 1;
       } catch (e: unknown) {
         const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-        failures.push({ name: file.name, reason: typeof detail === 'string' ? detail : '上传失败' });
+        failures.push({
+          name: file.name,
+          reason: typeof detail === 'string' ? detail : '上传失败',
+        });
       } finally {
         setUploadProgress({ done: i + 1, total: uploadFiles.length });
       }
@@ -527,7 +530,9 @@ export default function KnowledgeBase() {
       >
         <Space align="center" style={{ marginBottom: 14 }}>
           <UploadOutlined style={{ color: '#1677ff', fontSize: 18 }} />
-          <Text strong style={{ fontSize: 16 }}>批量上传文档</Text>
+          <Text strong style={{ fontSize: 16 }}>
+            批量上传文档
+          </Text>
           <Text type="secondary" style={{ fontSize: 13 }}>
             拖入或选择多个文件，将自动解析切块并生成向量索引
           </Text>
@@ -560,7 +565,9 @@ export default function KnowledgeBase() {
           >
             <Space size={8} align="center" style={{ marginBottom: 4 }}>
               <FolderOutlined style={{ color: '#1677ff', fontSize: 16 }} />
-              <Text strong style={{ fontSize: 15 }}>归类到</Text>
+              <Text strong style={{ fontSize: 15 }}>
+                归类到
+              </Text>
             </Space>
             <div style={{ marginBottom: 14 }}>
               <Text type="secondary" style={{ fontSize: 13 }}>
@@ -597,9 +604,7 @@ export default function KnowledgeBase() {
                 loading={uploadSubmitting}
                 onClick={() => void handleUploadOk()}
               >
-                {uploadFiles.length > 1
-                  ? `上传 ${uploadFiles.length} 个文件并嵌入`
-                  : '上传并嵌入'}
+                {uploadFiles.length > 1 ? `上传 ${uploadFiles.length} 个文件并嵌入` : '上传并嵌入'}
               </Button>
               {uploadFiles.length > 0 && !uploadSubmitting ? (
                 <Button
@@ -802,7 +807,6 @@ export default function KnowledgeBase() {
           </Space>
         ) : null}
       </Modal>
-
     </div>
   );
 }

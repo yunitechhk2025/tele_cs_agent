@@ -41,7 +41,13 @@ import {
   SwapOutlined,
   UserOutlined,
 } from '@ant-design/icons';
-import { conversationApi, contractApi, contractTemplateApi, dashboardApi, settingsApi } from '../api';
+import {
+  conversationApi,
+  contractApi,
+  contractTemplateApi,
+  dashboardApi,
+  settingsApi,
+} from '../api';
 import { RichText } from '../components/RichText';
 import type {
   Contract,
@@ -86,8 +92,22 @@ const CONTRACT_OUTPUT_LANG_OPTIONS = [
 ];
 
 const SIMULATED_NAME_POOL = [
-  '张三', '李四', '王五', '赵六', '钱七', '孙八', '周九', '吴十',
-  '郑明', '冯华', '陈晓', '楚云', '林峰', '黄磊', '徐波', '高远',
+  '张三',
+  '李四',
+  '王五',
+  '赵六',
+  '钱七',
+  '孙八',
+  '周九',
+  '吴十',
+  '郑明',
+  '冯华',
+  '陈晓',
+  '楚云',
+  '林峰',
+  '黄磊',
+  '徐波',
+  '高远',
 ];
 
 function simulatedDisplayName(id?: number | null) {
@@ -184,8 +204,10 @@ function parseServerUtc(value?: string | null) {
   return parsed.isValid() ? parsed : null;
 }
 
-
-function draftAutoSendLabel(detail: ConversationDetail | null, draftCountdownSeconds: number | null) {
+function draftAutoSendLabel(
+  detail: ConversationDetail | null,
+  draftCountdownSeconds: number | null,
+) {
   if (!detail?.ai_draft) return '—';
   if (detail.ai_draft.auto_send_paused) return '已暂停自动发送';
   return `${draftCountdownSeconds ?? '—'} 秒后自动发送`;
@@ -276,8 +298,11 @@ function ProductRecommendationDraftPreview({ payload }: { payload: Record<string
             .split('\n')
             .map((line) => line.trim())
             .filter(Boolean);
-          const heading = lines[0]?.replace(/^\[(#[^\]]+)\]\s*\*/, '$1 ').replace(/\*$/g, '') || `#${index + 1}`;
-          const detailLines = lines.slice(1).filter((line) => !line.startsWith('[查看详情]') && !line.startsWith('[View details]'));
+          const heading =
+            lines[0]?.replace(/^\[(#[^\]]+)\]\s*\*/, '$1 ').replace(/\*$/g, '') || `#${index + 1}`;
+          const detailLines = lines
+            .slice(1)
+            .filter((line) => !line.startsWith('[查看详情]') && !line.startsWith('[View details]'));
           const linkLine = lines.find((line) => line.includes(']('));
           const link = linkLine ? parseMarkdownLink(linkLine) : null;
           return (
@@ -397,7 +422,10 @@ function SceneResultDraftPreview({ payload }: { payload: Record<string, unknown>
         <Card size="small" style={{ borderRadius: 12 }} styles={{ body: { padding: 12 } }}>
           <Space direction="vertical" size={8} style={{ width: '100%' }}>
             {linkLines.map((item, index) => (
-              <div key={`${item.label}-${index}`} style={{ lineHeight: 1.6, wordBreak: 'break-word' }}>
+              <div
+                key={`${item.label}-${index}`}
+                style={{ lineHeight: 1.6, wordBreak: 'break-word' }}
+              >
                 {item.prefix ? (
                   <Text strong style={{ marginRight: 6 }}>
                     {item.prefix}:
@@ -494,10 +522,24 @@ function OutboundEventBubble({ event }: { event: SimulatorOutgoingEvent }) {
             <img
               alt={event.caption || 'outbound-photo'}
               src={event.url}
-              style={{ maxWidth: '100%', maxHeight: 320, borderRadius: 10, display: 'block', background: '#fafafa' }}
+              style={{
+                maxWidth: '100%',
+                maxHeight: 320,
+                borderRadius: 10,
+                display: 'block',
+                background: '#fafafa',
+              }}
             />
             {event.caption ? (
-              <div style={{ marginTop: 10, whiteSpace: 'pre-wrap', wordBreak: 'break-word', lineHeight: 1.55, fontSize: 14 }}>
+              <div
+                style={{
+                  marginTop: 10,
+                  whiteSpace: 'pre-wrap',
+                  wordBreak: 'break-word',
+                  lineHeight: 1.55,
+                  fontSize: 14,
+                }}
+              >
                 <RichText text={event.caption} />
               </div>
             ) : null}
@@ -509,7 +551,14 @@ function OutboundEventBubble({ event }: { event: SimulatorOutgoingEvent }) {
           </a>
         ) : null}
         {event.type === 'text' && event.text ? (
-          <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', lineHeight: 1.55, fontSize: 14 }}>
+          <div
+            style={{
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-word',
+              lineHeight: 1.55,
+              fontSize: 14,
+            }}
+          >
             <RichText text={event.text} />
           </div>
         ) : null}
@@ -556,11 +605,7 @@ function MessageBubble({ msg }: { msg: Message }) {
   const isAssistant = msg.role === 'assistant';
 
   const roleLabel =
-    msg.role === 'user'
-      ? '客户'
-      : msg.role === 'assistant'
-        ? 'AI 助手'
-        : '人工客服';
+    msg.role === 'user' ? '客户' : msg.role === 'assistant' ? 'AI 助手' : '人工客服';
 
   const icon =
     msg.role === 'user' ? (
@@ -572,11 +617,7 @@ function MessageBubble({ msg }: { msg: Message }) {
     );
 
   const align: 'flex-start' | 'flex-end' = isUser ? 'flex-start' : 'flex-end';
-  const bg = isUser
-    ? '#e6f7ff'
-    : isAssistant
-      ? '#fff'
-      : '#f6ffed';
+  const bg = isUser ? '#e6f7ff' : isAssistant ? '#fff' : '#f6ffed';
   const border = isAssistant ? '1px solid #d9d9d9' : 'none';
 
   return (
@@ -605,7 +646,14 @@ function MessageBubble({ msg }: { msg: Message }) {
             {dayjs(msg.created_at).format('YYYY-MM-DD · HH:mm')}
           </Text>
         </Space>
-        <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 14, lineHeight: 1.55 }}>
+        <div
+          style={{
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-word',
+            fontSize: 14,
+            lineHeight: 1.55,
+          }}
+        >
           <RichText text={msg.content} />
         </div>
         {msg.attachment_file_id != null && msg.attachment_file_id !== undefined && (
@@ -642,7 +690,8 @@ export default function Conversations() {
 
   const [detailLoading, setDetailLoading] = useState(false);
   const [detail, setDetail] = useState<ConversationDetail | null>(null);
-  const [customerServiceSettings, setCustomerServiceSettings] = useState<CustomerServiceSettings | null>(null);
+  const [customerServiceSettings, setCustomerServiceSettings] =
+    useState<CustomerServiceSettings | null>(null);
   const [draftCountdownSeconds, setDraftCountdownSeconds] = useState<number | null>(null);
 
   const [replyText, setReplyText] = useState('');
@@ -662,6 +711,7 @@ export default function Conversations() {
 
   const [listWidth, setListWidth] = useState<number>(() => {
     try {
+      // 列表宽度是高频操作偏好，放在本地即可，不能影响服务端会话状态。
       const v = parseInt(localStorage.getItem('conv:listWidth') || '', 10);
       if (Number.isFinite(v) && v >= 220 && v <= 720) return v;
     } catch {
@@ -830,16 +880,18 @@ export default function Conversations() {
     loadDetail(selectedId);
   }, [selectedId, loadDetail]);
 
+  const aiDraft = detail?.ai_draft;
+
   useEffect(() => {
-    if (!detail?.ai_draft) {
+    if (!aiDraft) {
       setEditingAiDraft(false);
       setAiDraftText('');
       return;
     }
     if (!editingAiDraft) {
-      setAiDraftText(detail.ai_draft.draft_text || '');
+      setAiDraftText(aiDraft.draft_text || '');
     }
-  }, [detail?.ai_draft?.id, detail?.ai_draft?.draft_text, editingAiDraft]);
+  }, [aiDraft, editingAiDraft]);
 
   useEffect(() => {
     if (!detail?.ai_draft?.auto_send_at) {
@@ -863,6 +915,7 @@ export default function Conversations() {
 
   useEffect(() => {
     if (selectedId == null) return undefined;
+    // 会话页承担人工接管和 AI 草稿确认，短轮询保证倒计时、消息和模式状态接近实时。
     const timer = window.setInterval(() => {
       void loadDetail(selectedId, true);
       void loadList();
@@ -989,11 +1042,12 @@ export default function Conversations() {
     setGenerateModalOpen(true);
     setGenTemplateId(null);
     const rawLanguage = detail?.language || 'en';
-    const normalizedLanguage = rawLanguage === 'zh-Hant'
-      ? 'zh-Hant'
-      : rawLanguage === 'zh-Hans' || rawLanguage === 'zh'
-        ? 'zh-Hans'
-        : rawLanguage.split('-')[0]?.toLowerCase() || 'en';
+    const normalizedLanguage =
+      rawLanguage === 'zh-Hant'
+        ? 'zh-Hant'
+        : rawLanguage === 'zh-Hans' || rawLanguage === 'zh'
+          ? 'zh-Hans'
+          : rawLanguage.split('-')[0]?.toLowerCase() || 'en';
     const match = CONTRACT_OUTPUT_LANG_OPTIONS.some((o) => o.value === normalizedLanguage);
     setGenOutputLang(match ? normalizedLanguage : 'en');
     setTemplatesLoading(true);
@@ -1099,13 +1153,16 @@ export default function Conversations() {
       message: msg,
     }));
     const eventItems = (detail.outbound_events || [])
-      .filter((event) => event.type === 'text' || event.type === 'photo' || event.type === 'document')
+      .filter(
+        (event) => event.type === 'text' || event.type === 'photo' || event.type === 'document',
+      )
       .map((event) => ({
         id: event.id,
         created_at: event.created_at,
         kind: 'event' as const,
         event,
       }));
+    // 模拟器同时有 Message 和 OutboundEvent 两类来源，合并后按时间排序才能复现客户视角。
     return [...messageItems, ...eventItems].sort((a, b) => {
       const diff = dayjs(a.created_at).valueOf() - dayjs(b.created_at).valueOf();
       if (diff !== 0) return diff;
@@ -1146,7 +1203,7 @@ export default function Conversations() {
   const renderStatItem = (
     label: string,
     value: React.ReactNode,
-    options?: { color?: string; onClick?: () => void; emphasizeWhen?: boolean }
+    options?: { color?: string; onClick?: () => void; emphasizeWhen?: boolean },
   ) => (
     <div
       onClick={options?.onClick}
@@ -1203,10 +1260,7 @@ export default function Conversations() {
           onClick: () => setFilter('pending_human'),
         })}
         {renderStatItem('合同', stats?.total_contracts ?? 0)}
-        {renderStatItem(
-          'Bot 在线',
-          `${stats?.active_bots ?? 0}/${stats?.total_bots ?? 0}`
-        )}
+        {renderStatItem('Bot 在线', `${stats?.active_bots ?? 0}/${stats?.total_bots ?? 0}`)}
         <Divider type="vertical" style={{ height: 28 }} />
         <Text type="secondary" style={{ fontSize: 12 }}>
           知识 {stats?.total_knowledge_entries ?? 0} · 文件 {stats?.total_files ?? 0} · 消息{' '}
@@ -1229,547 +1283,551 @@ export default function Conversations() {
           position: 'relative',
         }}
       >
-      {/* 左侧：对话列表（minHeight:0 让内部列表在任意会话下都能出现滚动条） */}
-      <div
-        style={{
-          width: listCollapsed ? 0 : listWidth,
-          flexShrink: 0,
-          alignSelf: 'stretch',
-          minHeight: 0,
-          display: listCollapsed ? 'none' : 'flex',
-          flexDirection: 'column',
-          overflow: 'hidden',
-          borderRight: '1px solid #f0f0f0',
-          background: '#fafafa',
-        }}
-      >
-        <div style={{ padding: '12px 12px 6px', display: 'flex', alignItems: 'center', gap: 6 }}>
-          <Input
-            allowClear
-            size="small"
-            placeholder="搜索对话…"
-            prefix={<SearchOutlined style={{ color: '#bfbfbf' }} />}
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            style={{ flex: 1 }}
-          />
-          <Tooltip title="收起对话列表" placement="left">
-            <Button
-              size="small"
-              type="text"
-              icon={<MenuFoldOutlined />}
-              onClick={() => setListCollapsed(true)}
-            />
-          </Tooltip>
-        </div>
-        <Tabs
-          size="small"
-          activeKey={activeTabKey}
-          onChange={(k) => setFilter(k as FilterKey)}
-          items={FILTER_TABS.map((t) => ({
-            key: t.key,
-            label: t.label,
-          }))}
-          style={{ padding: '0 12px', marginBottom: 0 }}
-        />
+        {/* 左侧：对话列表（minHeight:0 让内部列表在任意会话下都能出现滚动条） */}
         <div
           style={{
-            flex: 1,
-            minHeight: 0,
-            overflowY: 'auto',
-            overflowX: 'hidden',
-            overscrollBehavior: 'contain',
-            scrollbarGutter: 'stable',
-            WebkitOverflowScrolling: 'touch',
-            padding: '8px 12px 16px',
-          }}
-        >
-          <Spin spinning={listLoading}>
-            {!listLoading && conversations.length === 0 ? (
-              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无对话" />
-            ) : (
-              <List
-                rowKey="id"
-                dataSource={conversations}
-                split={false}
-                renderItem={(item) => {
-                  const selected = selectedId === item.id;
-                  const st = statusConfig(item.status);
-                  const showDot = item.status === 'pending_human';
-                  const isSimulator = isSimulatorConversation(item);
-                  return (
-                    <List.Item style={{ padding: '6px 0', border: 'none' }}>
-                      <Card
-                        size="small"
-                        hoverable
-                        onClick={() => handleSelectConversation(item.id)}
-                        style={{
-                          width: '100%',
-                          cursor: 'pointer',
-                          borderRadius: 10,
-                          border: selected ? '1px solid #1890ff' : '1px solid #f0f0f0',
-                          background: selected ? '#e6f7ff' : '#fff',
-                          transition: 'all 0.2s ease',
-                          position: 'relative',
-                        }}
-                        styles={{ body: { padding: '12px 14px' } }}
-                      >
-                        {isSimulator && (
-                          <div
-                            style={{
-                              position: 'absolute',
-                              top: 6,
-                              right: 6,
-                              display: 'flex',
-                              gap: 2,
-                              zIndex: 1,
-                            }}
-                          >
-                            <Tooltip title="打开模拟器">
-                              <Button
-                                type="text"
-                                size="small"
-                                shape="circle"
-                                icon={<SwapOutlined style={{ color: '#333' }} />}
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleOpenSimulator(item.id);
-                                }}
-                              />
-                            </Tooltip>
-                            <Tooltip title="删除模拟对话">
-                              <Button
-                                type="text"
-                                size="small"
-                                shape="circle"
-                                icon={<DeleteOutlined style={{ color: '#333' }} />}
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleDeleteSimulatorConversation(item);
-                                }}
-                              />
-                            </Tooltip>
-                          </div>
-                        )}
-                        <Space direction="vertical" size={6} style={{ width: '100%' }}>
-                          <div
-                            style={{
-                              display: 'flex',
-                              justifyContent: 'space-between',
-                              alignItems: 'flex-start',
-                              gap: 8,
-                            }}
-                          >
-                            <Text strong ellipsis style={{ flex: 1 }}>
-                              {customerDisplayName(item)}
-                            </Text>
-                            {showDot ? <Badge status="processing" /> : null}
-                          </div>
-                          <Text type="secondary" style={{ fontSize: 12 }}>
-                            更新于 {dayjs(item.updated_at).fromNow()}
-                          </Text>
-                        </Space>
-                      </Card>
-                    </List.Item>
-                  );
-                }}
-              />
-            )}
-          </Spin>
-        </div>
-      </div>
-
-      {/* 拖动分隔条 */}
-      {!listCollapsed && (
-        <div
-          onMouseDown={startResizing}
-          title="拖动调整宽度"
-          style={{
-            width: 6,
-            cursor: 'col-resize',
-            background: 'transparent',
-            position: 'relative',
+            width: listCollapsed ? 0 : listWidth,
             flexShrink: 0,
-            zIndex: 2,
-          }}
-          onMouseEnter={(e) => {
-            (e.currentTarget as HTMLDivElement).style.background = 'rgba(24,144,255,0.12)';
-          }}
-          onMouseLeave={(e) => {
-            (e.currentTarget as HTMLDivElement).style.background = 'transparent';
+            alignSelf: 'stretch',
+            minHeight: 0,
+            display: listCollapsed ? 'none' : 'flex',
+            flexDirection: 'column',
+            overflow: 'hidden',
+            borderRight: '1px solid #f0f0f0',
+            background: '#fafafa',
           }}
         >
-          <div
-            style={{
-              position: 'absolute',
-              top: 0,
-              bottom: 0,
-              left: 2,
-              width: 2,
-              background: '#f0f0f0',
-            }}
-          />
-        </div>
-      )}
-
-      {/* 折叠时显示的展开浮动按钮 */}
-      {listCollapsed && (
-        <Tooltip title="展开对话列表" placement="right">
-          <Button
+          <div style={{ padding: '12px 12px 6px', display: 'flex', alignItems: 'center', gap: 6 }}>
+            <Input
+              allowClear
+              size="small"
+              placeholder="搜索对话…"
+              prefix={<SearchOutlined style={{ color: '#bfbfbf' }} />}
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              style={{ flex: 1 }}
+            />
+            <Tooltip title="收起对话列表" placement="left">
+              <Button
+                size="small"
+                type="text"
+                icon={<MenuFoldOutlined />}
+                onClick={() => setListCollapsed(true)}
+              />
+            </Tooltip>
+          </div>
+          <Tabs
             size="small"
-            type="default"
-            icon={<MenuUnfoldOutlined />}
-            onClick={() => setListCollapsed(false)}
-            style={{
-              position: 'absolute',
-              top: 10,
-              left: 8,
-              zIndex: 5,
-              boxShadow: '0 2px 6px rgba(0,0,0,0.08)',
-              background: '#fff',
-            }}
+            activeKey={activeTabKey}
+            onChange={(k) => setFilter(k as FilterKey)}
+            items={FILTER_TABS.map((t) => ({
+              key: t.key,
+              label: t.label,
+            }))}
+            style={{ padding: '0 12px', marginBottom: 0 }}
           />
-        </Tooltip>
-      )}
-
-      {/* 右侧：对话详情 */}
-      <div
-        style={{
-          flex: 1,
-          minWidth: 0,
-          minHeight: 0,
-          display: 'flex',
-          flexDirection: 'column',
-          background: '#f5f5f5',
-          overflow: 'hidden',
-        }}
-      >
-        {selectedId == null ? (
           <div
             style={{
               flex: 1,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              padding: 24,
+              minHeight: 0,
+              overflowY: 'auto',
+              overflowX: 'hidden',
+              overscrollBehavior: 'contain',
+              scrollbarGutter: 'stable',
+              WebkitOverflowScrolling: 'touch',
+              padding: '8px 12px 16px',
             }}
           >
-            <Empty description="选择一个对话查看消息" />
+            <Spin spinning={listLoading}>
+              {!listLoading && conversations.length === 0 ? (
+                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无对话" />
+              ) : (
+                <List
+                  rowKey="id"
+                  dataSource={conversations}
+                  split={false}
+                  renderItem={(item) => {
+                    const selected = selectedId === item.id;
+                    const st = statusConfig(item.status);
+                    const showDot = item.status === 'pending_human';
+                    const isSimulator = isSimulatorConversation(item);
+                    return (
+                      <List.Item style={{ padding: '6px 0', border: 'none' }}>
+                        <Card
+                          size="small"
+                          hoverable
+                          onClick={() => handleSelectConversation(item.id)}
+                          style={{
+                            width: '100%',
+                            cursor: 'pointer',
+                            borderRadius: 10,
+                            border: selected ? '1px solid #1890ff' : '1px solid #f0f0f0',
+                            background: selected ? '#e6f7ff' : '#fff',
+                            transition: 'all 0.2s ease',
+                            position: 'relative',
+                          }}
+                          styles={{ body: { padding: '12px 14px' } }}
+                        >
+                          {isSimulator && (
+                            <div
+                              style={{
+                                position: 'absolute',
+                                top: 6,
+                                right: 6,
+                                display: 'flex',
+                                gap: 2,
+                                zIndex: 1,
+                              }}
+                            >
+                              <Tooltip title="打开模拟器">
+                                <Button
+                                  type="text"
+                                  size="small"
+                                  shape="circle"
+                                  icon={<SwapOutlined style={{ color: '#333' }} />}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleOpenSimulator(item.id);
+                                  }}
+                                />
+                              </Tooltip>
+                              <Tooltip title="删除模拟对话">
+                                <Button
+                                  type="text"
+                                  size="small"
+                                  shape="circle"
+                                  icon={<DeleteOutlined style={{ color: '#333' }} />}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleDeleteSimulatorConversation(item);
+                                  }}
+                                />
+                              </Tooltip>
+                            </div>
+                          )}
+                          <Space direction="vertical" size={6} style={{ width: '100%' }}>
+                            <div
+                              style={{
+                                display: 'flex',
+                                justifyContent: 'space-between',
+                                alignItems: 'flex-start',
+                                gap: 8,
+                              }}
+                            >
+                              <Text strong ellipsis style={{ flex: 1 }}>
+                                {customerDisplayName(item)}
+                              </Text>
+                              {showDot ? <Badge status="processing" /> : null}
+                            </div>
+                            <Text type="secondary" style={{ fontSize: 12 }}>
+                              更新于 {dayjs(item.updated_at).fromNow()}
+                            </Text>
+                          </Space>
+                        </Card>
+                      </List.Item>
+                    );
+                  }}
+                />
+              )}
+            </Spin>
           </div>
-        ) : (
-          <>
+        </div>
+
+        {/* 拖动分隔条 */}
+        {!listCollapsed && (
+          <div
+            onMouseDown={startResizing}
+            title="拖动调整宽度"
+            style={{
+              width: 6,
+              cursor: 'col-resize',
+              background: 'transparent',
+              position: 'relative',
+              flexShrink: 0,
+              zIndex: 2,
+            }}
+            onMouseEnter={(e) => {
+              (e.currentTarget as HTMLDivElement).style.background = 'rgba(24,144,255,0.12)';
+            }}
+            onMouseLeave={(e) => {
+              (e.currentTarget as HTMLDivElement).style.background = 'transparent';
+            }}
+          >
             <div
               style={{
-                padding: '16px 20px',
-                background: '#fff',
-                borderBottom: '1px solid #f0f0f0',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                gap: 16,
-                flexWrap: 'wrap',
-                position: 'relative',
+                position: 'absolute',
+                top: 0,
+                bottom: 0,
+                left: 2,
+                width: 2,
+                background: '#f0f0f0',
               }}
-            >
-              <Space align="center" size="middle" style={{ minWidth: 0 }}>
-                <Title level={4} style={{ margin: 0 }} ellipsis>
-                  {detail ? customerDisplayName(detail) : '…'}
-                </Title>
-                {detail ? (
-                  <>
-                    <Tooltip title="切换全局客服应答模式（影响所有对话）">
-                      <Segmented
-                        size="small"
-                        value={customerServiceSettings?.mode ?? 'ai_auto'}
-                        onChange={(val) =>
-                          void handleChangeMode(val as CustomerServiceSettings['mode'])
-                        }
-                        disabled={!customerServiceSettings || modeUpdating}
-                        options={[
-                          { label: '全 AI', value: 'ai_auto' },
-                          { label: '人机协同', value: 'ai_assist' },
-                          { label: '纯人工', value: 'human_only' },
-                        ]}
-                      />
-                    </Tooltip>
-                    <Tooltip title={detail.processing_state?.stage_detail || '当前处理阶段'}>
-                      <Tag color={processingStageColor(detail)}>
-                        {detail.processing_state?.stage_label || '空闲'}
-                      </Tag>
-                    </Tooltip>
-                  </>
-                ) : (
-                  <Tag>…</Tag>
-                )}
-              </Space>
-              <Space wrap style={{ marginRight: 36 }}>
-                <Tooltip title="点击生成合同；右侧箭头可发送已生成合同">
-                  <Dropdown.Button
-                    loading={contractLoading}
-                    onClick={() => void openGenerateModal()}
-                    menu={{
-                      items: [
-                        {
-                          key: 'generate',
-                          icon: <FileTextOutlined />,
-                          label: '生成合同',
-                          onClick: () => void openGenerateModal(),
-                        },
-                        {
-                          key: 'send',
-                          icon: <ExportOutlined />,
-                          label: '发送合同给客户',
-                          disabled: detail?.status === 'closed',
-                          onClick: () => void openSendContractModal(),
-                        },
-                      ],
-                    }}
-                  >
-                    <FileTextOutlined /> 合同
-                  </Dropdown.Button>
-                </Tooltip>
-              </Space>
-              <Tooltip title="关闭对话">
-                <Button
-                  type="text"
-                  shape="circle"
-                  icon={<CloseCircleOutlined style={{ color: '#333', fontSize: 16 }} />}
-                  loading={closeLoading}
-                  disabled={detail?.status === 'closed'}
-                  onClick={handleCloseConversation}
-                  style={{ position: 'absolute', top: 8, right: 8 }}
-                />
-              </Tooltip>
-            </div>
+            />
+          </div>
+        )}
 
-            {detail?.ai_draft ? (
-              <div
-                style={{
-                  padding: '12px 20px',
-                  background: '#fffbe6',
-                  borderBottom: '1px solid #f0e6a6',
-                }}
-              >
-                <Card
-                  size="small"
-                  title={draftTitle(detail)}
-                  extra={
-                    <Space size={8}>
-                      <Tag color="gold">
-                        {draftAutoSendLabel(detail, draftCountdownSeconds)}
-                      </Tag>
-                      {detail.ai_draft.error_message ? <Tag color="red">{detail.ai_draft.error_message}</Tag> : null}
-                    </Space>
-                  }
-                  styles={{ body: { paddingTop: 12 } }}
-                >
-                  <Space
-                    direction="vertical"
-                    size="middle"
-                    style={{
-                      width: '100%',
-                      maxHeight: 420,
-                      overflowY: 'auto',
-                      overflowX: 'hidden',
-                      paddingRight: 4,
-                    }}
-                  >
-                    {editingAiDraft ? (
-                      <Input.TextArea
-                        value={aiDraftText}
-                        onChange={(e) => setAiDraftText(e.target.value)}
-                        autoSize={{ minRows: 4, maxRows: 10 }}
-                      />
-                    ) : (
-                      <DraftPreview detail={detail} />
-                    )}
-                    <Space wrap>
-                      <Button danger loading={aiDraftCancelling} onClick={() => void handleCancelAiDraft()}>
-                        取消
-                      </Button>
-                      {canEditDraft(detail) ? (
-                        <Button
-                          icon={<EditOutlined />}
-                          onClick={() => void handleToggleEditAiDraft()}
-                        >
-                          {editingAiDraft ? '取消编辑' : '编辑AI回复'}
-                        </Button>
-                      ) : null}
-                      <Button
-                        type="primary"
-                        icon={<SendOutlined />}
-                        loading={aiDraftSending}
-                        onClick={() => void handleSendAiDraft()}
-                      >
-                        {editingAiDraft ? '发送编辑后的回复' : '直接发送'}
-                      </Button>
-                    </Space>
-                  </Space>
-                </Card>
-              </div>
-            ) : null}
+        {/* 折叠时显示的展开浮动按钮 */}
+        {listCollapsed && (
+          <Tooltip title="展开对话列表" placement="right">
+            <Button
+              size="small"
+              type="default"
+              icon={<MenuUnfoldOutlined />}
+              onClick={() => setListCollapsed(false)}
+              style={{
+                position: 'absolute',
+                top: 10,
+                left: 8,
+                zIndex: 5,
+                boxShadow: '0 2px 6px rgba(0,0,0,0.08)',
+                background: '#fff',
+              }}
+            />
+          </Tooltip>
+        )}
 
+        {/* 右侧：对话详情 */}
+        <div
+          style={{
+            flex: 1,
+            minWidth: 0,
+            minHeight: 0,
+            display: 'flex',
+            flexDirection: 'column',
+            background: '#f5f5f5',
+            overflow: 'hidden',
+          }}
+        >
+          {selectedId == null ? (
             <div
               style={{
                 flex: 1,
-                minHeight: 0,
-                overflowY: 'scroll',
-                overflowX: 'hidden',
-                overscrollBehavior: 'contain',
-                scrollbarGutter: 'stable',
-                WebkitOverflowScrolling: 'touch',
-                padding: '20px 20px 20px 24px',
-                background: 'linear-gradient(180deg, #f0f2f5 0%, #f5f5f5 100%)',
-                position: 'relative',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                padding: 24,
               }}
             >
-              <Spin spinning={detailLoading}>
-                {detail && !detailLoading && timeline.length === 0 ? (
-                  <Empty description="暂无消息" />
-                ) : timeline.length ? (
-                  timeline.flatMap((item, idx) => [
-                    ...(metricAnnotationByItemIdx.get(idx) || []).map((metric) => (
-                      <TurnMetricBadge key={`metric-badge-${metric.id}`} metric={metric} />
-                    )),
-                    renderTimelineItem(item),
-                  ])
-                ) : null}
-              </Spin>
+              <Empty description="选择一个对话查看消息" />
             </div>
-
-            <div
-              style={{
-                padding: '12px 16px 16px',
-                background: '#fff',
-                borderTop: '1px solid #f0f0f0',
-              }}
-            >
-              <Space direction="vertical" size="small" style={{ width: '100%' }}>
-                <Text type="secondary" style={{ fontSize: 12 }}>
-                  以人工客服身份回复
-                </Text>
-                <Input.TextArea
-                  value={replyText}
-                  onChange={(e) => setReplyText(e.target.value)}
-                  placeholder="输入回复内容…"
-                  autoSize={{ minRows: 2, maxRows: 6 }}
-                  onPressEnter={(e) => {
-                    if (!e.shiftKey) {
-                      e.preventDefault();
-                      handleSendReply();
-                    }
-                  }}
-                  disabled={detail?.status === 'closed'}
-                />
-                <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-                  <Button
-                    type="primary"
-                    icon={<SendOutlined />}
-                    loading={replySending}
-                    disabled={detail?.status === 'closed'}
-                    onClick={handleSendReply}
-                  >
-                    发送
-                  </Button>
-                </div>
-              </Space>
-            </div>
-          </>
-        )}
-      </div>
-
-      <Modal
-        title={
-          <Space direction="vertical" size={0}>
-            <span>
-              <FileTextOutlined style={{ marginRight: 8 }} />
-              生成合同
-            </span>
-            <Text type="secondary" style={{ fontSize: 13, fontWeight: 'normal' }}>
-              第一步：选择合同正文语言；第二步（可选）：选择 Word 模板
-            </Text>
-          </Space>
-        }
-        width={520}
-        open={generateModalOpen}
-        onCancel={() => setGenerateModalOpen(false)}
-        okText="生成"
-        confirmLoading={contractLoading}
-        onOk={() => void confirmGenerateContract()}
-        destroyOnClose
-        styles={{ body: { paddingTop: 8 } }}
-      >
-        <Space direction="vertical" style={{ width: '100%' }} size="middle">
-          <div>
-            <Text strong style={{ display: 'block', marginBottom: 10 }}>
-              1. 合同输出语言（必选）
-            </Text>
-            <Select
-              size="large"
-              style={{ width: '100%' }}
-              value={genOutputLang}
-              onChange={setGenOutputLang}
-              options={CONTRACT_OUTPUT_LANG_OPTIONS}
-              placeholder="选择输出语言"
-              showSearch
-              optionFilterProp="label"
-            />
-          </div>
-          <Divider style={{ margin: '8px 0' }} />
-          <div>
-            <Text strong style={{ display: 'block', marginBottom: 8 }}>
-              2. Word 合同模板（可选）
-            </Text>
-            <Text type="secondary" style={{ display: 'block', marginBottom: 8 }}>
-              不选则 AI 根据聊天记录从零起草；选择后 AI 会按模板结构填充修订
-            </Text>
-            <Select
-              loading={templatesLoading}
-              placeholder="不使用模板"
-              allowClear
-              style={{ width: '100%' }}
-              value={genTemplateId ?? undefined}
-              onChange={(v) => setGenTemplateId(v ?? null)}
-              options={templates.map((t) => ({
-                label: `${t.name}（${t.original_name}）`,
-                value: t.id,
-              }))}
-            />
-          </div>
-        </Space>
-      </Modal>
-
-      <Modal
-        title="发送合同给客户"
-        open={sendModalOpen}
-        onCancel={() => setSendModalOpen(false)}
-        okText="发送"
-        confirmLoading={sendLoading}
-        onOk={() => void confirmSendContract()}
-      >
-        <Spin spinning={contractsLoading}>
-          {convContracts.length === 0 ? (
-            <Text type="secondary">该对话下暂无合同，请先在「生成合同」中创建。</Text>
           ) : (
-            <Radio.Group
-              style={{ width: '100%' }}
-              value={sendContractId ?? undefined}
-              onChange={(e) => setSendContractId(e.target.value)}
-            >
-              <Space direction="vertical" style={{ width: '100%' }}>
-                {convContracts.map((c) => (
-                  <Radio key={c.id} value={c.id}>
-                    <Text strong>{c.title}</Text>
-                    <Text type="secondary" style={{ marginLeft: 8 }}>
-                      {c.status} · {dayjs(c.created_at).format('YYYY-MM-DD HH:mm')}
-                    </Text>
-                  </Radio>
-                ))}
-              </Space>
-            </Radio.Group>
+            <>
+              <div
+                style={{
+                  padding: '16px 20px',
+                  background: '#fff',
+                  borderBottom: '1px solid #f0f0f0',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: 16,
+                  flexWrap: 'wrap',
+                  position: 'relative',
+                }}
+              >
+                <Space align="center" size="middle" style={{ minWidth: 0 }}>
+                  <Title level={4} style={{ margin: 0 }} ellipsis>
+                    {detail ? customerDisplayName(detail) : '…'}
+                  </Title>
+                  {detail ? (
+                    <>
+                      <Tooltip title="切换全局客服应答模式（影响所有对话）">
+                        <Segmented
+                          size="small"
+                          value={customerServiceSettings?.mode ?? 'ai_auto'}
+                          onChange={(val) =>
+                            void handleChangeMode(val as CustomerServiceSettings['mode'])
+                          }
+                          disabled={!customerServiceSettings || modeUpdating}
+                          options={[
+                            { label: '全 AI', value: 'ai_auto' },
+                            { label: '人机协同', value: 'ai_assist' },
+                            { label: '纯人工', value: 'human_only' },
+                          ]}
+                        />
+                      </Tooltip>
+                      <Tooltip title={detail.processing_state?.stage_detail || '当前处理阶段'}>
+                        <Tag color={processingStageColor(detail)}>
+                          {detail.processing_state?.stage_label || '空闲'}
+                        </Tag>
+                      </Tooltip>
+                    </>
+                  ) : (
+                    <Tag>…</Tag>
+                  )}
+                </Space>
+                <Space wrap style={{ marginRight: 36 }}>
+                  <Tooltip title="点击生成合同；右侧箭头可发送已生成合同">
+                    <Dropdown.Button
+                      loading={contractLoading}
+                      onClick={() => void openGenerateModal()}
+                      menu={{
+                        items: [
+                          {
+                            key: 'generate',
+                            icon: <FileTextOutlined />,
+                            label: '生成合同',
+                            onClick: () => void openGenerateModal(),
+                          },
+                          {
+                            key: 'send',
+                            icon: <ExportOutlined />,
+                            label: '发送合同给客户',
+                            disabled: detail?.status === 'closed',
+                            onClick: () => void openSendContractModal(),
+                          },
+                        ],
+                      }}
+                    >
+                      <FileTextOutlined /> 合同
+                    </Dropdown.Button>
+                  </Tooltip>
+                </Space>
+                <Tooltip title="关闭对话">
+                  <Button
+                    type="text"
+                    shape="circle"
+                    icon={<CloseCircleOutlined style={{ color: '#333', fontSize: 16 }} />}
+                    loading={closeLoading}
+                    disabled={detail?.status === 'closed'}
+                    onClick={handleCloseConversation}
+                    style={{ position: 'absolute', top: 8, right: 8 }}
+                  />
+                </Tooltip>
+              </div>
+
+              {detail?.ai_draft ? (
+                <div
+                  style={{
+                    padding: '12px 20px',
+                    background: '#fffbe6',
+                    borderBottom: '1px solid #f0e6a6',
+                  }}
+                >
+                  <Card
+                    size="small"
+                    title={draftTitle(detail)}
+                    extra={
+                      <Space size={8}>
+                        <Tag color="gold">{draftAutoSendLabel(detail, draftCountdownSeconds)}</Tag>
+                        {detail.ai_draft.error_message ? (
+                          <Tag color="red">{detail.ai_draft.error_message}</Tag>
+                        ) : null}
+                      </Space>
+                    }
+                    styles={{ body: { paddingTop: 12 } }}
+                  >
+                    <Space
+                      direction="vertical"
+                      size="middle"
+                      style={{
+                        width: '100%',
+                        maxHeight: 420,
+                        overflowY: 'auto',
+                        overflowX: 'hidden',
+                        paddingRight: 4,
+                      }}
+                    >
+                      {editingAiDraft ? (
+                        <Input.TextArea
+                          value={aiDraftText}
+                          onChange={(e) => setAiDraftText(e.target.value)}
+                          autoSize={{ minRows: 4, maxRows: 10 }}
+                        />
+                      ) : (
+                        <DraftPreview detail={detail} />
+                      )}
+                      <Space wrap>
+                        <Button
+                          danger
+                          loading={aiDraftCancelling}
+                          onClick={() => void handleCancelAiDraft()}
+                        >
+                          取消
+                        </Button>
+                        {canEditDraft(detail) ? (
+                          <Button
+                            icon={<EditOutlined />}
+                            onClick={() => void handleToggleEditAiDraft()}
+                          >
+                            {editingAiDraft ? '取消编辑' : '编辑AI回复'}
+                          </Button>
+                        ) : null}
+                        <Button
+                          type="primary"
+                          icon={<SendOutlined />}
+                          loading={aiDraftSending}
+                          onClick={() => void handleSendAiDraft()}
+                        >
+                          {editingAiDraft ? '发送编辑后的回复' : '直接发送'}
+                        </Button>
+                      </Space>
+                    </Space>
+                  </Card>
+                </div>
+              ) : null}
+
+              <div
+                style={{
+                  flex: 1,
+                  minHeight: 0,
+                  overflowY: 'scroll',
+                  overflowX: 'hidden',
+                  overscrollBehavior: 'contain',
+                  scrollbarGutter: 'stable',
+                  WebkitOverflowScrolling: 'touch',
+                  padding: '20px 20px 20px 24px',
+                  background: 'linear-gradient(180deg, #f0f2f5 0%, #f5f5f5 100%)',
+                  position: 'relative',
+                }}
+              >
+                <Spin spinning={detailLoading}>
+                  {detail && !detailLoading && timeline.length === 0 ? (
+                    <Empty description="暂无消息" />
+                  ) : timeline.length ? (
+                    timeline.flatMap((item, idx) => [
+                      ...(metricAnnotationByItemIdx.get(idx) || []).map((metric) => (
+                        <TurnMetricBadge key={`metric-badge-${metric.id}`} metric={metric} />
+                      )),
+                      renderTimelineItem(item),
+                    ])
+                  ) : null}
+                </Spin>
+              </div>
+
+              <div
+                style={{
+                  padding: '12px 16px 16px',
+                  background: '#fff',
+                  borderTop: '1px solid #f0f0f0',
+                }}
+              >
+                <Space direction="vertical" size="small" style={{ width: '100%' }}>
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    以人工客服身份回复
+                  </Text>
+                  <Input.TextArea
+                    value={replyText}
+                    onChange={(e) => setReplyText(e.target.value)}
+                    placeholder="输入回复内容…"
+                    autoSize={{ minRows: 2, maxRows: 6 }}
+                    onPressEnter={(e) => {
+                      if (!e.shiftKey) {
+                        e.preventDefault();
+                        handleSendReply();
+                      }
+                    }}
+                    disabled={detail?.status === 'closed'}
+                  />
+                  <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                    <Button
+                      type="primary"
+                      icon={<SendOutlined />}
+                      loading={replySending}
+                      disabled={detail?.status === 'closed'}
+                      onClick={handleSendReply}
+                    >
+                      发送
+                    </Button>
+                  </div>
+                </Space>
+              </div>
+            </>
           )}
-        </Spin>
-      </Modal>
+        </div>
+
+        <Modal
+          title={
+            <Space direction="vertical" size={0}>
+              <span>
+                <FileTextOutlined style={{ marginRight: 8 }} />
+                生成合同
+              </span>
+              <Text type="secondary" style={{ fontSize: 13, fontWeight: 'normal' }}>
+                第一步：选择合同正文语言；第二步（可选）：选择 Word 模板
+              </Text>
+            </Space>
+          }
+          width={520}
+          open={generateModalOpen}
+          onCancel={() => setGenerateModalOpen(false)}
+          okText="生成"
+          confirmLoading={contractLoading}
+          onOk={() => void confirmGenerateContract()}
+          destroyOnClose
+          styles={{ body: { paddingTop: 8 } }}
+        >
+          <Space direction="vertical" style={{ width: '100%' }} size="middle">
+            <div>
+              <Text strong style={{ display: 'block', marginBottom: 10 }}>
+                1. 合同输出语言（必选）
+              </Text>
+              <Select
+                size="large"
+                style={{ width: '100%' }}
+                value={genOutputLang}
+                onChange={setGenOutputLang}
+                options={CONTRACT_OUTPUT_LANG_OPTIONS}
+                placeholder="选择输出语言"
+                showSearch
+                optionFilterProp="label"
+              />
+            </div>
+            <Divider style={{ margin: '8px 0' }} />
+            <div>
+              <Text strong style={{ display: 'block', marginBottom: 8 }}>
+                2. Word 合同模板（可选）
+              </Text>
+              <Text type="secondary" style={{ display: 'block', marginBottom: 8 }}>
+                不选则 AI 根据聊天记录从零起草；选择后 AI 会按模板结构填充修订
+              </Text>
+              <Select
+                loading={templatesLoading}
+                placeholder="不使用模板"
+                allowClear
+                style={{ width: '100%' }}
+                value={genTemplateId ?? undefined}
+                onChange={(v) => setGenTemplateId(v ?? null)}
+                options={templates.map((t) => ({
+                  label: `${t.name}（${t.original_name}）`,
+                  value: t.id,
+                }))}
+              />
+            </div>
+          </Space>
+        </Modal>
+
+        <Modal
+          title="发送合同给客户"
+          open={sendModalOpen}
+          onCancel={() => setSendModalOpen(false)}
+          okText="发送"
+          confirmLoading={sendLoading}
+          onOk={() => void confirmSendContract()}
+        >
+          <Spin spinning={contractsLoading}>
+            {convContracts.length === 0 ? (
+              <Text type="secondary">该对话下暂无合同，请先在「生成合同」中创建。</Text>
+            ) : (
+              <Radio.Group
+                style={{ width: '100%' }}
+                value={sendContractId ?? undefined}
+                onChange={(e) => setSendContractId(e.target.value)}
+              >
+                <Space direction="vertical" style={{ width: '100%' }}>
+                  {convContracts.map((c) => (
+                    <Radio key={c.id} value={c.id}>
+                      <Text strong>{c.title}</Text>
+                      <Text type="secondary" style={{ marginLeft: 8 }}>
+                        {c.status} · {dayjs(c.created_at).format('YYYY-MM-DD HH:mm')}
+                      </Text>
+                    </Radio>
+                  ))}
+                </Space>
+              </Radio.Group>
+            )}
+          </Spin>
+        </Modal>
       </div>
     </div>
   );

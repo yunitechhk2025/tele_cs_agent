@@ -40,9 +40,9 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     navigate('/login');
   };
 
-  const selectedKey = menuItems.find(
-    (item) => item.key !== '/' && location.pathname.startsWith(item.key)
-  )?.key || '/';
+  const selectedKey =
+    menuItems.find((item) => item.key !== '/' && location.pathname.startsWith(item.key))?.key ||
+    '/';
 
   return (
     <Layout style={{ minHeight: '100vh' }}>
@@ -67,10 +67,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         >
           <RobotOutlined style={{ fontSize: 28, color: '#0088cc' }} />
           {!collapsed && (
-            <Typography.Text
-              strong
-              style={{ color: '#fff', fontSize: 16, whiteSpace: 'nowrap' }}
-            >
+            <Typography.Text strong style={{ color: '#fff', fontSize: 16, whiteSpace: 'nowrap' }}>
               智能客服
             </Typography.Text>
           )}

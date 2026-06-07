@@ -13,7 +13,8 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
         token: {
           colorPrimary: '#0088cc',
           borderRadius: 8,
-          fontFamily: '-apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
+          fontFamily:
+            '-apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
         },
       }}
     >

@@ -1,50 +1,103 @@
+"""管理后台 API 路由.
+
+本文件聚合认证、会话、模拟器、知识库、合同、LLM 设置、文件库、机器人管理、
+产品和场景图库接口。路由较多，新增逻辑时优先把复杂业务下沉到 service，保持
+这里负责请求解析、权限校验、事务边界和响应组装。
+"""
+
 import asyncio
 import json
 import logging
 import os
 import shutil
 import uuid
-from io import BytesIO
 from datetime import datetime, timedelta
-from typing import Any, Optional
+from io import BytesIO
+from typing import Any
 
 import jwt
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, Response
-from sqlalchemy import select, func, desc, delete
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy import delete, desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.config import get_settings
-from app.database import get_db, AsyncSessionLocal
+from app.database import AsyncSessionLocal, get_db
 from app.models import (
-    Conversation, Message, KnowledgeEntry, Contract, ContractTemplate, FileEntry, TelegramBot,
-    ConversationStatus, MessageRole, ProductEntry, ProductEntryTranslation, ProductImage, SceneGenerationImage, SceneGenerationRecord,
-    ConversationSceneState, ConversationOutboundEvent, PendingAIReply,
-    ConversationProcessingState, ConversationTurnMetric, ConversationTurnStepMetric, ConversationRecommendationTurn,
+    Contract,
+    ContractTemplate,
+    Conversation,
+    ConversationOutboundEvent,
+    ConversationProcessingState,
+    ConversationRecommendationTurn,
+    ConversationSceneState,
+    ConversationStatus,
+    ConversationTurnMetric,
+    ConversationTurnStepMetric,
+    FileEntry,
+    KnowledgeEntry,
+    Message,
+    MessageRole,
+    PendingAIReply,
+    ProductEntry,
+    ProductEntryTranslation,
+    ProductImage,
+    SceneGenerationImage,
+    SceneGenerationRecord,
+    TelegramBot,
 )
 from app.schemas import (
-    LoginRequest, TokenResponse, ConversationSchema, ConversationDetailSchema,
-    ReplyRequest, KnowledgeEntrySchema, KnowledgeCreateRequest, MessageSchema,
-    ContractSchema, ContractUpdateRequest, ContractGenerateRequest, SendContractRequest, DashboardStats,
-    TelegramSimulatorSessionCreate, TelegramSimulatorSessionResponse,
-    TelegramSimulatorSendRequest, TelegramSimulatorSendResponse, TelegramSimulatorEventSchema,
-    PendingAIReplySchema, SendPendingAIReplyRequest, ConversationTurnMetricSchema, ConversationTurnStepMetricSchema,
-    CustomerServiceSettingsSchema, CustomerServiceSettingsUpdateRequest,
-    LLMSettingsSchema, LLMSettingsUpdateRequest,
-    FileEntrySchema, FileEntryUpdateRequest,
-    TelegramBotSchema, TelegramBotCreateRequest, TelegramBotUpdateRequest,
+    ContractGenerateRequest,
+    ContractSchema,
     ContractTemplateSchema,
-    ProductEntrySchema, ProductEntryListSchema, ProductImageSchema, SceneGenerationRequest, SceneGenerationRecordSchema,
-    SceneLibraryItemSchema, SceneGeneratorRequest, SceneBatchActionRequest, SceneBatchActionResponse,
-    ObservabilitySummarySchema, ObservabilityStageMetricSchema, ObservabilityLLMMetricSchema,
-    ObservabilityAlertSchema, ObservabilityAlertSettingsSchema, ObservabilityStageTrendResponseSchema,
+    ContractUpdateRequest,
+    ConversationDetailSchema,
+    ConversationSchema,
+    ConversationTurnMetricSchema,
+    ConversationTurnStepMetricSchema,
+    CustomerServiceSettingsSchema,
+    CustomerServiceSettingsUpdateRequest,
+    DashboardStats,
+    FileEntrySchema,
+    FileEntryUpdateRequest,
+    KnowledgeCreateRequest,
+    KnowledgeEntrySchema,
+    LLMSettingsSchema,
+    LLMSettingsUpdateRequest,
+    LoginRequest,
+    MessageSchema,
+    ObservabilityAlertSchema,
+    ObservabilityAlertSettingsSchema,
+    ObservabilityLLMMetricSchema,
+    ObservabilityStageMetricSchema,
+    ObservabilityStageTrendResponseSchema,
+    ObservabilitySummarySchema,
+    PendingAIReplySchema,
+    ProductEntryListSchema,
+    ProductEntrySchema,
+    ProductImageSchema,
+    ReplyRequest,
+    SceneBatchActionRequest,
+    SceneBatchActionResponse,
+    SceneGenerationRecordSchema,
+    SceneGenerationRequest,
+    SceneGeneratorRequest,
+    SceneLibraryItemSchema,
+    SendContractRequest,
+    SendPendingAIReplyRequest,
+    TelegramBotCreateRequest,
+    TelegramBotSchema,
+    TelegramBotUpdateRequest,
+    TelegramSimulatorEventSchema,
+    TelegramSimulatorSendRequest,
+    TelegramSimulatorSendResponse,
+    TelegramSimulatorSessionCreate,
+    TelegramSimulatorSessionResponse,
+    TokenResponse,
 )
-from app.services.rag_service import (
-    add_to_knowledge_base, remove_from_knowledge_base,
-    add_file_to_index, remove_file_from_index,
-)
+from app.services import bot_manager
 from app.services.contract_service import (
     create_contract_from_conversation,
     export_contract_to_docx_bytes,
@@ -52,34 +105,36 @@ from app.services.contract_service import (
     looks_like_ooxml_docx,
     sanitize_contract_filename,
 )
-from app.services.llm_service import (
-    get_llm_settings, save_llm_settings, invalidate_llm_cache,
-    test_llm_connection, test_embedding_connection, test_image_connection, test_profile_llm_connection,
-    LLM_SETTING_KEYS, translate_text, detect_language,
-)
-from app.services.i18n import DEFAULT_LANGUAGE, get_localized_static_dict, get_localized_static_text, normalize_language_code
-from app.services.scene_service import (
-    build_scene_record_response,
-    start_scene_generation,
-    _get_selected_reference_items,
-    cancel_scene_generation_task,
-    cleanup_stale_pending_scene_generations,
-)
-from app.services.customer_service_service import (
-    get_customer_service_settings,
-    save_customer_service_settings,
-    get_pending_ai_reply,
-    send_pending_ai_reply,
-    pause_pending_ai_reply,
-    cancel_pending_ai_reply,
-    dispatch_due_pending_ai_replies,
-)
-from app.services.product_i18n import localize_product_payload, product_entry_to_payload, translation_map_from_entries
 from app.services.conversation_monitoring import (
     attach_turn_user_message,
     record_turn_step,
     set_conversation_stage,
     start_turn_metric,
+)
+from app.services.customer_service_service import (
+    cancel_pending_ai_reply,
+    dispatch_due_pending_ai_replies,
+    get_customer_service_settings,
+    get_pending_ai_reply,
+    pause_pending_ai_reply,
+    save_customer_service_settings,
+    send_pending_ai_reply,
+)
+from app.services.i18n import (
+    DEFAULT_LANGUAGE,
+    get_localized_static_dict,
+    get_localized_static_text,
+    normalize_language_code,
+)
+from app.services.llm_service import (
+    detect_language,
+    get_llm_settings,
+    save_llm_settings,
+    test_embedding_connection,
+    test_image_connection,
+    test_llm_connection,
+    test_profile_llm_connection,
+    translate_text,
 )
 from app.services.observability_service import (
     acknowledge_alert,
@@ -87,25 +142,44 @@ from app.services.observability_service import (
     build_observability_export_zip,
     list_alerts,
     load_alert_settings,
-    load_observability_summary,
     load_observability_stage_trends,
+    load_observability_summary,
     reset_observability_context,
     save_alert_settings,
     set_observability_context,
 )
-from app.services import bot_manager
+from app.services.product_i18n import (
+    localize_product_payload,
+    product_entry_to_payload,
+    translation_map_from_entries,
+)
+from app.services.rag_service import (
+    add_file_to_index,
+    add_to_knowledge_base,
+    remove_file_from_index,
+    remove_from_knowledge_base,
+)
+from app.services.scene_service import (
+    _get_selected_reference_items,
+    build_scene_record_response,
+    cancel_scene_generation_task,
+    cleanup_stale_pending_scene_generations,
+    start_scene_generation,
+)
 from app.telegram_bot import (
-    process_customer_text_message,
-    SimulatorOutbound,
-    save_message as tg_save_message,
-    get_or_create_conversation,
-    get_scene_state,
-    resolve_turn_language,
-    ui_scene_language,
-    localize_scene_name,
-    SCENE_RESULT_MESSAGES,
     SCENE_FAILED_MESSAGES,
     SCENE_RESULT_LINK_LABELS,
+    SCENE_RESULT_MESSAGES,
+    SimulatorOutbound,
+    get_or_create_conversation,
+    get_scene_state,
+    localize_scene_name,
+    process_customer_text_message,
+    resolve_turn_language,
+    ui_scene_language,
+)
+from app.telegram_bot import (
+    save_message as tg_save_message,
 )
 
 logger = logging.getLogger(__name__)
@@ -158,6 +232,7 @@ async def _persist_simulator_outbound_events(
     events: list[dict[str, Any]],
     language: str,
 ) -> None:
+    """把模拟器产生的商品卡片、文件和可见文本写回时间线."""
     for event in events:
         event_type = event.get("type") or "text"
         created_at = _simulator_event_created_at(event)
@@ -165,46 +240,54 @@ async def _persist_simulator_outbound_events(
         url = (event.get("url") or "").strip()
         is_product_card = caption.startswith("[#") or url.startswith("/api/products/")
         if event_type == "photo" and is_product_card:
-            db.add(ConversationOutboundEvent(
-                conversation_id=conversation_id,
-                role=event.get("role") or MessageRole.ASSISTANT.value,
-                event_type=event_type,
-                text=event.get("text") or "",
-                caption=caption,
-                url=url,
-                filename=event.get("filename") or "",
-                parse_mode=event.get("parse_mode") or None,
-                created_at=created_at,
-            ))
+            db.add(
+                ConversationOutboundEvent(
+                    conversation_id=conversation_id,
+                    role=event.get("role") or MessageRole.ASSISTANT.value,
+                    event_type=event_type,
+                    text=event.get("text") or "",
+                    caption=caption,
+                    url=url,
+                    filename=event.get("filename") or "",
+                    parse_mode=event.get("parse_mode") or None,
+                    created_at=created_at,
+                )
+            )
             continue
 
         if event_type == "document":
-            db.add(ConversationOutboundEvent(
-                conversation_id=conversation_id,
-                role=event.get("role") or MessageRole.ASSISTANT.value,
-                event_type=event_type,
-                text=event.get("text") or "",
-                caption=caption,
-                url=url,
-                filename=event.get("filename") or "",
-                parse_mode=event.get("parse_mode") or None,
-                created_at=created_at,
-            ))
+            db.add(
+                ConversationOutboundEvent(
+                    conversation_id=conversation_id,
+                    role=event.get("role") or MessageRole.ASSISTANT.value,
+                    event_type=event_type,
+                    text=event.get("text") or "",
+                    caption=caption,
+                    url=url,
+                    filename=event.get("filename") or "",
+                    parse_mode=event.get("parse_mode") or None,
+                    created_at=created_at,
+                )
+            )
             continue
 
         text = (event.get("text") or "").strip()
         if event_type == "text" and text.startswith("[#"):
-            db.add(Message(
-                conversation_id=conversation_id,
-                role=MessageRole.ASSISTANT,
-                content=text,
-                language=language,
-                created_at=created_at,
-            ))
+            db.add(
+                Message(
+                    conversation_id=conversation_id,
+                    role=MessageRole.ASSISTANT,
+                    content=text,
+                    language=language,
+                    created_at=created_at,
+                )
+            )
     await db.commit()
 
 
-def _simulator_timeline_event_key(event: TelegramSimulatorEventSchema) -> tuple[str, str, str] | None:
+def _simulator_timeline_event_key(
+    event: TelegramSimulatorEventSchema,
+) -> tuple[str, str, str] | None:
     event_type = event.type or ""
     role = event.role or MessageRole.ASSISTANT.value
     if event_type in {"photo", "document"} and event.url:
@@ -219,7 +302,9 @@ def _simulator_message_text_keys(messages: list[Message]) -> set[tuple[str, str,
     for msg in messages:
         content = (msg.content or "").strip()
         if content:
-            keys.add(("text", msg.role.value if hasattr(msg.role, "value") else str(msg.role), content))
+            keys.add(
+                ("text", msg.role.value if hasattr(msg.role, "value") else str(msg.role), content)
+            )
     return keys
 
 
@@ -230,9 +315,7 @@ def _merge_simulator_timeline_events(
 ) -> list[TelegramSimulatorEventSchema]:
     message_text_keys = _simulator_message_text_keys(messages)
     seen_event_keys = {
-        key
-        for key in (_simulator_timeline_event_key(event) for event in outbound_events)
-        if key
+        key for key in (_simulator_timeline_event_key(event) for event in outbound_events) if key
     }
     merged = list(outbound_events)
     for event in scene_events:
@@ -255,7 +338,7 @@ async def _load_scene_generation_events(
         .where(
             SceneGenerationRecord.conversation_id == conversation_id,
             SceneGenerationRecord.status.in_(["completed", "failed"]),
-            SceneGenerationRecord.deferred_delivery == False,
+            SceneGenerationRecord.deferred_delivery.is_(False),
         )
         .order_by(SceneGenerationRecord.created_at)
     )
@@ -266,6 +349,7 @@ async def _load_scene_generation_events(
 
 
 # ─── Auth ────────────────────────────────────────────────────────────────────
+
 
 def create_token(username: str) -> str:
     payload = {
@@ -284,10 +368,10 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
         if not username:
             raise HTTPException(status_code=401, detail="Invalid token")
         return username
-    except jwt.ExpiredSignatureError:
-        raise HTTPException(status_code=401, detail="Token expired")
-    except jwt.InvalidTokenError:
-        raise HTTPException(status_code=401, detail="Invalid token")
+    except jwt.ExpiredSignatureError as exc:
+        raise HTTPException(status_code=401, detail="Token expired") from exc
+    except jwt.InvalidTokenError as exc:
+        raise HTTPException(status_code=401, detail="Invalid token") from exc
 
 
 @router.post("/auth/login", response_model=TokenResponse)
@@ -300,6 +384,7 @@ async def login(req: LoginRequest):
 
 # ─── Dashboard ───────────────────────────────────────────────────────────────
 
+
 @router.get("/dashboard/stats", response_model=DashboardStats)
 async def dashboard_stats(
     db: AsyncSession = Depends(get_db),
@@ -310,7 +395,9 @@ async def dashboard_stats(
         select(func.count(Conversation.id)).where(Conversation.status == ConversationStatus.ACTIVE)
     )
     pending = await db.scalar(
-        select(func.count(Conversation.id)).where(Conversation.status == ConversationStatus.PENDING_HUMAN)
+        select(func.count(Conversation.id)).where(
+            Conversation.status == ConversationStatus.PENDING_HUMAN
+        )
     )
     total_msg = await db.scalar(select(func.count(Message.id)))
     total_kb = await db.scalar(select(func.count(KnowledgeEntry.id)))
@@ -318,7 +405,7 @@ async def dashboard_stats(
     total_files = await db.scalar(select(func.count(FileEntry.id)))
     total_bots = await db.scalar(select(func.count(TelegramBot.id)))
     active_bots_count = await db.scalar(
-        select(func.count(TelegramBot.id)).where(TelegramBot.is_active == True)
+        select(func.count(TelegramBot.id)).where(TelegramBot.is_active.is_(True))
     )
 
     recent = await db.execute(
@@ -335,21 +422,20 @@ async def dashboard_stats(
         total_files=total_files or 0,
         total_bots=total_bots or 0,
         active_bots=active_bots_count or 0,
-        recent_conversations=[
-            ConversationSchema.model_validate(c) for c in recent.scalars().all()
-        ],
+        recent_conversations=[ConversationSchema.model_validate(c) for c in recent.scalars().all()],
     )
 
 
 # ─── Observability ───────────────────────────────────────────────────────────
 
+
 @router.get("/observability/summary", response_model=ObservabilitySummarySchema)
 async def observability_summary(
     range_key: str = Query("24h", alias="range"),
-    bot_id: Optional[int] = Query(None),
-    language: Optional[str] = Query(None),
-    intent: Optional[str] = Query(None),
-    response_kind: Optional[str] = Query(None),
+    bot_id: int | None = Query(None),
+    language: str | None = Query(None),
+    intent: str | None = Query(None),
+    response_kind: str | None = Query(None),
     db: AsyncSession = Depends(get_db),
     _: str = Depends(get_current_user),
 ):
@@ -366,10 +452,10 @@ async def observability_summary(
 @router.get("/observability/stages", response_model=list[ObservabilityStageMetricSchema])
 async def observability_stages(
     range_key: str = Query("24h", alias="range"),
-    bot_id: Optional[int] = Query(None),
-    language: Optional[str] = Query(None),
-    intent: Optional[str] = Query(None),
-    response_kind: Optional[str] = Query(None),
+    bot_id: int | None = Query(None),
+    language: str | None = Query(None),
+    intent: str | None = Query(None),
+    response_kind: str | None = Query(None),
     db: AsyncSession = Depends(get_db),
     _: str = Depends(get_current_user),
 ):
@@ -387,10 +473,10 @@ async def observability_stages(
 @router.get("/observability/stage-trends", response_model=ObservabilityStageTrendResponseSchema)
 async def observability_stage_trends(
     range_key: str = Query("24h", alias="range"),
-    bot_id: Optional[int] = Query(None),
-    language: Optional[str] = Query(None),
-    intent: Optional[str] = Query(None),
-    response_kind: Optional[str] = Query(None),
+    bot_id: int | None = Query(None),
+    language: str | None = Query(None),
+    intent: str | None = Query(None),
+    response_kind: str | None = Query(None),
     db: AsyncSession = Depends(get_db),
     _: str = Depends(get_current_user),
 ):
@@ -407,10 +493,10 @@ async def observability_stage_trends(
 @router.get("/observability/llm-calls", response_model=list[ObservabilityLLMMetricSchema])
 async def observability_llm_calls(
     range_key: str = Query("24h", alias="range"),
-    bot_id: Optional[int] = Query(None),
-    language: Optional[str] = Query(None),
-    intent: Optional[str] = Query(None),
-    response_kind: Optional[str] = Query(None),
+    bot_id: int | None = Query(None),
+    language: str | None = Query(None),
+    intent: str | None = Query(None),
+    response_kind: str | None = Query(None),
     db: AsyncSession = Depends(get_db),
     _: str = Depends(get_current_user),
 ):
@@ -428,10 +514,10 @@ async def observability_llm_calls(
 @router.get("/observability/export")
 async def observability_export(
     range_key: str = Query("24h", alias="range"),
-    bot_id: Optional[int] = Query(None),
-    language: Optional[str] = Query(None),
-    intent: Optional[str] = Query(None),
-    response_kind: Optional[str] = Query(None),
+    bot_id: int | None = Query(None),
+    language: str | None = Query(None),
+    intent: str | None = Query(None),
+    response_kind: str | None = Query(None),
     db: AsyncSession = Depends(get_db),
     _: str = Depends(get_current_user),
 ):
@@ -460,7 +546,7 @@ async def observability_export(
 
 @router.get("/observability/alerts", response_model=list[ObservabilityAlertSchema])
 async def observability_alerts(
-    status: Optional[str] = Query(None),
+    status: str | None = Query(None),
     limit: int = Query(100, ge=1, le=500),
     db: AsyncSession = Depends(get_db),
     _: str = Depends(get_current_user),
@@ -499,11 +585,13 @@ async def observability_update_alert_settings(
 
 # ─── Conversations ───────────────────────────────────────────────────────────
 
+
 @router.get("/conversations", response_model=list[ConversationSchema])
 async def list_conversations(
-    status: Optional[str] = Query(None),
-    search: Optional[str] = Query(None),
-    skip: int = 0, limit: int = 50,
+    status: str | None = Query(None),
+    search: str | None = Query(None),
+    skip: int = 0,
+    limit: int = 50,
     db: AsyncSession = Depends(get_db),
     _: str = Depends(get_current_user),
 ):
@@ -528,7 +616,8 @@ async def get_conversation(
 ):
     await dispatch_due_pending_ai_replies()
     result = await db.execute(
-        select(Conversation).options(selectinload(Conversation.messages))
+        select(Conversation)
+        .options(selectinload(Conversation.messages))
         .where(Conversation.id == conversation_id)
     )
     conversation = result.scalar_one_or_none()
@@ -569,7 +658,9 @@ async def get_conversation(
     else:
         detail.outbound_events = outbound_events
     state_result = await db.execute(
-        select(ConversationProcessingState).where(ConversationProcessingState.conversation_id == conversation_id)
+        select(ConversationProcessingState).where(
+            ConversationProcessingState.conversation_id == conversation_id
+        )
     )
     detail.processing_state = state_result.scalar_one_or_none()
     metric_result = await db.execute(
@@ -579,8 +670,7 @@ async def get_conversation(
     )
     turn_metrics = metric_result.scalars().all()
     detail.turn_metrics = [
-        ConversationTurnMetricSchema.model_validate(metric)
-        for metric in turn_metrics
+        ConversationTurnMetricSchema.model_validate(metric) for metric in turn_metrics
     ]
     detail.latest_turn_metric = detail.turn_metrics[0] if detail.turn_metrics else None
     if detail.latest_turn_metric:
@@ -600,7 +690,8 @@ async def get_conversation(
 
 @router.post("/conversations/{conversation_id}/reply")
 async def reply_to_conversation(
-    conversation_id: int, req: ReplyRequest,
+    conversation_id: int,
+    req: ReplyRequest,
     db: AsyncSession = Depends(get_db),
     _: str = Depends(get_current_user),
 ):
@@ -609,7 +700,9 @@ async def reply_to_conversation(
         raise HTTPException(status_code=404, detail="Conversation not found")
 
     await cancel_pending_ai_reply(conversation_id)
-    message = Message(conversation_id=conversation_id, role=MessageRole.HUMAN_AGENT, content=req.content)
+    message = Message(
+        conversation_id=conversation_id, role=MessageRole.HUMAN_AGENT, content=req.content
+    )
     db.add(message)
     conversation.status = ConversationStatus.ACTIVE
     reply_target_lang = conversation.quote_language or conversation.language or "en"
@@ -629,9 +722,11 @@ async def reply_to_conversation(
         chat_id = int(conversation.telegram_chat_id)
         try:
             await bot_instance.send_message(chat_id=chat_id, text=req.content)
-        except Exception as e:
-            logger.error(f"Failed to send reply via Telegram: {e}")
-            raise HTTPException(status_code=500, detail="Failed to send message via Telegram")
+        except Exception as exc:
+            logger.error(f"Failed to send reply via Telegram: {exc}")
+            raise HTTPException(
+                status_code=500, detail="Failed to send message via Telegram"
+            ) from exc
 
         agent_lang = await detect_language(req.content)
         logger.info(
@@ -640,7 +735,9 @@ async def reply_to_conversation(
         )
         if agent_lang != reply_target_lang:
             asyncio.create_task(
-                _send_translation(bot_instance, chat_id, conversation_id, req.content, reply_target_lang)
+                _send_translation(
+                    bot_instance, chat_id, conversation_id, req.content, reply_target_lang
+                )
             )
 
     return {"status": "sent"}
@@ -684,7 +781,9 @@ async def pause_conversation_ai_draft(
     return {"status": "paused", "draft_id": draft.id}
 
 
-async def _send_translation(bot_instance, chat_id: int, conversation_id: int, text: str, target_lang: str):
+async def _send_translation(
+    bot_instance, chat_id: int, conversation_id: int, text: str, target_lang: str
+):
     """Translate the agent reply and send as a follow-up message."""
     try:
         translated = await translate_text(text, target_lang)
@@ -692,6 +791,7 @@ async def _send_translation(bot_instance, chat_id: int, conversation_id: int, te
             return
 
         from app.services.llm_service import LANGUAGE_NAMES
+
         lang_label = LANGUAGE_NAMES.get(target_lang, target_lang)
         translated_msg = f"[{lang_label}]\n{translated}"
 
@@ -707,7 +807,9 @@ async def _send_translation(bot_instance, chat_id: int, conversation_id: int, te
             db.add(msg)
             await db.commit()
     except Exception as e:
-        logger.error(f"Failed to send translation for conversation {conversation_id}: {e}", exc_info=True)
+        logger.error(
+            f"Failed to send translation for conversation {conversation_id}: {e}", exc_info=True
+        )
 
 
 @router.post("/conversations/{conversation_id}/send-contract")
@@ -733,7 +835,9 @@ async def send_contract_to_customer(
         bot_instance = bot_manager.get_any_bot_instance()
 
     if not bot_instance or not conversation.telegram_chat_id:
-        raise HTTPException(status_code=503, detail="Telegram bot not available for this conversation")
+        raise HTTPException(
+            status_code=503, detail="Telegram bot not available for this conversation"
+        )
 
     chat_id = int(conversation.telegram_chat_id)
     try:
@@ -791,20 +895,40 @@ async def delete_conversation(
         raise HTTPException(status_code=400, detail="Only simulator conversations can be deleted")
 
     scene_result = await db.execute(
-        select(SceneGenerationRecord.id).where(SceneGenerationRecord.conversation_id == conversation_id)
+        select(SceneGenerationRecord.id).where(
+            SceneGenerationRecord.conversation_id == conversation_id
+        )
     )
     scene_record_ids = [row[0] for row in scene_result.all()]
     for record_id in scene_record_ids:
         await cancel_scene_generation_task(record_id)
 
     if scene_record_ids:
-        await db.execute(delete(SceneGenerationImage).where(SceneGenerationImage.record_id.in_(scene_record_ids)))
-        await db.execute(delete(SceneGenerationRecord).where(SceneGenerationRecord.id.in_(scene_record_ids)))
+        await db.execute(
+            delete(SceneGenerationImage).where(SceneGenerationImage.record_id.in_(scene_record_ids))
+        )
+        await db.execute(
+            delete(SceneGenerationRecord).where(SceneGenerationRecord.id.in_(scene_record_ids))
+        )
 
-    await db.execute(delete(ConversationOutboundEvent).where(ConversationOutboundEvent.conversation_id == conversation_id))
-    await db.execute(delete(PendingAIReply).where(PendingAIReply.conversation_id == conversation_id))
-    await db.execute(delete(ConversationSceneState).where(ConversationSceneState.conversation_id == conversation_id))
-    await db.execute(delete(ConversationRecommendationTurn).where(ConversationRecommendationTurn.conversation_id == conversation_id))
+    await db.execute(
+        delete(ConversationOutboundEvent).where(
+            ConversationOutboundEvent.conversation_id == conversation_id
+        )
+    )
+    await db.execute(
+        delete(PendingAIReply).where(PendingAIReply.conversation_id == conversation_id)
+    )
+    await db.execute(
+        delete(ConversationSceneState).where(
+            ConversationSceneState.conversation_id == conversation_id
+        )
+    )
+    await db.execute(
+        delete(ConversationRecommendationTurn).where(
+            ConversationRecommendationTurn.conversation_id == conversation_id
+        )
+    )
     await db.execute(delete(Contract).where(Contract.conversation_id == conversation_id))
     await db.execute(delete(Message).where(Message.conversation_id == conversation_id))
     await db.delete(conversation)
@@ -849,14 +973,17 @@ SIM_CHAT_PREFIX = "sim-"
 
 
 def _scene_fallback_name(ui_lang: str) -> str:
-    return get_localized_static_text({
-        "zh": "该场景",
-        "en": "requested setting",
-        "ja": "ご希望の空間",
-        "ko": "요청하신 공간",
-        "es": "ambiente solicitado",
-        "fr": "cadre demandé",
-    }, ui_lang)
+    return get_localized_static_text(
+        {
+            "zh": "该场景",
+            "en": "requested setting",
+            "ja": "ご希望の空間",
+            "ko": "요청하신 공간",
+            "es": "ambiente solicitado",
+            "fr": "cadre demandé",
+        },
+        ui_lang,
+    )
 
 
 async def _resolve_scene_record_language(
@@ -864,7 +991,10 @@ async def _resolve_scene_record_language(
     conversation_language: str,
     db: AsyncSession,
 ) -> str:
-    fallback = normalize_language_code(conversation_language, fallback=DEFAULT_LANGUAGE) or DEFAULT_LANGUAGE
+    fallback = (
+        normalize_language_code(conversation_language, fallback=DEFAULT_LANGUAGE)
+        or DEFAULT_LANGUAGE
+    )
     if not record.conversation_id:
         return fallback
 
@@ -903,6 +1033,12 @@ async def _build_simulator_scene_events(
     conversation_language: str,
     db: AsyncSession,
 ) -> list[TelegramSimulatorEventSchema]:
+    """根据场景图记录重建模拟器时间线中的图片、文案和商品链接事件.
+
+    模拟器回放的是历史会话，不是当前界面的即时语言。场景图记录会优先回溯触发
+    它的用户消息语言，再生成同语言的 intro、失败文案和商品链接，避免历史回放
+    因当前 conversation.language 改变而漂移。
+    """
     record_language = await _resolve_scene_record_language(record, conversation_language, db)
     ui_lang = ui_scene_language(record_language)
     created_at = record.updated_at or record.created_at or datetime.utcnow()
@@ -910,38 +1046,47 @@ async def _build_simulator_scene_events(
 
     if record.status == "failed":
         text = get_localized_static_text(SCENE_FAILED_MESSAGES, ui_lang)
-        events.append(TelegramSimulatorEventSchema(
-            id=f"scene-{record.id}-failed",
-            role="assistant",
-            type="text",
-            text=text,
-            created_at=created_at,
-        ))
+        events.append(
+            TelegramSimulatorEventSchema(
+                id=f"scene-{record.id}-failed",
+                role="assistant",
+                type="text",
+                text=text,
+                created_at=created_at,
+            )
+        )
         return events
 
     if record.status != "completed":
         return events
 
-    localized_scene = localize_scene_name(record.scene_name or "", ui_lang) or _scene_fallback_name(ui_lang)
+    # 历史场景图可能由不同语言触发，回放时按触发消息语言而不是当前 UI 默认语言展示。
+    localized_scene = localize_scene_name(record.scene_name or "", ui_lang) or _scene_fallback_name(
+        ui_lang
+    )
     intro_template = get_localized_static_text(SCENE_RESULT_MESSAGES, ui_lang)
-    events.append(TelegramSimulatorEventSchema(
-        id=f"scene-{record.id}-intro",
-        role="assistant",
-        type="text",
-        text=intro_template.format(scene=localized_scene),
-        created_at=created_at,
-    ))
+    events.append(
+        TelegramSimulatorEventSchema(
+            id=f"scene-{record.id}-intro",
+            role="assistant",
+            type="text",
+            text=intro_template.format(scene=localized_scene),
+            created_at=created_at,
+        )
+    )
 
     resp = await build_scene_record_response(record)
     image_urls = resp.get("image_urls", [])
     for idx, image_url in enumerate(image_urls):
-        events.append(TelegramSimulatorEventSchema(
-            id=f"scene-{record.id}-image-{idx}",
-            role="assistant",
-            type="photo",
-            url=image_url,
-            created_at=created_at,
-        ))
+        events.append(
+            TelegramSimulatorEventSchema(
+                id=f"scene-{record.id}-image-{idx}",
+                role="assistant",
+                type="photo",
+                url=image_url,
+                created_at=created_at,
+            )
+        )
 
     labels = get_localized_static_dict(SCENE_RESULT_LINK_LABELS, ui_lang)
     lines: list[str] = []
@@ -958,10 +1103,16 @@ async def _build_simulator_scene_events(
         localized_primary = localize_product_payload(product_entry_to_payload(primary), ui_lang)
         primary_link = localized_primary.get("buy_url") or localized_primary.get("detail_url")
         if primary_link:
-            lines.append(f"{labels['main']}: [{localized_primary.get('name') or primary.product_name}]({primary_link})")
+            lines.append(
+                f"{labels['main']}: [{localized_primary.get('name') or primary.product_name}]({primary_link})"
+            )
 
     try:
-        related_ids = [int(item) for item in json.loads(record.related_product_ids_json or "[]") if str(item).isdigit()]
+        related_ids = [
+            int(item)
+            for item in json.loads(record.related_product_ids_json or "[]")
+            if str(item).isdigit()
+        ]
     except (TypeError, ValueError, json.JSONDecodeError):
         related_ids = []
     if related_ids:
@@ -981,21 +1132,25 @@ async def _build_simulator_scene_events(
             localized_product = localize_product_payload(product_entry_to_payload(product), ui_lang)
             link = localized_product.get("buy_url") or localized_product.get("detail_url")
             if link:
-                lines.append(f"{labels['related']}: [{localized_product.get('name') or product.product_name}]({link})")
+                lines.append(
+                    f"{labels['related']}: [{localized_product.get('name') or product.product_name}]({link})"
+                )
     else:
         for rel in resp.get("related_products", []):
             link = rel.get("buy_url") or rel.get("detail_url")
             if link:
                 lines.append(f"{labels['related']}: [{rel.get('product_name', '')}]({link})")
     if lines:
-        events.append(TelegramSimulatorEventSchema(
-            id=f"scene-{record.id}-links",
-            role="assistant",
-            type="text",
-            text="\n".join(lines),
-            parse_mode="Markdown",
-            created_at=created_at,
-        ))
+        events.append(
+            TelegramSimulatorEventSchema(
+                id=f"scene-{record.id}-links",
+                role="assistant",
+                type="text",
+                text="\n".join(lines),
+                parse_mode="Markdown",
+                created_at=created_at,
+            )
+        )
     return events
 
 
@@ -1026,6 +1181,7 @@ async def simulator_create_session(
     welcome = bot.welcome_message or ""
     if not welcome:
         from app.telegram_bot import WELCOME_MESSAGES
+
         welcome = get_localized_static_text(WELCOME_MESSAGES, language)
     await tg_save_message(conversation.id, MessageRole.ASSISTANT, welcome, language)
 
@@ -1035,7 +1191,9 @@ async def simulator_create_session(
     )
 
 
-@router.post("/simulator/sessions/{conversation_id}/send", response_model=TelegramSimulatorSendResponse)
+@router.post(
+    "/simulator/sessions/{conversation_id}/send", response_model=TelegramSimulatorSendResponse
+)
 async def simulator_send_message(
     conversation_id: int,
     req: TelegramSimulatorSendRequest,
@@ -1078,7 +1236,9 @@ async def simulator_send_message(
     conversation.language = language
     await db.commit()
 
-    user_message_id = await tg_save_message(conversation_id, MessageRole.USER, user_message, language)
+    user_message_id = await tg_save_message(
+        conversation_id, MessageRole.USER, user_message, language
+    )
     await attach_turn_user_message(metric_id, user_message_id)
     await record_turn_step(
         metric_id,
@@ -1137,7 +1297,10 @@ async def simulator_get_messages(
     return [MessageSchema.model_validate(msg) for msg in result.scalars().all()]
 
 
-@router.get("/simulator/sessions/{conversation_id}/events", response_model=list[TelegramSimulatorEventSchema])
+@router.get(
+    "/simulator/sessions/{conversation_id}/events",
+    response_model=list[TelegramSimulatorEventSchema],
+)
 async def simulator_get_events(
     conversation_id: int,
     db: AsyncSession = Depends(get_db),
@@ -1170,7 +1333,9 @@ async def simulator_get_events(
         for event in outbound_result.scalars().all()
     ]
 
-    scene_events = await _load_scene_generation_events(db, conversation_id, conversation.language or "en")
+    scene_events = await _load_scene_generation_events(
+        db, conversation_id, conversation.language or "en"
+    )
     message_result = await db.execute(
         select(Message)
         .where(Message.conversation_id == conversation_id)
@@ -1185,11 +1350,13 @@ async def simulator_get_events(
 
 # ─── Knowledge Base ──────────────────────────────────────────────────────────
 
+
 @router.get("/knowledge", response_model=list[KnowledgeEntrySchema])
 async def list_knowledge(
-    category: Optional[str] = Query(None),
-    search: Optional[str] = Query(None),
-    skip: int = 0, limit: int = 50,
+    category: str | None = Query(None),
+    search: str | None = Query(None),
+    skip: int = 0,
+    limit: int = 50,
     db: AsyncSession = Depends(get_db),
     _: str = Depends(get_current_user),
 ):
@@ -1211,7 +1378,9 @@ async def create_knowledge(
     db: AsyncSession = Depends(get_db),
     _: str = Depends(get_current_user),
 ):
-    entry = KnowledgeEntry(title=req.title, content=req.content, source=req.source, category=req.category)
+    entry = KnowledgeEntry(
+        title=req.title, content=req.content, source=req.source, category=req.category
+    )
     db.add(entry)
     await db.commit()
     await db.refresh(entry)
@@ -1225,7 +1394,9 @@ async def create_knowledge(
 
 
 @router.delete("/knowledge/{entry_id}")
-async def delete_knowledge(entry_id: int, db: AsyncSession = Depends(get_db), _: str = Depends(get_current_user)):
+async def delete_knowledge(
+    entry_id: int, db: AsyncSession = Depends(get_db), _: str = Depends(get_current_user)
+):
     entry = await db.get(KnowledgeEntry, entry_id)
     if not entry:
         raise HTTPException(status_code=404, detail="Knowledge entry not found")
@@ -1260,7 +1431,9 @@ def _knowledge_text_from_upload(filename: str | None, content: bytes) -> str:
             return extract_docx_text_from_bytes(content)
         except Exception as e:
             logger.warning("Failed to parse .docx for knowledge upload: %s", e)
-            raise HTTPException(status_code=400, detail="无法解析 Word 文档，请确认是否为有效的 .docx 文件") from e
+            raise HTTPException(
+                status_code=400, detail="无法解析 Word 文档，请确认是否为有效的 .docx 文件"
+            ) from e
     if name.endswith((".txt", ".md", ".csv")):
         return content.decode("utf-8", errors="ignore")
     if name.endswith(".doc"):
@@ -1280,7 +1453,7 @@ def _knowledge_text_from_upload(filename: str | None, content: bytes) -> str:
 @router.post("/knowledge/upload")
 async def upload_knowledge_file(
     file: UploadFile = File(...),
-    category: Optional[str] = Query(None),
+    category: str | None = Query(None),
     db: AsyncSession = Depends(get_db),
     _: str = Depends(get_current_user),
 ):
@@ -1292,7 +1465,9 @@ async def upload_knowledge_file(
     entries = []
     for i, chunk in enumerate(chunks):
         title = f"{file.filename} - Part {i + 1}" if len(chunks) > 1 else file.filename
-        entry = KnowledgeEntry(title=title, content=chunk, source=file.filename, category=category or "uploaded")
+        entry = KnowledgeEntry(
+            title=title, content=chunk, source=file.filename, category=category or "uploaded"
+        )
         db.add(entry)
         await db.flush()
         ok = await add_to_knowledge_base(entry.id, entry.title, entry.content, entry.category)
@@ -1322,12 +1497,15 @@ def _split_text_into_chunks(text: str, max_chunk_size: int = 1500) -> list[str]:
 
 # ─── Contracts ───────────────────────────────────────────────────────────────
 
+
 @router.get("/contracts", response_model=list[ContractSchema])
 async def list_contracts(
-    status: Optional[str] = Query(None),
-    conversation_id: Optional[int] = Query(None),
-    skip: int = 0, limit: int = 50,
-    db: AsyncSession = Depends(get_db), _: str = Depends(get_current_user),
+    status: str | None = Query(None),
+    conversation_id: int | None = Query(None),
+    skip: int = 0,
+    limit: int = 50,
+    db: AsyncSession = Depends(get_db),
+    _: str = Depends(get_current_user),
 ):
     query = select(Contract).order_by(desc(Contract.created_at))
     if status:
@@ -1339,7 +1517,9 @@ async def list_contracts(
 
 
 @router.get("/contracts/{contract_id}", response_model=ContractSchema)
-async def get_contract(contract_id: int, db: AsyncSession = Depends(get_db), _: str = Depends(get_current_user)):
+async def get_contract(
+    contract_id: int, db: AsyncSession = Depends(get_db), _: str = Depends(get_current_user)
+):
     contract = await db.get(Contract, contract_id)
     if not contract:
         raise HTTPException(status_code=404, detail="Contract not found")
@@ -1348,7 +1528,9 @@ async def get_contract(contract_id: int, db: AsyncSession = Depends(get_db), _: 
 
 @router.post("/contracts/generate", response_model=ContractSchema)
 async def generate_contract_endpoint(
-    req: ContractGenerateRequest, db: AsyncSession = Depends(get_db), _: str = Depends(get_current_user),
+    req: ContractGenerateRequest,
+    db: AsyncSession = Depends(get_db),
+    _: str = Depends(get_current_user),
 ):
     contract = await create_contract_from_conversation(
         db,
@@ -1370,7 +1552,8 @@ def _ensure_contract_templates_dir():
 
 @router.get("/contract-templates", response_model=list[ContractTemplateSchema])
 async def list_contract_templates(
-    db: AsyncSession = Depends(get_db), _: str = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _: str = Depends(get_current_user),
 ):
     result = await db.execute(select(ContractTemplate).order_by(desc(ContractTemplate.created_at)))
     return [ContractTemplateSchema.model_validate(t) for t in result.scalars().all()]
@@ -1414,7 +1597,9 @@ async def upload_contract_template(
 
 @router.get("/contract-templates/{template_id}/download")
 async def download_contract_template(
-    template_id: int, db: AsyncSession = Depends(get_db), _: str = Depends(get_current_user),
+    template_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: str = Depends(get_current_user),
 ):
     entry = await db.get(ContractTemplate, template_id)
     if not entry:
@@ -1430,7 +1615,9 @@ async def download_contract_template(
 
 @router.delete("/contract-templates/{template_id}")
 async def delete_contract_template(
-    template_id: int, db: AsyncSession = Depends(get_db), _: str = Depends(get_current_user),
+    template_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: str = Depends(get_current_user),
 ):
     entry = await db.get(ContractTemplate, template_id)
     if not entry:
@@ -1444,8 +1631,10 @@ async def delete_contract_template(
 
 @router.put("/contracts/{contract_id}", response_model=ContractSchema)
 async def update_contract(
-    contract_id: int, req: ContractUpdateRequest,
-    db: AsyncSession = Depends(get_db), _: str = Depends(get_current_user),
+    contract_id: int,
+    req: ContractUpdateRequest,
+    db: AsyncSession = Depends(get_db),
+    _: str = Depends(get_current_user),
 ):
     contract = await db.get(Contract, contract_id)
     if not contract:
@@ -1462,7 +1651,9 @@ async def update_contract(
 
 
 @router.delete("/contracts/{contract_id}")
-async def delete_contract(contract_id: int, db: AsyncSession = Depends(get_db), _: str = Depends(get_current_user)):
+async def delete_contract(
+    contract_id: int, db: AsyncSession = Depends(get_db), _: str = Depends(get_current_user)
+):
     contract = await db.get(Contract, contract_id)
     if not contract:
         raise HTTPException(status_code=404, detail="Contract not found")
@@ -1472,6 +1663,7 @@ async def delete_contract(contract_id: int, db: AsyncSession = Depends(get_db), 
 
 
 # ─── LLM Settings ────────────────────────────────────────────────────────────
+
 
 @router.get("/settings/llm", response_model=LLMSettingsSchema)
 async def get_settings_llm(_: str = Depends(get_current_user)):
@@ -1573,32 +1765,63 @@ async def update_settings_llm(req: LLMSettingsUpdateRequest, _: str = Depends(ge
 async def test_llm_endpoint(req: LLMSettingsUpdateRequest, _: str = Depends(get_current_user)):
     cfg = await get_llm_settings()
     provider = req.provider or cfg.get("llm_provider", "openai")
-    api_key = req.api_key if (req.api_key and "****" not in req.api_key) else cfg.get("llm_api_key", "")
+    api_key = (
+        req.api_key if (req.api_key and "****" not in req.api_key) else cfg.get("llm_api_key", "")
+    )
     base_url = req.base_url or cfg.get("llm_base_url", "")
     model = req.model or cfg.get("llm_model", "gpt-4o")
     return await test_llm_connection(provider, api_key, base_url, model)
 
 
 @router.post("/settings/llm/test-profile")
-async def test_profile_llm_endpoint(req: LLMSettingsUpdateRequest, _: str = Depends(get_current_user)):
+async def test_profile_llm_endpoint(
+    req: LLMSettingsUpdateRequest, _: str = Depends(get_current_user)
+):
     cfg = await get_llm_settings()
-    provider = req.profile_provider or cfg.get("profile_llm_provider", "") or req.provider or cfg.get("llm_provider", "openai")
+    provider = (
+        req.profile_provider
+        or cfg.get("profile_llm_provider", "")
+        or req.provider
+        or cfg.get("llm_provider", "openai")
+    )
     api_key = (
         req.profile_api_key
         if (req.profile_api_key and "****" not in req.profile_api_key)
         else cfg.get("profile_llm_api_key", "")
-        or (req.api_key if (req.api_key and "****" not in req.api_key) else cfg.get("llm_api_key", ""))
+        or (
+            req.api_key
+            if (req.api_key and "****" not in req.api_key)
+            else cfg.get("llm_api_key", "")
+        )
     )
-    base_url = req.profile_base_url or cfg.get("profile_llm_base_url", "") or req.base_url or cfg.get("llm_base_url", "")
-    model = req.profile_model or cfg.get("profile_llm_model", "") or req.model or cfg.get("llm_model", "gpt-4o")
+    base_url = (
+        req.profile_base_url
+        or cfg.get("profile_llm_base_url", "")
+        or req.base_url
+        or cfg.get("llm_base_url", "")
+    )
+    model = (
+        req.profile_model
+        or cfg.get("profile_llm_model", "")
+        or req.model
+        or cfg.get("llm_model", "gpt-4o")
+    )
     return await test_profile_llm_connection(provider, api_key, base_url, model)
 
 
 @router.post("/settings/llm/test-embedding")
-async def test_embedding_endpoint(req: LLMSettingsUpdateRequest, _: str = Depends(get_current_user)):
+async def test_embedding_endpoint(
+    req: LLMSettingsUpdateRequest, _: str = Depends(get_current_user)
+):
     cfg = await get_llm_settings()
-    api_key = req.embedding_api_key if (req.embedding_api_key and "****" not in req.embedding_api_key) else cfg.get("embedding_api_key", "") or cfg.get("llm_api_key", "")
-    base_url = req.embedding_base_url or cfg.get("embedding_base_url", "") or cfg.get("llm_base_url", "")
+    api_key = (
+        req.embedding_api_key
+        if (req.embedding_api_key and "****" not in req.embedding_api_key)
+        else cfg.get("embedding_api_key", "") or cfg.get("llm_api_key", "")
+    )
+    base_url = (
+        req.embedding_base_url or cfg.get("embedding_base_url", "") or cfg.get("llm_base_url", "")
+    )
     model = req.embedding_model or cfg.get("embedding_model", "text-embedding-3-small")
     return await test_embedding_connection(api_key, base_url, model)
 
@@ -1606,7 +1829,11 @@ async def test_embedding_endpoint(req: LLMSettingsUpdateRequest, _: str = Depend
 @router.post("/settings/llm/test-image")
 async def test_image_endpoint(req: LLMSettingsUpdateRequest, _: str = Depends(get_current_user)):
     cfg = await get_llm_settings()
-    api_key = req.image_api_key if (req.image_api_key and "****" not in req.image_api_key) else cfg.get("image_api_key", "") or cfg.get("llm_api_key", "")
+    api_key = (
+        req.image_api_key
+        if (req.image_api_key and "****" not in req.image_api_key)
+        else cfg.get("image_api_key", "") or cfg.get("llm_api_key", "")
+    )
     base_url = req.image_base_url or cfg.get("image_base_url", "") or cfg.get("llm_base_url", "")
     model = req.image_model or cfg.get("image_model", "gpt-image-1")
     size = req.image_size or cfg.get("image_size", "1024x1024")
@@ -1616,15 +1843,17 @@ async def test_image_endpoint(req: LLMSettingsUpdateRequest, _: str = Depends(ge
 
 # ─── File Library ─────────────────────────────────────────────────────────────
 
+
 def _ensure_upload_dir():
     os.makedirs(settings.FILE_STORAGE_DIR, exist_ok=True)
 
 
 @router.get("/files", response_model=list[FileEntrySchema])
 async def list_files(
-    category: Optional[str] = Query(None),
-    search: Optional[str] = Query(None),
-    skip: int = 0, limit: int = 50,
+    category: str | None = Query(None),
+    search: str | None = Query(None),
+    skip: int = 0,
+    limit: int = 50,
     db: AsyncSession = Depends(get_db),
     _: str = Depends(get_current_user),
 ):
@@ -1646,7 +1875,7 @@ async def upload_file(
     file: UploadFile = File(...),
     description: str = Query(""),
     tags: str = Query(""),
-    category: Optional[str] = Query(None),
+    category: str | None = Query(None),
     db: AsyncSession = Depends(get_db),
     _: str = Depends(get_current_user),
 ):
@@ -1673,13 +1902,16 @@ async def upload_file(
     await db.commit()
     await db.refresh(entry)
 
-    await add_file_to_index(entry.id, entry.original_name, entry.description, entry.tags, entry.category)
+    await add_file_to_index(
+        entry.id, entry.original_name, entry.description, entry.tags, entry.category
+    )
     return FileEntrySchema.model_validate(entry)
 
 
 @router.put("/files/{file_id}", response_model=FileEntrySchema)
 async def update_file(
-    file_id: int, req: FileEntryUpdateRequest,
+    file_id: int,
+    req: FileEntryUpdateRequest,
     db: AsyncSession = Depends(get_db),
     _: str = Depends(get_current_user),
 ):
@@ -1694,12 +1926,16 @@ async def update_file(
         entry.category = req.category
     await db.commit()
     await db.refresh(entry)
-    await add_file_to_index(entry.id, entry.original_name, entry.description, entry.tags, entry.category)
+    await add_file_to_index(
+        entry.id, entry.original_name, entry.description, entry.tags, entry.category
+    )
     return FileEntrySchema.model_validate(entry)
 
 
 @router.delete("/files/{file_id}")
-async def delete_file(file_id: int, db: AsyncSession = Depends(get_db), _: str = Depends(get_current_user)):
+async def delete_file(
+    file_id: int, db: AsyncSession = Depends(get_db), _: str = Depends(get_current_user)
+):
     entry = await db.get(FileEntry, file_id)
     if not entry:
         raise HTTPException(status_code=404, detail="File not found")
@@ -1726,6 +1962,7 @@ async def download_file(file_id: int, db: AsyncSession = Depends(get_db)):
 
 
 # ─── Telegram Bot Management ─────────────────────────────────────────────────
+
 
 def _mask_token(token: str) -> str:
     if len(token) > 12:
@@ -1764,9 +2001,7 @@ async def create_bot(
     db: AsyncSession = Depends(get_db),
     _: str = Depends(get_current_user),
 ):
-    existing = await db.execute(
-        select(TelegramBot).where(TelegramBot.token == req.token)
-    )
+    existing = await db.execute(select(TelegramBot).where(TelegramBot.token == req.token))
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="该 Token 已被使用")
 
@@ -1886,6 +2121,7 @@ async def stop_bot_endpoint(
 
 # ─── Products ────────────────────────────────────────────────────────────────
 
+
 @router.get("/products/meta")
 async def get_products_meta(
     db: AsyncSession = Depends(get_db),
@@ -1907,12 +2143,12 @@ async def get_products_meta(
 
 @router.get("/products", response_model=list[ProductEntryListSchema])
 async def list_products(
-    keyword: Optional[str] = Query(None),
-    brand: Optional[str] = Query(None),
-    space: Optional[str] = Query(None),
-    style: Optional[str] = Query(None),
-    series: Optional[str] = Query(None),
-    color: Optional[str] = Query(None),
+    keyword: str | None = Query(None),
+    brand: str | None = Query(None),
+    space: str | None = Query(None),
+    style: str | None = Query(None),
+    series: str | None = Query(None),
+    color: str | None = Query(None),
     skip: int = Query(0, ge=0),
     limit: int = Query(40, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
@@ -1925,6 +2161,7 @@ async def list_products(
     if keyword:
         kw = f"%{keyword}%"
         from sqlalchemy import or_
+
         query = query.where(
             or_(
                 ProductEntry.product_name.ilike(kw),
@@ -1952,33 +2189,35 @@ async def list_products(
     out = []
     for e in entries:
         first_img = e.images[0].local_path if e.images else None
-        out.append(ProductEntryListSchema(
-            id=e.id,
-            brand=e.brand,
-            product_id_ext=e.product_id_ext,
-            product_name=e.product_name,
-            series_name=e.series_name,
-            space=e.space,
-            style=e.style,
-            color=e.color,
-            material=e.material,
-            size=e.size,
-            price_display=e.price_display,
-            serial_number=e.serial_number,
-            description_text=e.description_text,
-            buy_url=e.buy_url,
-            primary_category=e.primary_category,
-            normalized_brand=e.normalized_brand,
-            normalized_space=e.normalized_space,
-            normalized_style=e.normalized_style,
-            normalized_color=e.normalized_color,
-            normalized_materials_json=e.normalized_materials_json,
-            category_confidence=e.category_confidence or 0.0,
-            translations=translation_map_from_entries(e.translations),
-            first_image_path=first_img,
-            created_at=e.created_at,
-            updated_at=e.updated_at,
-        ))
+        out.append(
+            ProductEntryListSchema(
+                id=e.id,
+                brand=e.brand,
+                product_id_ext=e.product_id_ext,
+                product_name=e.product_name,
+                series_name=e.series_name,
+                space=e.space,
+                style=e.style,
+                color=e.color,
+                material=e.material,
+                size=e.size,
+                price_display=e.price_display,
+                serial_number=e.serial_number,
+                description_text=e.description_text,
+                buy_url=e.buy_url,
+                primary_category=e.primary_category,
+                normalized_brand=e.normalized_brand,
+                normalized_space=e.normalized_space,
+                normalized_style=e.normalized_style,
+                normalized_color=e.normalized_color,
+                normalized_materials_json=e.normalized_materials_json,
+                category_confidence=e.category_confidence or 0.0,
+                translations=translation_map_from_entries(e.translations),
+                first_image_path=first_img,
+                created_at=e.created_at,
+                updated_at=e.updated_at,
+            )
+        )
     return out
 
 
@@ -2054,7 +2293,13 @@ async def get_product_image(
     if not os.path.exists(full_path):
         raise HTTPException(status_code=404, detail="Image file missing from disk")
     ext = os.path.splitext(full_path)[1].lower()
-    mime = {"jpg": "image/jpeg", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp"}.get(ext, "image/jpeg")
+    mime = {
+        "jpg": "image/jpeg",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".png": "image/png",
+        ".webp": "image/webp",
+    }.get(ext, "image/jpeg")
     return FileResponse(path=full_path, media_type=mime)
 
 
@@ -2138,7 +2383,9 @@ async def get_scene_generation_image(
     )
     scene_image = image_result.scalar_one_or_none()
     if scene_image:
-        return Response(content=scene_image.binary_data, media_type=scene_image.mime_type or "image/png")
+        return Response(
+            content=scene_image.binary_data, media_type=scene_image.mime_type or "image/png"
+        )
     paths = json.loads(record.output_paths_json or "[]")
     if index < 0 or index >= len(paths):
         raise HTTPException(status_code=404, detail="Scene image not found")
@@ -2146,7 +2393,13 @@ async def get_scene_generation_image(
     if not os.path.exists(full_path):
         raise HTTPException(status_code=404, detail="Scene image file missing from disk")
     ext = os.path.splitext(full_path)[1].lower()
-    mime = {"jpg": "image/jpeg", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp"}.get(ext, "image/jpeg")
+    mime = {
+        "jpg": "image/jpeg",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".png": "image/png",
+        ".webp": "image/webp",
+    }.get(ext, "image/jpeg")
     return FileResponse(path=full_path, media_type=mime)
 
 
@@ -2156,12 +2409,15 @@ async def trigger_product_import(
 ):
     """Trigger re-import of product data from mounted Furniture-Crawler CSV + images."""
     import subprocess
+
     script = "/app/scripts/import_products.py"
     if not os.path.exists(script):
         raise HTTPException(status_code=500, detail="Import script not found")
     proc = subprocess.run(
         ["python", script],
-        capture_output=True, text=True, timeout=300,
+        capture_output=True,
+        text=True,
+        timeout=300,
     )
     if proc.returncode != 0:
         raise HTTPException(status_code=500, detail=proc.stderr[-2000:])
@@ -2169,6 +2425,7 @@ async def trigger_product_import(
 
 
 # ─── Scene Generator ─────────────────────────────────────────────────────────
+
 
 @router.post("/scene-generator/generate", response_model=SceneGenerationRecordSchema)
 async def scene_generator_generate(
@@ -2191,9 +2448,7 @@ async def scene_generator_generate(
         raise HTTPException(status_code=400, detail="最多选择 1 个主产品和 3 个副产品")
     if len(product_ids) > 1 and len(product_ids[1:]) > 3:
         raise HTTPException(status_code=400, detail="副产品最多选择 3 个")
-    result = await db.execute(
-        select(ProductEntry).where(ProductEntry.id.in_(product_ids))
-    )
+    result = await db.execute(select(ProductEntry).where(ProductEntry.id.in_(product_ids)))
     products_map = {p.id: p for p in result.scalars().all()}
     if not products_map:
         raise HTTPException(status_code=404, detail="未找到所选产品")
@@ -2259,7 +2514,9 @@ async def delete_scene_generation(
     if not record:
         raise HTTPException(status_code=404, detail="Scene record not found")
 
-    await db.execute(delete(SceneGenerationImage).where(SceneGenerationImage.record_id == record_id))
+    await db.execute(
+        delete(SceneGenerationImage).where(SceneGenerationImage.record_id == record_id)
+    )
     await db.delete(record)
     await db.commit()
 
@@ -2270,12 +2527,16 @@ async def delete_scene_generation(
 
 def _scene_view_clause(view: str):
     if view == "review":
-        return (SceneGenerationRecord.status == "completed") & (SceneGenerationRecord.in_library == False)
+        return (SceneGenerationRecord.status == "completed") & (
+            SceneGenerationRecord.in_library.is_(False)
+        )
     if view == "generating":
         return SceneGenerationRecord.status == "pending"
     if view == "failed":
         return SceneGenerationRecord.status == "failed"
-    return (SceneGenerationRecord.status == "completed") & (SceneGenerationRecord.in_library == True)
+    return (SceneGenerationRecord.status == "completed") & (
+        SceneGenerationRecord.in_library.is_(True)
+    )
 
 
 async def _load_all_products_for_scene_generation(db: AsyncSession) -> list[dict[str, Any]]:
@@ -2304,7 +2565,9 @@ async def _retry_scene_generation_record(record_id: int, db: AsyncSession) -> Sc
     if not primary_product:
         raise HTTPException(status_code=404, detail="Primary product not found")
 
-    related_ids = [int(x) for x in json.loads(source.related_product_ids_json or "[]") if str(x).isdigit()]
+    related_ids = [
+        int(x) for x in json.loads(source.related_product_ids_json or "[]") if str(x).isdigit()
+    ]
     all_products = await _load_all_products_for_scene_generation(db)
     return await start_scene_generation(
         primary_product=primary_product,
@@ -2355,10 +2618,14 @@ async def batch_scene_generation_action(
 
             if action == "delete":
                 await cancel_scene_generation_task(record_id)
-                await db.execute(delete(SceneGenerationImage).where(SceneGenerationImage.record_id == record_id))
+                await db.execute(
+                    delete(SceneGenerationImage).where(SceneGenerationImage.record_id == record_id)
+                )
                 await db.delete(record)
                 await db.commit()
-                scene_dir = os.path.join(settings.FILE_STORAGE_DIR, "generated_scenes", str(record_id))
+                scene_dir = os.path.join(
+                    settings.FILE_STORAGE_DIR, "generated_scenes", str(record_id)
+                )
                 shutil.rmtree(scene_dir, ignore_errors=True)
                 success_ids.append(record_id)
                 continue
@@ -2409,6 +2676,7 @@ async def get_scene_generation(
 
 # ─── Scene Library ───────────────────────────────────────────────────────────
 
+
 @router.get("/scene-library/filters")
 async def scene_library_filters(
     view: str = Query("library", pattern="^(library|review|generating|failed)$"),
@@ -2440,8 +2708,7 @@ async def scene_library_filters(
     styles = sorted(s for (s,) in result.all() if s)
 
     result = await db.execute(
-        select(func.distinct(SceneGenerationRecord.scene_name))
-        .where(lib_filter)
+        select(func.distinct(SceneGenerationRecord.scene_name)).where(lib_filter)
     )
     scene_names = sorted(s for (s,) in result.all() if s)
 
@@ -2451,10 +2718,10 @@ async def scene_library_filters(
 @router.get("/scene-library", response_model=list[SceneLibraryItemSchema])
 async def list_scene_library(
     view: str = Query("library", pattern="^(library|review|generating|failed)$"),
-    brand: Optional[str] = Query(None),
-    space: Optional[str] = Query(None),
-    style: Optional[str] = Query(None),
-    scene_name: Optional[str] = Query(None),
+    brand: str | None = Query(None),
+    space: str | None = Query(None),
+    style: str | None = Query(None),
+    scene_name: str | None = Query(None),
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
@@ -2484,25 +2751,27 @@ async def list_scene_library(
         resp = await build_scene_record_response(record)
         primary = await db.get(ProductEntry, record.primary_product_id)
         image_urls = resp.get("image_urls", [])
-        items.append(SceneLibraryItemSchema(
-            id=record.id,
-            conversation_id=record.conversation_id,
-            primary_product_id=record.primary_product_id,
-            primary_product_name=resp.get("primary_product_name", ""),
-            primary_product_brand=primary.brand if primary else "",
-            primary_product_space=primary.space if primary else "",
-            primary_product_style=primary.style if primary else "",
-            scene_name=record.scene_name or "",
-            style_hint=record.style_hint or "",
-            request_text=record.request_text or "",
-            related_products=resp.get("related_products", []),
-            image_urls=image_urls,
-            cover_url=image_urls[0] if image_urls else "",
-            duration_ms=record.duration_ms or 0,
-            status=record.status or "",
-            in_library=bool(record.in_library),
-            error_message=record.error_message or "",
-            created_at=record.created_at,
-            updated_at=record.updated_at,
-        ))
+        items.append(
+            SceneLibraryItemSchema(
+                id=record.id,
+                conversation_id=record.conversation_id,
+                primary_product_id=record.primary_product_id,
+                primary_product_name=resp.get("primary_product_name", ""),
+                primary_product_brand=primary.brand if primary else "",
+                primary_product_space=primary.space if primary else "",
+                primary_product_style=primary.style if primary else "",
+                scene_name=record.scene_name or "",
+                style_hint=record.style_hint or "",
+                request_text=record.request_text or "",
+                related_products=resp.get("related_products", []),
+                image_urls=image_urls,
+                cover_url=image_urls[0] if image_urls else "",
+                duration_ms=record.duration_ms or 0,
+                status=record.status or "",
+                in_library=bool(record.in_library),
+                error_message=record.error_message or "",
+                created_at=record.created_at,
+                updated_at=record.updated_at,
+            )
+        )
     return items

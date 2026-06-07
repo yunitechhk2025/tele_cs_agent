@@ -1,7 +1,24 @@
 import enum
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Text, DateTime, BigInteger, Boolean, ForeignKey, Enum as SQLEnum, LargeBinary, Float, UniqueConstraint
+
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    Column,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    LargeBinary,
+    String,
+    Text,
+    UniqueConstraint,
+)
+from sqlalchemy import (
+    Enum as SQLEnum,
+)
 from sqlalchemy.orm import relationship
+
 from app.database import Base
 
 
@@ -166,7 +183,9 @@ class ProductEntry(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
-    images = relationship("ProductImage", back_populates="product", order_by="ProductImage.display_order")
+    images = relationship(
+        "ProductImage", back_populates="product", order_by="ProductImage.display_order"
+    )
     translations = relationship(
         "ProductEntryTranslation",
         back_populates="product",
@@ -178,7 +197,9 @@ class ProductEntry(Base):
 class ProductEntryTranslation(Base):
     __tablename__ = "product_entry_translations"
     __table_args__ = (
-        UniqueConstraint("product_entry_id", "language", name="uq_product_entry_translations_product_language"),
+        UniqueConstraint(
+            "product_entry_id", "language", name="uq_product_entry_translations_product_language"
+        ),
     )
 
     id = Column(Integer, primary_key=True, index=True)
@@ -216,7 +237,9 @@ class ConversationSceneState(Base):
     __tablename__ = "conversation_scene_states"
 
     id = Column(Integer, primary_key=True, index=True)
-    conversation_id = Column(Integer, ForeignKey("conversations.id"), unique=True, index=True, nullable=False)
+    conversation_id = Column(
+        Integer, ForeignKey("conversations.id"), unique=True, index=True, nullable=False
+    )
     primary_product_id = Column(Integer, ForeignKey("product_entries.id"), nullable=True)
     recommended_product_ids_json = Column(Text, default="[]")
     active_product_id = Column(Integer, ForeignKey("product_entries.id"), nullable=True)
@@ -240,7 +263,9 @@ class ConversationMemory(Base):
     __tablename__ = "conversation_memories"
 
     id = Column(Integer, primary_key=True, index=True)
-    conversation_id = Column(Integer, ForeignKey("conversations.id"), unique=True, index=True, nullable=False)
+    conversation_id = Column(
+        Integer, ForeignKey("conversations.id"), unique=True, index=True, nullable=False
+    )
     active_product_id = Column(Integer, ForeignKey("product_entries.id"), nullable=True)
     recent_product_ids_json = Column(Text, default="[]")
     active_topic = Column(String(100), default="")
@@ -272,7 +297,9 @@ class ConversationProcessingState(Base):
     __tablename__ = "conversation_processing_states"
 
     id = Column(Integer, primary_key=True, index=True)
-    conversation_id = Column(Integer, ForeignKey("conversations.id"), unique=True, index=True, nullable=False)
+    conversation_id = Column(
+        Integer, ForeignKey("conversations.id"), unique=True, index=True, nullable=False
+    )
     stage_key = Column(String(100), default="idle")
     stage_label = Column(String(200), default="空闲")
     stage_detail = Column(Text, default="")
@@ -313,7 +340,9 @@ class ConversationTurnStepMetric(Base):
     __tablename__ = "conversation_turn_step_metrics"
 
     id = Column(Integer, primary_key=True, index=True)
-    turn_metric_id = Column(Integer, ForeignKey("conversation_turn_metrics.id"), index=True, nullable=False)
+    turn_metric_id = Column(
+        Integer, ForeignKey("conversation_turn_metrics.id"), index=True, nullable=False
+    )
     conversation_id = Column(Integer, ForeignKey("conversations.id"), index=True, nullable=False)
     step_index = Column(Integer, default=0)
     stage_key = Column(String(100), default="")
@@ -343,7 +372,9 @@ class LLMCallMetric(Base):
     error_type = Column(String(200), default="")
     error_message = Column(Text, default="")
     conversation_id = Column(Integer, ForeignKey("conversations.id"), nullable=True, index=True)
-    turn_metric_id = Column(Integer, ForeignKey("conversation_turn_metrics.id"), nullable=True, index=True)
+    turn_metric_id = Column(
+        Integer, ForeignKey("conversation_turn_metrics.id"), nullable=True, index=True
+    )
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
 
     conversation = relationship("Conversation")
@@ -352,9 +383,7 @@ class LLMCallMetric(Base):
 
 class ObservabilityAlert(Base):
     __tablename__ = "observability_alerts"
-    __table_args__ = (
-        UniqueConstraint("dedupe_key", name="uq_observability_alerts_dedupe_key"),
-    )
+    __table_args__ = (UniqueConstraint("dedupe_key", name="uq_observability_alerts_dedupe_key"),)
 
     id = Column(Integer, primary_key=True, index=True)
     severity = Column(String(50), default="warning", index=True)
@@ -376,9 +405,7 @@ class ObservabilityAlert(Base):
 
 class BackgroundJob(Base):
     __tablename__ = "background_jobs"
-    __table_args__ = (
-        UniqueConstraint("dedupe_key", name="uq_background_jobs_dedupe_key"),
-    )
+    __table_args__ = (UniqueConstraint("dedupe_key", name="uq_background_jobs_dedupe_key"),)
 
     id = Column(Integer, primary_key=True, index=True)
     job_type = Column(String(100), nullable=False, index=True)
@@ -402,7 +429,9 @@ class PendingAIReply(Base):
     __tablename__ = "pending_ai_replies"
 
     id = Column(Integer, primary_key=True, index=True)
-    conversation_id = Column(Integer, ForeignKey("conversations.id"), unique=True, index=True, nullable=False)
+    conversation_id = Column(
+        Integer, ForeignKey("conversations.id"), unique=True, index=True, nullable=False
+    )
     draft_text = Column(Text, default="")
     final_text = Column(Text, default="")
     language = Column(String(10), default="en")
@@ -424,7 +453,9 @@ class SceneGenerationRecord(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     conversation_id = Column(Integer, ForeignKey("conversations.id"), nullable=True, index=True)
-    primary_product_id = Column(Integer, ForeignKey("product_entries.id"), nullable=False, index=True)
+    primary_product_id = Column(
+        Integer, ForeignKey("product_entries.id"), nullable=False, index=True
+    )
     scene_name = Column(String(200), default="")
     style_hint = Column(String(200), default="")
     request_text = Column(Text, default="")
@@ -441,14 +472,18 @@ class SceneGenerationRecord(Base):
 
     conversation = relationship("Conversation")
     primary_product = relationship("ProductEntry")
-    images = relationship("SceneGenerationImage", back_populates="record", order_by="SceneGenerationImage.image_index")
+    images = relationship(
+        "SceneGenerationImage", back_populates="record", order_by="SceneGenerationImage.image_index"
+    )
 
 
 class SceneGenerationImage(Base):
     __tablename__ = "scene_generation_images"
 
     id = Column(Integer, primary_key=True, index=True)
-    record_id = Column(Integer, ForeignKey("scene_generation_records.id"), nullable=False, index=True)
+    record_id = Column(
+        Integer, ForeignKey("scene_generation_records.id"), nullable=False, index=True
+    )
     image_index = Column(Integer, default=0, nullable=False)
     mime_type = Column(String(100), default="image/png")
     binary_data = Column(LargeBinary, nullable=False)

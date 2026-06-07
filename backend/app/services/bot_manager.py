@@ -1,10 +1,9 @@
 import logging
-from typing import Optional
 
+from sqlalchemy import select
 from telegram import Bot
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 
-from sqlalchemy import select
 from app.database import AsyncSessionLocal
 from app.models import TelegramBot
 
@@ -14,7 +13,8 @@ _running_bots: dict[int, Application] = {}
 
 
 def _make_handlers(bot_id: int):
-    from app.telegram_bot import make_start_handler, make_message_handler, make_close_handler
+    from app.telegram_bot import make_close_handler, make_message_handler, make_start_handler
+
     return [
         CommandHandler("start", make_start_handler(bot_id)),
         CommandHandler("close", make_close_handler(bot_id)),
@@ -72,9 +72,7 @@ async def stop_bot(bot_id: int) -> bool:
 async def start_all_active_bots():
     try:
         async with AsyncSessionLocal() as db:
-            result = await db.execute(
-                select(TelegramBot).where(TelegramBot.is_active == True)
-            )
+            result = await db.execute(select(TelegramBot).where(TelegramBot.is_active.is_(True)))
             bots = result.scalars().all()
 
         started = 0
@@ -95,7 +93,7 @@ async def stop_all_bots():
     logger.info("All bots stopped")
 
 
-def get_bot_instance(bot_id: int) -> Optional[Bot]:
+def get_bot_instance(bot_id: int) -> Bot | None:
     app = _running_bots.get(bot_id)
     return app.bot if app else None
 
@@ -108,7 +106,7 @@ def get_running_bot_ids() -> list[int]:
     return list(_running_bots.keys())
 
 
-def get_any_bot_instance() -> Optional[Bot]:
+def get_any_bot_instance() -> Bot | None:
     if _running_bots:
         return next(iter(_running_bots.values())).bot
     return None

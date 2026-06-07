@@ -1,5 +1,6 @@
 from datetime import datetime
 from typing import Any, Optional
+
 from pydantic import BaseModel, Field
 
 
@@ -18,8 +19,8 @@ class MessageSchema(BaseModel):
     conversation_id: int
     role: str
     content: str
-    language: Optional[str] = None
-    attachment_file_id: Optional[int] = None
+    language: str | None = None
+    attachment_file_id: int | None = None
     created_at: datetime
 
     class Config:
@@ -28,12 +29,12 @@ class MessageSchema(BaseModel):
 
 class ConversationSchema(BaseModel):
     id: int
-    bot_id: Optional[int] = None
+    bot_id: int | None = None
     telegram_chat_id: str
     telegram_user_id: str
-    username: Optional[str] = None
-    first_name: Optional[str] = None
-    last_name: Optional[str] = None
+    username: str | None = None
+    first_name: str | None = None
+    last_name: str | None = None
     language: str
     status: str
     created_at: datetime
@@ -48,8 +49,8 @@ class ConversationProcessingStateSchema(BaseModel):
     stage_label: str = "空闲"
     stage_detail: str = ""
     is_processing: bool = False
-    started_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
+    started_at: datetime | None = None
+    updated_at: datetime | None = None
 
     class Config:
         from_attributes = True
@@ -58,19 +59,19 @@ class ConversationProcessingStateSchema(BaseModel):
 class ConversationTurnMetricSchema(BaseModel):
     id: int
     conversation_id: int
-    user_message_id: Optional[int] = None
+    user_message_id: int | None = None
     request_text: str = ""
     primary_intent: str = ""
     secondary_intents_json: str = "[]"
-    intent_confidence: Optional[float] = None
+    intent_confidence: float | None = None
     intent_source: str = ""
     intent_reason: str = ""
     response_kind: str = ""
     started_at: datetime
-    first_response_at: Optional[datetime] = None
-    completed_at: Optional[datetime] = None
-    first_response_ms: Optional[int] = None
-    total_ms: Optional[int] = None
+    first_response_at: datetime | None = None
+    completed_at: datetime | None = None
+    first_response_ms: int | None = None
+    total_ms: int | None = None
     success: bool = True
     error_message: str = ""
     created_at: datetime
@@ -89,8 +90,8 @@ class ConversationTurnStepMetricSchema(BaseModel):
     stage_detail: str = ""
     metadata_json: str = "{}"
     started_at: datetime
-    completed_at: Optional[datetime] = None
-    duration_ms: Optional[int] = None
+    completed_at: datetime | None = None
+    duration_ms: int | None = None
     success: bool = True
     error_message: str = ""
     created_at: datetime
@@ -105,14 +106,14 @@ class ObservabilityKpisSchema(BaseModel):
     failed_count: int = 0
     success_rate: float = 0.0
     failure_rate: float = 0.0
-    first_response_p50_ms: Optional[int] = None
-    first_response_p95_ms: Optional[int] = None
-    first_response_p99_ms: Optional[int] = None
-    total_p50_ms: Optional[int] = None
-    total_p95_ms: Optional[int] = None
-    total_p99_ms: Optional[int] = None
-    text_first_response_p95_ms: Optional[int] = None
-    product_recommendation_first_response_p95_ms: Optional[int] = None
+    first_response_p50_ms: int | None = None
+    first_response_p95_ms: int | None = None
+    first_response_p99_ms: int | None = None
+    total_p50_ms: int | None = None
+    total_p95_ms: int | None = None
+    total_p99_ms: int | None = None
+    text_first_response_p95_ms: int | None = None
+    product_recommendation_first_response_p95_ms: int | None = None
     handoff_count: int = 0
     handoff_rate: float = 0.0
     profile_handoff_count: int = 0
@@ -133,9 +134,9 @@ class ObservabilityStageMetricSchema(BaseModel):
     stage_label: str
     count: int
     avg_ms: int
-    p50_ms: Optional[int] = None
-    p95_ms: Optional[int] = None
-    p99_ms: Optional[int] = None
+    p50_ms: int | None = None
+    p95_ms: int | None = None
+    p99_ms: int | None = None
     failed_count: int = 0
 
 
@@ -144,9 +145,9 @@ class ObservabilityStageTrendPointSchema(BaseModel):
     bucket_label: str
     count: int
     avg_ms: int
-    p50_ms: Optional[int] = None
-    p95_ms: Optional[int] = None
-    p99_ms: Optional[int] = None
+    p50_ms: int | None = None
+    p95_ms: int | None = None
+    p99_ms: int | None = None
 
 
 class ObservabilityStageTrendSeriesSchema(BaseModel):
@@ -154,9 +155,9 @@ class ObservabilityStageTrendSeriesSchema(BaseModel):
     stage_label: str
     count: int
     avg_ms: int
-    p50_ms: Optional[int] = None
-    p95_ms: Optional[int] = None
-    p99_ms: Optional[int] = None
+    p50_ms: int | None = None
+    p95_ms: int | None = None
+    p99_ms: int | None = None
     points: list[ObservabilityStageTrendPointSchema] = []
 
 
@@ -168,8 +169,8 @@ class ObservabilityIntentStageTrendSchema(BaseModel):
 
 class ObservabilityStageTrendResponseSchema(BaseModel):
     granularity: str
-    window_start: Optional[datetime] = None
-    window_end: Optional[datetime] = None
+    window_start: datetime | None = None
+    window_end: datetime | None = None
     intents: list[ObservabilityIntentStageTrendSchema] = []
 
 
@@ -180,21 +181,21 @@ class ObservabilityLLMMetricSchema(BaseModel):
     failed_count: int
     failure_rate: float
     avg_ms: int
-    p50_ms: Optional[int] = None
-    p95_ms: Optional[int] = None
-    p99_ms: Optional[int] = None
+    p50_ms: int | None = None
+    p95_ms: int | None = None
+    p99_ms: int | None = None
     last_error: str = ""
 
 
 class ObservabilityFailureSampleSchema(BaseModel):
     source: str = "turn"
-    conversation_id: Optional[int] = None
-    turn_metric_id: Optional[int] = None
+    conversation_id: int | None = None
+    turn_metric_id: int | None = None
     language: str = ""
     primary_intent: str = ""
     response_kind: str = ""
     error_message: str = ""
-    created_at: Optional[datetime] = None
+    created_at: datetime | None = None
 
 
 class ObservabilitySummarySchema(BaseModel):
@@ -219,8 +220,8 @@ class ObservabilityAlertSchema(BaseModel):
     dedupe_key: str
     sample_conversation_ids_json: str = "[]"
     sample_count: int = 0
-    sent_at: Optional[datetime] = None
-    acknowledged_at: Optional[datetime] = None
+    sent_at: datetime | None = None
+    acknowledged_at: datetime | None = None
     created_at: datetime
 
     class Config:
@@ -240,8 +241,8 @@ class ObservabilityAlertSettingsSchema(BaseModel):
 class ConversationDetailSchema(ConversationSchema):
     messages: list[MessageSchema] = []
     outbound_events: list["TelegramSimulatorEventSchema"] = []
-    processing_state: Optional[ConversationProcessingStateSchema] = None
-    latest_turn_metric: Optional[ConversationTurnMetricSchema] = None
+    processing_state: ConversationProcessingStateSchema | None = None
+    latest_turn_metric: ConversationTurnMetricSchema | None = None
     turn_metrics: list[ConversationTurnMetricSchema] = []
     latest_turn_steps: list[ConversationTurnStepMetricSchema] = []
     ai_draft: Optional["PendingAIReplySchema"] = None
@@ -262,7 +263,7 @@ class PendingAIReplySchema(BaseModel):
     status: str
     auto_send_at: datetime
     auto_send_paused: bool = False
-    sent_at: Optional[datetime] = None
+    sent_at: datetime | None = None
     error_message: str = ""
     created_at: datetime
     updated_at: datetime
@@ -272,7 +273,7 @@ class PendingAIReplySchema(BaseModel):
 
 
 class SendPendingAIReplyRequest(BaseModel):
-    content: Optional[str] = None
+    content: str | None = None
     send_as_human_agent: bool = False
 
 
@@ -284,15 +285,15 @@ class CustomerServiceSettingsSchema(BaseModel):
 
 class CustomerServiceSettingsUpdateRequest(BaseModel):
     mode: str
-    auto_send_seconds: Optional[int] = None
+    auto_send_seconds: int | None = None
 
 
 class KnowledgeEntrySchema(BaseModel):
     id: int
     title: str
     content: str
-    source: Optional[str] = None
-    category: Optional[str] = None
+    source: str | None = None
+    category: str | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -303,8 +304,8 @@ class KnowledgeEntrySchema(BaseModel):
 class KnowledgeCreateRequest(BaseModel):
     title: str
     content: str
-    source: Optional[str] = None
-    category: Optional[str] = None
+    source: str | None = None
+    category: str | None = None
 
 
 class ContractSchema(BaseModel):
@@ -321,15 +322,15 @@ class ContractSchema(BaseModel):
 
 
 class ContractUpdateRequest(BaseModel):
-    title: Optional[str] = None
-    content: Optional[str] = None
-    status: Optional[str] = None
+    title: str | None = None
+    content: str | None = None
+    status: str | None = None
 
 
 class ContractGenerateRequest(BaseModel):
     conversation_id: int
-    template_id: Optional[int] = None
-    language: Optional[str] = None
+    template_id: int | None = None
+    language: str | None = None
 
 
 class SendContractRequest(BaseModel):
@@ -364,7 +365,7 @@ class DashboardStats(BaseModel):
 
 class TelegramSimulatorSessionCreate(BaseModel):
     bot_id: int
-    language: Optional[str] = "zh-Hans"
+    language: str | None = "zh-Hans"
 
 
 class TelegramSimulatorSessionResponse(BaseModel):
@@ -385,15 +386,16 @@ class TelegramSimulatorEventSchema(BaseModel):
     id: str
     role: str
     type: str
-    text: Optional[str] = None
-    caption: Optional[str] = None
-    url: Optional[str] = None
-    filename: Optional[str] = None
-    parse_mode: Optional[str] = None
+    text: str | None = None
+    caption: str | None = None
+    url: str | None = None
+    filename: str | None = None
+    parse_mode: str | None = None
     created_at: datetime
 
 
 # ─── LLM Settings ────────────────────────────────────────────────────────────
+
 
 class LLMSettingsSchema(BaseModel):
     provider: str = "openai"
@@ -421,41 +423,42 @@ class LLMSettingsSchema(BaseModel):
 
 
 class LLMSettingsUpdateRequest(BaseModel):
-    provider: Optional[str] = None
-    api_key: Optional[str] = None
-    base_url: Optional[str] = None
-    model: Optional[str] = None
-    embedding_model: Optional[str] = None
-    embedding_base_url: Optional[str] = None
-    embedding_api_key: Optional[str] = None
-    image_model: Optional[str] = None
-    image_base_url: Optional[str] = None
-    image_api_key: Optional[str] = None
-    image_size: Optional[str] = None
-    image_quality: Optional[str] = None
-    image_style: Optional[str] = None
-    profile_provider: Optional[str] = None
-    profile_api_key: Optional[str] = None
-    profile_base_url: Optional[str] = None
-    profile_model: Optional[str] = None
-    profile_temperature: Optional[float] = None
-    profile_max_tokens: Optional[int] = None
-    profile_timeout_seconds: Optional[float] = None
-    temperature: Optional[float] = None
-    max_tokens: Optional[int] = None
+    provider: str | None = None
+    api_key: str | None = None
+    base_url: str | None = None
+    model: str | None = None
+    embedding_model: str | None = None
+    embedding_base_url: str | None = None
+    embedding_api_key: str | None = None
+    image_model: str | None = None
+    image_base_url: str | None = None
+    image_api_key: str | None = None
+    image_size: str | None = None
+    image_quality: str | None = None
+    image_style: str | None = None
+    profile_provider: str | None = None
+    profile_api_key: str | None = None
+    profile_base_url: str | None = None
+    profile_model: str | None = None
+    profile_temperature: float | None = None
+    profile_max_tokens: int | None = None
+    profile_timeout_seconds: float | None = None
+    temperature: float | None = None
+    max_tokens: int | None = None
 
 
 # ─── File Library ─────────────────────────────────────────────────────────────
+
 
 class FileEntrySchema(BaseModel):
     id: int
     filename: str
     original_name: str
     file_size: int
-    mime_type: Optional[str] = None
+    mime_type: str | None = None
     description: str
     tags: str
-    category: Optional[str] = None
+    category: str | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -464,12 +467,13 @@ class FileEntrySchema(BaseModel):
 
 
 class FileEntryUpdateRequest(BaseModel):
-    description: Optional[str] = None
-    tags: Optional[str] = None
-    category: Optional[str] = None
+    description: str | None = None
+    tags: str | None = None
+    category: str | None = None
 
 
 # ─── Telegram Bot Management ─────────────────────────────────────────────────
+
 
 class TelegramBotSchema(BaseModel):
     id: int
@@ -478,7 +482,7 @@ class TelegramBotSchema(BaseModel):
     admin_chat_id: str
     welcome_message: str
     is_active: bool
-    bot_username: Optional[str] = None
+    bot_username: str | None = None
     description: str
     is_running: bool = False
     created_at: datetime
@@ -498,12 +502,12 @@ class TelegramBotCreateRequest(BaseModel):
 
 
 class TelegramBotUpdateRequest(BaseModel):
-    name: Optional[str] = None
-    token: Optional[str] = None
-    admin_chat_id: Optional[str] = None
-    welcome_message: Optional[str] = None
-    is_active: Optional[bool] = None
-    description: Optional[str] = None
+    name: str | None = None
+    token: str | None = None
+    admin_chat_id: str | None = None
+    welcome_message: str | None = None
+    is_active: bool | None = None
+    description: str | None = None
 
 
 class ProductImageSchema(BaseModel):
@@ -577,7 +581,7 @@ class ProductEntryListSchema(BaseModel):
     normalized_materials_json: str = "[]"
     category_confidence: float = 0.0
     translations: dict[str, dict[str, str]] = Field(default_factory=dict)
-    first_image_path: Optional[str] = None
+    first_image_path: str | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -594,16 +598,16 @@ class ProductLinkSchema(BaseModel):
 
 
 class SceneGenerationRequest(BaseModel):
-    scene_name: Optional[str] = None
-    style_hint: Optional[str] = None
-    user_request: Optional[str] = None
+    scene_name: str | None = None
+    style_hint: str | None = None
+    user_request: str | None = None
     related_product_ids: list[int] = []
-    conversation_id: Optional[int] = None
+    conversation_id: int | None = None
 
 
 class SceneGenerationRecordSchema(BaseModel):
     id: int
-    conversation_id: Optional[int] = None
+    conversation_id: int | None = None
     primary_product_id: int
     primary_product_name: str
     scene_name: str
@@ -627,9 +631,9 @@ class ProductImageRef(BaseModel):
 
 class SceneGeneratorRequest(BaseModel):
     product_image_refs: list[ProductImageRef]
-    scene_name: Optional[str] = None
-    style_hint: Optional[str] = None
-    user_request: Optional[str] = None
+    scene_name: str | None = None
+    style_hint: str | None = None
+    user_request: str | None = None
 
 
 class SceneBatchActionRequest(BaseModel):
@@ -648,7 +652,7 @@ class SceneBatchActionResponse(BaseModel):
 
 class SceneLibraryItemSchema(BaseModel):
     id: int
-    conversation_id: Optional[int] = None
+    conversation_id: int | None = None
     primary_product_id: int
     primary_product_name: str
     primary_product_brand: str = ""

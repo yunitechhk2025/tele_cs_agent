@@ -1,18 +1,18 @@
 import asyncio
 import logging
 import os
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.router import router
 from app.config import get_settings
 from app.database import init_db
-from app.api.router import router
-from app.services.llm_service import load_llm_settings
-from app.services.customer_service_service import restore_pending_ai_reply_tasks
-from app.services.observability_service import observability_alert_loop
 from app.services import bot_manager
+from app.services.customer_service_service import restore_pending_ai_reply_tasks
+from app.services.llm_service import load_llm_settings
+from app.services.observability_service import observability_alert_loop
 
 logging.basicConfig(
     level=logging.INFO,
@@ -42,10 +42,8 @@ async def lifespan(app: FastAPI):
     yield
 
     observability_task.cancel()
-    try:
+    with suppress(asyncio.CancelledError):
         await observability_task
-    except asyncio.CancelledError:
-        pass
     await bot_manager.stop_all_bots()
     logger.info("All bots stopped")
 

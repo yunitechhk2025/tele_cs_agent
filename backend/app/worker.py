@@ -6,6 +6,7 @@ import logging
 import os
 import signal
 import uuid
+from contextlib import suppress
 from typing import Any
 
 from sqlalchemy import select
@@ -83,7 +84,10 @@ async def _deliver_scene_generation(record: SceneGenerationRecord, payload: dict
         return
 
     language = payload.get("reply_language") or conversation.language or "en"
-    delivery_context = payload.get("delivery_context") if isinstance(payload.get("delivery_context"), dict) else {}
+    raw_delivery_context = payload.get("delivery_context")
+    delivery_context: dict[str, Any] = (
+        raw_delivery_context if isinstance(raw_delivery_context, dict) else {}
+    )
     from app.telegram_bot import build_scene_result_delivery
 
     scene_delivery = await build_scene_result_delivery(record, language)
@@ -151,9 +155,19 @@ async def _process_scene_generation(job: BackgroundJob) -> None:
             raise RuntimeError(f"Primary product {record.primary_product_id} not found")
 
     all_products = await _load_all_products_for_scene_generation()
-    related_product_ids = [int(x) for x in _json_list(record.related_product_ids_json) if str(x).isdigit()]
-    reference_image_items = payload.get("reference_image_items") if isinstance(payload.get("reference_image_items"), list) else []
-    reference_image_refs = payload.get("reference_image_refs") if isinstance(payload.get("reference_image_refs"), list) else []
+    related_product_ids = [
+        int(x) for x in _json_list(record.related_product_ids_json) if str(x).isdigit()
+    ]
+    reference_image_items = (
+        payload.get("reference_image_items")
+        if isinstance(payload.get("reference_image_items"), list)
+        else []
+    )
+    reference_image_refs = (
+        payload.get("reference_image_refs")
+        if isinstance(payload.get("reference_image_refs"), list)
+        else []
+    )
     if reference_image_refs:
         reference_image_items = await _get_selected_reference_items(reference_image_refs)
 
@@ -211,20 +225,16 @@ async def run_worker() -> None:
 
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
-        try:
+        with suppress(NotImplementedError):
             loop.add_signal_handler(sig, _stop)
-        except NotImplementedError:
-            pass
 
     logger.info("Background worker started worker_id=%s", worker_id)
     while not stop_event.is_set():
         await requeue_stale_jobs(stale_after_seconds=DEFAULT_STALE_AFTER_SECONDS)
         jobs = await claim_due_jobs(worker_id, limit=DEFAULT_CLAIM_LIMIT)
         if not jobs:
-            try:
+            with suppress(TimeoutError):
                 await asyncio.wait_for(stop_event.wait(), timeout=DEFAULT_WORKER_POLL_SECONDS)
-            except asyncio.TimeoutError:
-                pass
             continue
         for job in jobs:
             await process_background_job(job)

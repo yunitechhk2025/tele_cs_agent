@@ -180,9 +180,7 @@ class ProductI18nTests(unittest.TestCase):
             "series": "",
             "space": "",
             "material": "实木",
-            "translations": {
-                "en": {"name": "Chinese-style sofa", "material": "solid wood"}
-            },
+            "translations": {"en": {"name": "Chinese-style sofa", "material": "solid wood"}},
         }
 
         items = build_translation_request_items(
