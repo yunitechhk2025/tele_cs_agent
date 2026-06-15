@@ -1097,6 +1097,7 @@ async def _run_scene_generation_for_record(
 
     candidate_products = [p for p in all_products if int(p["id"]) != primary_product.id]
     all_products_map = {int(p["id"]): p for p in all_products}
+    # 搭配候选先按空间/风格缩小，再强制跨品类，避免同一商品类别在场景图里重复堆叠。
     preferred_candidates = [
         p
         for p in candidate_products
@@ -1202,6 +1203,7 @@ async def _run_scene_generation_for_record(
     try:
         if conversation_id:
             await set_conversation_stage(conversation_id, "scene_image_generation")
+        # 图像阶段是最慢且最容易超时的第三方调用，必须由 wait_for 统一约束总耗时。
         output_paths, binaries = await asyncio.wait_for(
             _generate_scene_outputs(
                 record_id=record_id,
@@ -1249,6 +1251,7 @@ async def _run_scene_generation_for_record(
             return current
         raise RuntimeError(timeout_message) from exc
     except asyncio.CancelledError:
+        # 取消任务不标记 failed，保留取消语义给调用方和后台任务框架处理。
         shutil.rmtree(_scene_upload_root() / str(record_id), ignore_errors=True)
         logger.info("Scene generation task %s was cancelled", record_id)
         raise
@@ -1290,6 +1293,7 @@ async def start_scene_generation(
         allow_reuse=allow_reuse,
     )
     if record.status == "completed":
+        # 命中可复用记录时直接返回，避免同一商品/场景组合重复占用图片模型额度。
         return record
 
     # 使用记录 ID 作为默认去重键，确保重复点击或重试不会并发生成同一条记录。

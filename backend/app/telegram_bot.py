@@ -2025,6 +2025,7 @@ async def process_customer_text_message(
         service_settings = await get_customer_service_settings()
         service_mode = service_settings["mode"]
 
+        # 完全人工模式必须先短路 AI 链路：客户侧只收到等待提示，后台仍保留通知人工的上下文。
         if service_mode == "human_only":
             await stage("waiting_human", "当前为完全人工模式")
             async with AsyncSessionLocal() as db:
@@ -2157,6 +2158,7 @@ async def process_customer_text_message(
             intent.get("reason"),
         )
 
+        # 投诉、报价和显式转人工属于高风险意图，即使是 secondary intent 也要提升为主处理路径。
         all_intents = {intent_name, *secondary_intents}
         if "complaint" in all_intents and intent_name != "complaint":
             intent_name = "complaint"
@@ -2279,6 +2281,7 @@ async def process_customer_text_message(
                 scene_state.pending_confirmation = False
                 scene_state.last_customer_request = ""
 
+        # 只有商品/场景相关路径才加载完整商品库，避免普通问答每轮都增加数据库和 LLM prompt 成本。
         needs_product_context = (
             bool(scene_state and scene_state.pending_confirmation)
             or bool(context_product_id)
@@ -2373,6 +2376,7 @@ async def process_customer_text_message(
             intent_name in {"scene_image_request", "scene_image_confirmation"}
             or "scene_image_request" in secondary_intents
         ):
+            # 场景请求会合并 router、profile parser、本地规则和兜底分析结果；越靠前的来源越贴近当前上下文。
             recent_profile_products = [
                 products_by_id_for_memory[pid]
                 for pid in scene_reference_product_ids
@@ -2460,6 +2464,7 @@ async def process_customer_text_message(
             stop_typing.set()
             await typing_task
             if service_mode == "ai_assist":
+                # 人机协同模式下，不直接把不确定澄清发给客户，先生成草稿给人工确认。
                 await stage("creating_ai_draft", "商品引用需确认")
                 await first_response("product_reference_clarification_draft")
                 await create_pending_ai_reply(conversation_id, clarification_text, language)
@@ -2485,6 +2490,7 @@ async def process_customer_text_message(
             return
 
         if scene_state and scene_state.pending_confirmation:
+            # 待确认场景图状态下，客户可能是在选商品，也可能追问商品详情；这里先区分再决定是否生图。
             local_referenced_id = resolve_recommended_product_reference_locally(
                 user_message,
                 scene_reference_product_ids,
@@ -2630,6 +2636,7 @@ async def process_customer_text_message(
                 context_product = result.scalar_one_or_none()
             if context_product:
                 response_text = build_product_detail_message(context_product, language)
+                # 商品详情回复也要刷新 scene state，后续“看这个在客厅里”才能接上刚解释过的商品。
                 await save_scene_state(
                     conversation_id=conversation_id,
                     primary_product_id=context_product.id,
@@ -2842,6 +2849,7 @@ async def process_customer_text_message(
             await typing_task
             if selected_products:
                 if service_mode == "ai_assist":
+                    # AI assist 只保存结构化草稿；真正发卡片时再复用同一 payload，避免预览和发送内容不一致。
                     primary_product = selected_products[0]
                     suggested_scene = select_default_scene(selected_products, language)
                     followup = build_scene_followup_message(language, selected_products)
@@ -2988,6 +2996,7 @@ async def process_customer_text_message(
 
         await stage("file_matching")
         all_files = await get_all_file_entries()
+        # 文件匹配和重复/切题提示都注入 file_info，让普通问答模型在同一次生成里处理上下文边界。
         is_file_request = (
             intent_name == "file_request" or "file_request" in secondary_intents
         ) and intent_confidence >= 0.6

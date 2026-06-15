@@ -674,6 +674,7 @@ export default function Conversations() {
   const navigate = useNavigate();
   const { id: idParam } = useParams();
 
+  // 会话详情以 URL id 为唯一来源，列表刷新不能隐式改变当前选中的会话。
   const selectedId = useMemo(() => {
     if (!idParam) return null;
     const n = parseInt(idParam, 10);
@@ -781,6 +782,7 @@ export default function Conversations() {
   const [contractsLoading, setContractsLoading] = useState(false);
 
   useEffect(() => {
+    // 搜索只影响列表查询，短延迟避免每次键入都触发后端请求和列表闪烁。
     const t = window.setTimeout(() => setDebouncedSearch(search.trim()), 320);
     return () => window.clearTimeout(t);
   }, [search]);
@@ -883,6 +885,7 @@ export default function Conversations() {
   const aiDraft = detail?.ai_draft;
 
   useEffect(() => {
+    // 人工正在编辑草稿时不能被轮询结果覆盖；只有退出编辑态才同步服务端草稿。
     if (!aiDraft) {
       setEditingAiDraft(false);
       setAiDraftText('');
@@ -900,6 +903,7 @@ export default function Conversations() {
     }
 
     const updateCountdown = () => {
+      // 后端存储 UTC 时间，这里统一转 dayjs.utc，避免本地时区导致自动发送倒计时漂移。
       const target = parseServerUtc(detail.ai_draft?.auto_send_at);
       if (!target) {
         setDraftCountdownSeconds(null);
@@ -981,6 +985,7 @@ export default function Conversations() {
     if (selectedId == null || !detail?.ai_draft) return;
     setAiDraftSending(true);
     try {
+      // 人工可能已改写草稿；发送接口用 editing 标记区分“原草稿确认”和“编辑后发送”。
       await conversationApi.sendAiDraft(
         selectedId,
         editingAiDraft ? aiDraftText.trim() : undefined,
@@ -1001,6 +1006,7 @@ export default function Conversations() {
     if (selectedId == null || !detail?.ai_draft) return;
     setAiDraftCancelling(true);
     try {
+      // 取消后服务端会清理 pending draft，本地同步清空编辑态，避免继续展示过期倒计时。
       await conversationApi.cancelAiDraft(selectedId);
       message.success('AI 草稿已取消');
       setEditingAiDraft(false);
@@ -1025,6 +1031,7 @@ export default function Conversations() {
 
     if (!detail.ai_draft.auto_send_paused) {
       try {
+        // 进入编辑前先暂停自动发送，防止人工修改过程中后台任务把旧草稿发给客户。
         await conversationApi.pauseAiDraft(detail.id);
         await loadDetail(detail.id);
         await loadList();
@@ -1172,6 +1179,7 @@ export default function Conversations() {
   }, [detail]);
 
   const metricAnnotationByItemIdx = useMemo(() => {
+    // 指标卡片贴到本轮第一个 assistant 响应上，方便从消息直接追到处理阶段耗时。
     const metrics = detail?.turn_metrics?.length
       ? detail.turn_metrics
       : detail?.latest_turn_metric

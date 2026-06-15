@@ -127,6 +127,7 @@ const TREND_METRIC_OPTIONS = [
 export default function Observability() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
+  // 监控页需要支持刷新和分享，筛选初始值直接来自 URL query。
   const [range, setRange] = useState<'24h' | '7d' | '30d'>(() =>
     normalizeRange(searchParams.get('range')),
   );
@@ -148,6 +149,7 @@ export default function Observability() {
   const [alertLoading, setAlertLoading] = useState(false);
   const [exportLoading, setExportLoading] = useState(false);
 
+  // 汇总卡片、阶段趋势和导出共用同一组筛选，避免看板数字与下载口径不一致。
   const params = useMemo(
     () => ({
       range,
@@ -162,6 +164,7 @@ export default function Observability() {
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
+      // 三组接口共享筛选条件并行加载，保证一次刷新里的指标、告警样本和趋势图口径一致。
       const [{ data: summaryData }, { data: alertData }, { data: trendData }] = await Promise.all([
         observabilityApi.getSummary(params),
         observabilityApi.listAlerts({ limit: 100 }),
@@ -233,6 +236,7 @@ export default function Observability() {
     setExportLoading(true);
     try {
       const response = await observabilityApi.exportData(params);
+      // 后端按筛选条件生成 ZIP 文件名；缺失 header 时保留可读的本地兜底名。
       const disposition = response.headers['content-disposition'] || '';
       const match = /filename="([^"]+)"/.exec(disposition);
       const filename = match?.[1] || `observability-${range}.zip`;
@@ -244,6 +248,7 @@ export default function Observability() {
       document.body.appendChild(link);
       link.click();
       link.remove();
+      // 下载链接只用于本次导出，及时释放 blob URL，避免长时间看板页面累积内存。
       URL.revokeObjectURL(href);
       message.success('导出已开始');
     } catch (err) {

@@ -57,6 +57,7 @@ const PROFILE_PROVIDER_OPTIONS = [
 ] as const;
 
 function buildLLMPayload(values: LLMSettings): Partial<LLMSettings> {
+  // 只提交表单里的真实配置值；placeholder 和脱敏密钥都不应被当作新配置保存。
   const payload: Partial<LLMSettings> = {
     provider: values.provider,
     base_url: values.base_url,
@@ -117,6 +118,7 @@ export default function Settings() {
   const profileProvider = Form.useWatch('profile_provider', form) as string | undefined;
   const temperature = Form.useWatch('temperature', form) as number | undefined;
 
+  // provider 变化只影响前端提示文案，真实默认值仍由后端配置和保存接口决定。
   const baseUrlHint = useMemo(
     () => (provider ? (BASE_URL_HINTS[provider] ?? BASE_URL_HINTS.custom) : ''),
     [provider],
@@ -146,6 +148,7 @@ export default function Settings() {
   const loadSettings = useCallback(async () => {
     setLoading(true);
     try {
+      // 模型配置和客服模式在同一页展示，加载时并行读取，避免一个面板刷新另一个仍是旧值。
       const [llmRes, serviceRes] = await Promise.all([
         settingsApi.getLLM(),
         settingsApi.getCustomerService(),
@@ -182,6 +185,7 @@ export default function Settings() {
     try {
       const values = await form.validateFields();
       setTestingLLM(true);
+      // 连接测试复用保存 payload，确保密钥占位符保护与正式保存路径一致。
       const res = await settingsApi.testLLM(buildLLMPayload(values));
       const { ok, message: msg } = res.data;
       setTestResult({ open: true, ok, text: msg, title: ok ? '主模型连接成功' : '主模型连接失败' });

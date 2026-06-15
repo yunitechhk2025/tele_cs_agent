@@ -1,3 +1,9 @@
+"""后台任务 worker，负责场景图生成和 AI 草稿自动发送.
+
+worker 只处理已经持久化的 BackgroundJob，失败时通过重试/失败状态回写数据库，
+避免进程重启或容器重建导致客户侧任务状态丢失。
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -75,6 +81,7 @@ async def _load_all_products_for_scene_generation() -> list[dict[str, Any]]:
 
 
 async def _deliver_scene_generation(record: SceneGenerationRecord, payload: dict[str, Any]) -> None:
+    """把完成的场景图记录转换成客户可见草稿，并按客服模式决定是否自动发送."""
     if not payload.get("deliver_to_customer") or not record.conversation_id:
         return
 
@@ -100,6 +107,7 @@ async def _deliver_scene_generation(record: SceneGenerationRecord, payload: dict
 
     service_settings = await get_customer_service_settings()
     if service_settings["mode"] != "ai_auto":
+        # 人机协同或人工模式下只生成草稿，保留 deferred_delivery 方便后台知道仍需人工确认。
         async with AsyncSessionLocal() as db:
             current = await db.get(SceneGenerationRecord, record.id)
             if current:
@@ -124,6 +132,7 @@ async def _job_was_cancelled(job_id: int) -> bool:
 
 
 async def _mark_scene_record_failed(job: BackgroundJob, error_message: str) -> None:
+    """后台任务耗尽重试后同步场景图记录状态，供前端和客户链路看到同一失败结果."""
     payload = job_payload(job)
     record_id = int(payload.get("record_id") or job.entity_id or 0)
     if not record_id:
@@ -138,6 +147,7 @@ async def _mark_scene_record_failed(job: BackgroundJob, error_message: str) -> N
 
 
 async def _process_scene_generation(job: BackgroundJob) -> None:
+    """执行单个场景图后台任务，并在完成后进入客户投递流程."""
     payload = job_payload(job)
     record_id = int(payload.get("record_id") or job.entity_id or 0)
     if not record_id:
@@ -148,6 +158,7 @@ async def _process_scene_generation(job: BackgroundJob) -> None:
         if not record:
             return
         if record.status == "completed":
+            # 任务可能在 worker 重启后被重新 claim，已完成记录只需要补投递，不再重复生图。
             await _deliver_scene_generation(record, payload)
             return
         primary_product = await db.get(ProductEntry, record.primary_product_id)
@@ -186,6 +197,7 @@ async def _process_scene_generation(job: BackgroundJob) -> None:
     if result.status != "completed":
         raise RuntimeError(result.error_message or "Scene generation failed")
     if await _job_was_cancelled(job.id):
+        # 生图完成后仍可能被用户取消；取消任务不再投递，避免客户收到已撤销的结果。
         return
     await _deliver_scene_generation(result, payload)
 
@@ -199,6 +211,7 @@ async def _process_pending_ai_autosend(job: BackgroundJob) -> None:
 
 
 async def process_background_job(job: BackgroundJob) -> None:
+    """分发并结算后台任务；失败统一交给 background_job_service 判定是否重试."""
     try:
         if job.job_type == "scene_generation":
             await _process_scene_generation(job)
@@ -210,12 +223,14 @@ async def process_background_job(job: BackgroundJob) -> None:
         logger.exception("Background job %s failed: %s", job.id, exc)
         updated = await mark_failed_or_retry(job.id, str(exc))
         if job.job_type == "scene_generation" and updated.status == JOB_STATUS_FAILED:
+            # 只有最终 failed 才回写 SceneGenerationRecord，临时失败由重试机制继续处理。
             await _mark_scene_record_failed(job, str(exc))
         return
     await mark_succeeded(job.id)
 
 
 async def run_worker() -> None:
+    """启动轮询型 worker，周期性回收 stale job 并 claim 到期任务."""
     await init_db()
     worker_id = f"{os.uname().nodename}-{os.getpid()}-{uuid.uuid4().hex[:8]}"
     stop_event = asyncio.Event()

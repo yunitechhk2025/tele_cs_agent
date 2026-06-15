@@ -457,6 +457,7 @@ def evaluate_alert_candidates(
     window_end: datetime,
     scope_key: str,
 ) -> list[dict[str, Any]]:
+    """根据聚合指标生成告警候选，真正去重交给持久化层的 dedupe_key."""
     settings_map = {**DEFAULT_ALERT_SETTINGS, **(alert_settings or {})}
     kpis = summary.get("kpis") or {}
     alert_samples = summary.get("alert_samples") or {}
@@ -528,6 +529,7 @@ def evaluate_alert_candidates(
         except (TypeError, ValueError):
             continue
         if observed_num > threshold_num:
+            # 样本会话 ID 随告警保存，后台和 Telegram 通知都能直接定位真实对话。
             sample_ids = alert_samples.get(metric_key) or []
             alerts.append(
                 _alert(
@@ -567,6 +569,7 @@ def build_observability_stage_trends(
     window_start: datetime | None = None,
     window_end: datetime | None = None,
 ) -> dict[str, Any]:
+    """按意图和阶段生成趋势曲线，供前端比较不同处理阶段的耗时变化."""
     granularity = _trend_granularity(range_key)
     grouped: dict[str, dict[str, dict[datetime, list[int]]]] = defaultdict(
         lambda: defaultdict(lambda: defaultdict(list))
@@ -594,6 +597,7 @@ def build_observability_stage_trends(
         for stage_key, bucket_map in stage_map.items():
             all_values = [value for values in bucket_map.values() for value in values]
             points = []
+            # points 只包含有样本的 bucket，前端图表据此避免渲染空时间段造成误导。
             for bucket, values in sorted(bucket_map.items(), key=lambda item: item[0]):
                 points.append(
                     {
@@ -662,6 +666,7 @@ def build_observability_export_zip(
     summary: dict[str, Any],
     alerts: list[Any],
 ) -> bytes:
+    """把页面同源的 KPI、阶段、LLM、告警和失败样本打包成离线排障 ZIP."""
     kpis = summary.get("kpis") or {}
     kpi_rows = [{"metric": key, "value": value} for key, value in kpis.items()]
     alert_rows = []
@@ -1090,6 +1095,7 @@ async def timed_llm_call(
     model: str,
     call,
 ) -> Any:
+    """包装 LLM/Embedding/图片模型调用，保证成功和失败都会写入观测指标."""
     started = time.perf_counter()
     try:
         result = await call()
@@ -1136,6 +1142,7 @@ async def _persist_alert_candidates(
 
 
 async def _send_alert_to_telegram(alert: ObservabilityAlert) -> bool:
+    """把新告警推送到可用管理员 Telegram 会话，失败只记录日志不影响告警持久化."""
     from app.services import bot_manager
 
     targets: list[tuple[Any, str]] = []
@@ -1186,6 +1193,7 @@ async def _send_alert_to_telegram(alert: ObservabilityAlert) -> bool:
             key = (id(bot_instance), str(chat_id))
             if key in seen:
                 continue
+            # 多个 bot 配置可能指向同一个 Bot/chat，发送前去重避免重复打扰管理员。
             seen.add(key)
             try:
                 await bot_instance.send_message(
@@ -1203,6 +1211,7 @@ async def _send_alert_to_telegram(alert: ObservabilityAlert) -> bool:
 
 
 async def run_observability_alert_check(window_minutes: int = 15) -> int:
+    """按滚动窗口生成并推送告警，返回本轮成功推送数量."""
     window_end = datetime.utcnow()
     window_start = window_end - timedelta(minutes=window_minutes)
     scope = _scope_key()

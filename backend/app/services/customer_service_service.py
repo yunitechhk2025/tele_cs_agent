@@ -160,6 +160,7 @@ async def _send_product_recommendation_payload(
     payload: dict[str, Any],
     message_role: MessageRole,
 ) -> str | None:
+    """发送结构化商品推荐草稿，兼容真实 Telegram 与后台模拟器投递."""
     intro_text = (payload.get("intro_text") or "").strip()
     followup_text = (payload.get("followup_text") or "").strip()
     cards = payload.get("cards") or []
@@ -169,6 +170,7 @@ async def _send_product_recommendation_payload(
 
     telegram_target = None
     if not is_simulator:
+        # 非模拟器必须先确认可用 Bot 和 chat id；缺失时保留 pending，避免草稿被误标为 sent。
         telegram_target = await _prepare_telegram_delivery_target(db, conversation, draft)
         if telegram_target is None:
             return None
@@ -204,6 +206,7 @@ async def _send_product_recommendation_payload(
         parse_mode = card.get("parse_mode") or "Markdown"
         if is_simulator:
             if image_url:
+                # 模拟器没有真实 Telegram photo 消息，使用 OutboundEvent 还原客户侧卡片时间线。
                 await _append_outbound_event(
                     db,
                     conversation.id,
@@ -329,6 +332,7 @@ async def _send_scene_result_payload(
     payload: dict[str, Any],
     message_role: MessageRole,
 ) -> str | None:
+    """发送场景图生成结果，并按 payload 更新或清理会话场景状态."""
     intro_text = (payload.get("intro_text") or "").strip()
     links_text = (payload.get("links_text") or "").strip()
     image_urls = payload.get("image_urls") or []
@@ -428,6 +432,7 @@ async def _send_scene_result_payload(
 
     record_id = payload.get("record_id")
     if record_id:
+        # 一旦结果进入客户投递流程，记录不再需要后台列表显示“待投递”状态。
         record = await db.get(SceneGenerationRecord, int(record_id))
         if record:
             record.deferred_delivery = False
@@ -566,6 +571,7 @@ async def _send_pending_ai_reply_record(
     send_as_human_agent: bool = False,
     respect_auto_pause: bool = True,
 ) -> PendingAIReply | None:
+    """串行发送单条草稿，避免手动发送和自动发送同时抢占同一条记录."""
     lock = PENDING_AI_REPLY_SEND_LOCKS.setdefault(record_id, asyncio.Lock())
     async with lock:
         return await _send_pending_ai_reply_record_unlocked(
@@ -589,6 +595,7 @@ async def _send_pending_ai_reply_record_unlocked(
         ]
         if respect_auto_pause:
             conditions.append(PendingAIReply.auto_send_paused.is_(False))
+        # 使用原子 update 把 pending claim 成 sending；rowcount 不是 1 说明已有其他路径处理。
         claim_result = await db.execute(
             update(PendingAIReply)
             .where(*conditions)
@@ -673,6 +680,7 @@ async def _send_pending_ai_reply_record_unlocked(
                         )
                     )
         except Exception as exc:
+            # 发送失败不能丢草稿，回到 pending 并把错误交给后台人工界面展示。
             draft.status = "pending"
             draft.error_message = str(exc)[:1000]
             await db.commit()
@@ -755,6 +763,7 @@ async def create_pending_ai_delivery(
     payload: dict[str, Any] | None = None,
     dedupe_prefix: str | None = None,
 ) -> PendingAIReply:
+    """创建或覆盖会话的待确认 AI 草稿，并安排后续自动发送任务."""
     cfg = await get_customer_service_settings()
     auto_send_at = datetime.utcnow() + timedelta(seconds=cfg["auto_send_seconds"])
 
@@ -783,6 +792,7 @@ async def create_pending_ai_delivery(
         await db.commit()
         await db.refresh(draft)
 
+    # 持久化草稿后再入队，保证 worker 取到任务时一定能读到完整 payload。
     await _schedule_pending_ai_reply_task(draft.id, auto_send_at, dedupe_prefix=dedupe_prefix)
     return draft
 
@@ -804,6 +814,7 @@ async def dispatch_due_pending_ai_replies() -> int:
 
 
 async def restore_pending_ai_reply_tasks() -> None:
+    """服务启动时重建未发送草稿的自动发送任务，覆盖进程重启造成的内存队列丢失."""
     await dispatch_due_pending_ai_replies()
     async with AsyncSessionLocal() as db:
         rows = await db.execute(
