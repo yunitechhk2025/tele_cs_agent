@@ -1,0 +1,288 @@
+{
+  "schema_version": 1,
+  "catalog_snapshot": {
+    "captured_at": "2026-07-12",
+    "product_count": 388,
+    "product_key_format": "brand:product_id_ext"
+  },
+  "description": "首批根据 2026-07-12 本地商品快照整理、待商品或运营负责人确认的家具推荐 golden cases。商品键必须使用 brand:product_id_ext，避免不同品牌的外部编号冲突。",
+  "cases": [
+    {
+      "case_id": "zh-dining-table-minimalist-teak",
+      "input": {
+        "message": "推荐一张东方极简的柚木餐桌",
+        "language": "zh-Hans"
+      },
+      "expected": {
+        "intent": "product_recommendation",
+        "profile": {
+          "categories": ["dining_table"],
+          "spaces": ["dining_room"],
+          "styles": ["minimalist"],
+          "materials": ["teak"],
+          "hard_constraints": ["categories", "styles", "materials"]
+        },
+        "accepted_product_keys": ["联邦家私:59", "联邦家私:60", "联邦家私:61", "联邦家私:62", "联邦家私:64"],
+        "should_handoff": false
+      },
+      "tags": ["zh-Hans", "recommendation", "hard-constraints", "catalog-snapshot", "needs-review"]
+    },
+    {
+      "case_id": "zh-bed-chinese-teak",
+      "input": {
+        "message": "想看一张新中式柚木实木大床",
+        "language": "zh-Hans"
+      },
+      "expected": {
+        "intent": "product_recommendation",
+        "profile": {
+          "categories": ["bed"],
+          "styles": ["chinese"],
+          "materials": ["teak", "solid_wood"],
+          "hard_constraints": ["categories", "styles", "materials"]
+        },
+        "accepted_product_keys": ["联邦家私:40"],
+        "should_handoff": false
+      },
+      "tags": ["zh-Hans", "recommendation", "bed", "catalog-snapshot", "needs-review"]
+    },
+    {
+      "case_id": "zh-sofa-minimalist-teak",
+      "input": {
+        "message": "给客厅推荐东方极简风的柚木沙发",
+        "language": "zh-Hans"
+      },
+      "expected": {
+        "intent": "product_recommendation",
+        "profile": {
+          "categories": ["sofa"],
+          "spaces": ["living_room"],
+          "styles": ["minimalist"],
+          "materials": ["teak"],
+          "hard_constraints": ["categories", "spaces", "styles", "materials"]
+        },
+        "accepted_product_keys": ["联邦家私:76", "联邦家私:77", "联邦家私:78", "联邦家私:79"],
+        "should_handoff": false
+      },
+      "tags": ["zh-Hans", "recommendation", "sofa", "catalog-snapshot", "needs-review"]
+    },
+    {
+      "case_id": "zh-hant-dining-table",
+      "input": {
+        "message": "請推薦一張極簡風的柚木餐桌",
+        "language": "zh-Hant"
+      },
+      "expected": {
+        "intent": "product_recommendation",
+        "profile": {
+          "categories": ["dining_table"],
+          "styles": ["minimalist"],
+          "materials": ["teak"],
+          "hard_constraints": ["categories", "styles", "materials"]
+        },
+        "accepted_product_keys": ["联邦家私:59", "联邦家私:60", "联邦家私:61", "联邦家私:62", "联邦家私:64"],
+        "should_handoff": false
+      },
+      "tags": ["zh-Hant", "recommendation", "multilingual", "catalog-snapshot", "needs-review"]
+    },
+    {
+      "case_id": "en-minimalist-teak-sofa",
+      "input": {
+        "message": "Show me a minimalist teak sofa for a living room.",
+        "language": "en"
+      },
+      "expected": {
+        "intent": "product_recommendation",
+        "profile": {
+          "categories": ["sofa"],
+          "spaces": ["living_room"],
+          "styles": ["minimalist"],
+          "materials": ["teak"],
+          "hard_constraints": ["categories", "spaces", "styles", "materials"]
+        },
+        "accepted_product_keys": ["联邦家私:76", "联邦家私:77", "联邦家私:78", "联邦家私:79"],
+        "should_handoff": false
+      },
+      "tags": ["en", "recommendation", "multilingual", "catalog-snapshot", "needs-review"]
+    },
+    {
+      "case_id": "ja-bedroom-bed",
+      "input": {
+        "message": "寝室用のミニマルなチーク材ベッドを見せてください。",
+        "language": "ja"
+      },
+      "expected": {
+        "intent": "product_recommendation",
+        "profile": {
+          "categories": ["bed"],
+          "spaces": ["bedroom"],
+          "styles": ["minimalist"],
+          "materials": ["teak"],
+          "hard_constraints": ["categories", "spaces", "styles", "materials"]
+        },
+        "accepted_product_keys": ["联邦家私:31", "联邦家私:37", "联邦家私:56"],
+        "should_handoff": false
+      },
+      "tags": ["ja", "recommendation", "multilingual", "catalog-snapshot", "needs-review"]
+    },
+    {
+      "case_id": "ko-living-room-coffee-table",
+      "input": {
+        "message": "거실에 둘 미니멀한 티크 원목 소파 테이블을 추천해 주세요.",
+        "language": "ko"
+      },
+      "expected": {
+        "intent": "product_recommendation",
+        "profile": {
+          "categories": ["coffee_table"],
+          "spaces": ["living_room"],
+          "styles": ["minimalist"],
+          "materials": ["teak"],
+          "hard_constraints": ["categories", "spaces", "styles", "materials"]
+        },
+        "accepted_product_keys": ["联邦家私:71", "联邦家私:73"],
+        "should_handoff": false
+      },
+      "tags": ["ko", "recommendation", "multilingual", "catalog-snapshot", "needs-review"]
+    },
+    {
+      "case_id": "es-living-room-tv-cabinet",
+      "input": {
+        "message": "Quiero un mueble de TV minimalista de teca para la sala.",
+        "language": "es"
+      },
+      "expected": {
+        "intent": "product_recommendation",
+        "profile": {
+          "categories": ["tv_cabinet"],
+          "spaces": ["living_room"],
+          "styles": ["minimalist"],
+          "materials": ["teak"],
+          "hard_constraints": ["categories", "spaces", "styles", "materials"]
+        },
+        "accepted_product_keys": ["联邦家私:67", "联邦家私:68"],
+        "should_handoff": false
+      },
+      "tags": ["es", "recommendation", "multilingual", "catalog-snapshot", "needs-review"]
+    },
+    {
+      "case_id": "fr-study-tea-table",
+      "input": {
+        "message": "Je cherche une table à thé en teck pour le bureau, style chinois.",
+        "language": "fr"
+      },
+      "expected": {
+        "intent": "product_recommendation",
+        "profile": {
+          "categories": ["coffee_table"],
+          "spaces": ["study"],
+          "styles": ["chinese"],
+          "materials": ["teak"],
+          "hard_constraints": ["categories", "spaces", "styles", "materials"]
+        },
+        "accepted_product_keys": ["联邦家私:13"],
+        "should_handoff": false
+      },
+      "tags": ["fr", "recommendation", "multilingual", "catalog-snapshot", "needs-review"]
+    },
+    {
+      "case_id": "zh-generic-solid-wood-table",
+      "input": {
+        "message": "推荐一款实木桌子",
+        "language": "zh-Hans"
+      },
+      "expected": {
+        "intent": "product_recommendation",
+        "profile": {
+          "categories": ["dining_table", "coffee_table", "desk"],
+          "materials": ["solid_wood"],
+          "hard_constraints": ["categories", "materials"]
+        },
+        "accepted_product_keys": ["联邦家私:2", "联邦家私:13", "联邦家私:59", "联邦家私:60"],
+        "should_handoff": false
+      },
+      "tags": ["zh-Hans", "recommendation", "broad-category", "catalog-snapshot", "needs-review"]
+    },
+    {
+      "case_id": "zh-refresh-dining-table",
+      "input": {
+        "message": "这些不合适，再换一批餐桌",
+        "language": "zh-Hans"
+      },
+      "context": {
+        "recommendation_turns": [
+          {
+            "product_keys": ["联邦家私:59", "联邦家私:60"],
+            "profile": {
+              "categories": ["dining_table"],
+              "spaces": ["dining_room"],
+              "styles": ["minimalist"],
+              "materials": ["teak"]
+            }
+          }
+        ]
+      },
+      "expected": {
+        "intent": "product_recommendation",
+        "profile": {
+          "categories": ["dining_table"],
+          "spaces": ["dining_room"],
+          "styles": ["minimalist"],
+          "materials": ["teak"],
+          "hard_constraints": ["categories", "spaces", "styles", "materials"]
+        },
+        "accepted_product_keys": ["联邦家私:61", "联邦家私:62", "联邦家私:64"],
+        "forbidden_product_keys": ["联邦家私:59", "联邦家私:60"],
+        "should_handoff": false,
+        "is_recommendation_refresh": true
+      },
+      "tags": ["zh-Hans", "recommendation-refresh", "history", "catalog-snapshot", "needs-review"]
+    },
+    {
+      "case_id": "zh-refresh-without-history",
+      "input": {
+        "message": "换一批",
+        "language": "zh-Hans"
+      },
+      "expected": {
+        "intent": "product_recommendation",
+        "response_kind": "clarification",
+        "should_handoff": false,
+        "is_recommendation_refresh": false
+      },
+      "tags": ["zh-Hans", "recommendation-refresh", "clarification"]
+    },
+    {
+      "case_id": "zh-product-reference-second-item",
+      "input": {
+        "message": "第二个是什么材质？",
+        "language": "zh-Hans"
+      },
+      "context": {
+        "recommendation_turns": [
+          {
+            "product_keys": ["联邦家私:59", "联邦家私:60", "联邦家私:61"]
+          }
+        ]
+      },
+      "expected": {
+        "intent": "product_intro",
+        "target_product_key": "联邦家私:60",
+        "should_handoff": false
+      },
+      "tags": ["zh-Hans", "product-reference", "history"]
+    },
+    {
+      "case_id": "zh-quote-handoff",
+      "input": {
+        "message": "这张餐桌报价多少？可以给我正式报价单吗？",
+        "language": "zh-Hans"
+      },
+      "expected": {
+        "intent": "quote_handoff",
+        "should_handoff": true
+      },
+      "tags": ["zh-Hans", "handoff", "high-risk"]
+    }
+  ]
+}
