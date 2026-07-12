@@ -363,6 +363,7 @@ def _intent_result(
             "scene_name": "",
             "style_hint": "",
             "file_ids": [],
+            "is_recommendation_refresh": False,
             **(slots or {}),
         },
         "needs_human": bool(needs_human),
@@ -383,6 +384,104 @@ def _extract_json_object(raw: str) -> dict[str, Any]:
         text = text[start : end + 1]
     data = json.loads(text)
     return data if isinstance(data, dict) else {}
+
+
+def is_recommendation_refresh_text(user_message: str) -> bool:
+    """识别客户要求沿用上一轮诉求但更换一批推荐候选的表达."""
+    normalized = _normalize_match_text(user_message)
+    compact = re.sub(r"\s+", "", normalized)
+    if not compact:
+        return False
+    return_exchange_terms = (
+        r"换货|退换|退货|返品|交換|반품|교환|return policy|exchange policy"
+    )
+    if re.search(return_exchange_terms, compact):
+        return False
+
+    compact_terms = [
+        "换一批",
+        "換一批",
+        "换批",
+        "換批",
+        "再换一批",
+        "再換一批",
+        "换一组",
+        "換一組",
+        "换几个",
+        "換幾個",
+        "换其他",
+        "換其他",
+        "换其它",
+        "換其它",
+        "换别",
+        "換別",
+        "另一批",
+        "另一組",
+        "别的款",
+        "別的款",
+        "其他款",
+        "其它款",
+        "还有别",
+        "還有別",
+        "还有其他",
+        "還有其他",
+        "还有其它",
+        "還有其它",
+        "再来一批",
+        "再來一批",
+        "再来几款",
+        "再來幾款",
+        "重新推荐",
+        "重新推薦",
+        "再推荐",
+        "再推薦",
+        "別の商品",
+        "他の商品",
+        "ほかの商品",
+        "別の候補",
+        "他の候補",
+        "다른상품",
+        "다른제품",
+        "다른추천",
+        "더추천",
+    ]
+    if any(term in compact for term in compact_terms):
+        return True
+
+    product_refresh_subjects = (
+        "产品|產品|商品|家具|款|款式|选项|選項|选择|選擇|候选|候選|"
+        "沙发|沙發|床|桌|椅|柜|櫃|几|幾|茶几|餐台|餐桌|书桌|書桌|"
+        "电视柜|電視櫃|衣柜|衣櫃|sofa|chair|desk|table|bed|cabinet|"
+        "wardrobe|product|item|option|model|choice"
+    )
+    product_refresh_patterns = [
+        rf"(有没有|有沒有)(其他|其它|别的|別的)的?({product_refresh_subjects})",
+        rf"(有|要不要|能不能)(其他|其它|别的|別的)的?({product_refresh_subjects})",
+        rf"(其他|其它|别的|別的)的?({product_refresh_subjects})"
+        r"(吗|嗎|嘛|么|麼|呢|？|\?)?$",
+    ]
+    if any(
+        re.search(pattern, compact, flags=re.IGNORECASE)
+        for pattern in product_refresh_patterns
+    ):
+        return True
+
+    latin_patterns = [
+        r"\b(show|recommend|give)\s+me\s+(more|other|another|different)\b",
+        r"\b(more|other|another|different)\s+(options|products|items|choices|recommendations)\b",
+        r"\b(any|something)\s+(else|other)\b",
+        r"\banother\s+(batch|set|round)\b",
+        r"\bshow\s+me\s+more\b",
+        r"\bmuestrame\s+(mas|otras|otros)\b",
+        r"\b(recomiendame|recomendarme)\s+(otros|otras|mas)\b",
+        r"\b(otras|otros|mas)\s+(opciones|productos)\b",
+        r"\botra\s+(tanda|serie)\b",
+        r"\b(autres|d'autres)\s+(options|produits|modeles)\b",
+        r"\bune\s+autre\s+(serie|selection)\b",
+        r"\bmontrez\s+moi\s+plus\b",
+        r"\brecommandez\s+m\s+en\s+d\s+autres\b",
+    ]
+    return any(re.search(pattern, normalized, flags=re.IGNORECASE) for pattern in latin_patterns)
 
 
 def _fast_intent_from_rules(
@@ -551,6 +650,14 @@ def _fast_intent_from_rules(
             0.88,
             source="rules",
             reason="scene confirmation after recommendation",
+        )
+
+    if is_recommendation_refresh_text(text):
+        return _intent_result(
+            "product_recommendation",
+            0.88,
+            source="rules",
+            reason="recommendation batch refresh request",
         )
 
     if has_any(
@@ -787,8 +894,14 @@ async def classify_customer_intent(
     recent_product_ids: list[int] | None = None,
     has_pending_scene_confirmation: bool = False,
     chat_history: list[dict] | None = None,
+    timeout_seconds: float | None = None,
 ) -> dict[str, Any]:
-    """Classify the next customer intent once, with a fast rules path before LLM routing."""
+    """对客户下一条消息做一次意图分类.
+
+    实时客服链路不能因为外部模型重试而长期停在“识别客户意图中”。
+    本地规则无法覆盖时才调用 LLM router，并用 profile_llm_timeout_seconds
+    约束等待时间；超时后降级为低置信度普通问题，由上层继续兜底或澄清。
+    """
     fast = _fast_intent_from_rules(
         user_message,
         has_pending_scene_confirmation=has_pending_scene_confirmation,
@@ -820,9 +933,14 @@ async def classify_customer_intent(
         "- Put pricing/human_handoff/complaint in secondary_intents if they appear together with another request.\n"
         "- Use a useful clarification_question when the request is vague or under-specified.\n"
         "- If the user asks several things at once, make the most urgent/high-risk item primary and put the rest in secondary_intents.\n\n"
+        "- If the customer asks for another batch, different options, or other products "
+        "while preserving the previous recommendation request, classify as "
+        "product_recommendation and set slots.is_recommendation_refresh=true. "
+        "Do not set this for return or exchange policy questions.\n\n"
         "Return ONLY compact JSON with this shape:\n"
         '{"primary_intent":"general_question","secondary_intents":[],"confidence":0.0,'
-        '"slots":{"target_product_id":null,"scene_name":"","style_hint":"","file_ids":[]},'
+        '"slots":{"target_product_id":null,"scene_name":"","style_hint":"",'
+        '"file_ids":[],"is_recommendation_refresh":false},'
         '"needs_human":false,"clarification_question":"","reason":""}\n'
         "Confidence must be 0-1. Use lower confidence when ambiguous. For scene requests, extract scene_name, "
         "style_hint, and target_product_id if clear from recent products or catalog.\n\n"
@@ -838,13 +956,30 @@ async def classify_customer_intent(
                 convo_messages.append({"role": role, "content": content})
     convo_messages.append({"role": "user", "content": user_message})
 
+    router_timeout = 4.0
     try:
-        raw = await _chat_completion(
-            messages=convo_messages,
-            max_tokens=220,
-            temperature=0,
-            disable_thinking=True,
-            operation="intent_classification",
+        if timeout_seconds is not None:
+            try:
+                router_timeout = float(timeout_seconds)
+            except (TypeError, ValueError):
+                router_timeout = 4.0
+        else:
+            cfg = await get_llm_settings()
+            try:
+                router_timeout = float(cfg.get("profile_llm_timeout_seconds"))
+            except (TypeError, ValueError):
+                router_timeout = 4.0
+        minimum_timeout = 0.001 if timeout_seconds is not None else 0.5
+        router_timeout = max(minimum_timeout, router_timeout)
+        raw = await asyncio.wait_for(
+            _chat_completion(
+                messages=convo_messages,
+                max_tokens=220,
+                temperature=0,
+                disable_thinking=True,
+                operation="intent_classification",
+            ),
+            timeout=router_timeout,
         )
         data = _extract_json_object(raw)
         raw_slots = data.get("slots")
@@ -858,6 +993,12 @@ async def classify_customer_intent(
         slots["target_product_id"] = target_id
         file_ids = slots.get("file_ids")
         slots["file_ids"] = file_ids if isinstance(file_ids, list) else []
+        refresh_value = slots.get("is_recommendation_refresh")
+        slots["is_recommendation_refresh"] = (
+            refresh_value
+            if isinstance(refresh_value, bool)
+            else str(refresh_value or "").strip().lower() in {"true", "1", "yes"}
+        )
         return _intent_result(
             str(data.get("primary_intent") or "general_question"),
             float(data.get("confidence") or 0.0),
@@ -871,6 +1012,13 @@ async def classify_customer_intent(
             needs_human=bool(data.get("needs_human")),
             clarification_question=str(data.get("clarification_question") or ""),
             reason=str(data.get("reason") or ""),
+        )
+    except TimeoutError:
+        logger.warning("Intent classification timed out after %.2fs", router_timeout)
+        return _intent_result(
+            "general_question",
+            0.0,
+            reason="intent classifier timed out",
         )
     except Exception as e:
         logger.error(f"Intent classification failed: {e}")
@@ -2794,6 +2942,50 @@ def _product_satisfies_profile_constraints(
     )
 
 
+def _product_satisfies_complete_profile(
+    product: dict[str, Any],
+    profile: dict[str, set[str]],
+) -> bool:
+    """校验商品是否满足客户当前诉求中的全部已知约束."""
+    required_dimensions = [
+        dimension
+        for dimension in ("categories", *PRODUCT_MATCH_STRICT_DIMENSIONS)
+        if profile.get(dimension)
+    ]
+    if not required_dimensions:
+        return True
+    product_text = _product_match_text(product)
+    return all(
+        any(
+            _matches_product_profile_value(product, product_text, dimension, value)
+            for value in profile.get(dimension, set())
+        )
+        for dimension in required_dimensions
+    )
+
+
+def _coerce_product_id_set(values: Iterable[Any] | None) -> set[int]:
+    ids: set[int] = set()
+    for value in values or []:
+        if value is None or isinstance(value, bool):
+            continue
+        try:
+            ids.add(int(value))
+        except (TypeError, ValueError):
+            continue
+    return ids
+
+
+def _product_id(product: dict[str, Any]) -> int | None:
+    raw = product.get("id")
+    if raw is None or isinstance(raw, bool):
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
 def _product_constraint_match_count(
     product: dict[str, Any],
     profile: dict[str, set[str]],
@@ -2916,12 +3108,35 @@ async def ai_select_products(
     products: list[dict],
     conversation_memory: str = "",
     request_profile: dict[str, Any] | None = None,
+    exclude_product_ids: Iterable[Any] | None = None,
+    require_full_match: bool = False,
 ) -> list[int]:
-    """Select product recommendations with local recall, LLM rerank, and deterministic fallback."""
+    """按客户诉求选择推荐商品，支持本地召回、LLM 重排和确定性降级."""
     if not products:
         return []
     profile = _coerce_product_request_profile(user_message, request_profile)
-    candidates = _local_product_candidates(user_message, products, request_profile=request_profile)
+    excluded_ids = _coerce_product_id_set(exclude_product_ids)
+    available_products = [
+        product
+        for product in products
+        if (product_id := _product_id(product)) is not None
+        and product_id not in excluded_ids
+    ]
+    if require_full_match and any(profile.values()):
+        # “换一批”不能用相似商品补位；没有剩余完整匹配时由上游回复无更多匹配。
+        available_products = [
+            product
+            for product in available_products
+            if _product_satisfies_complete_profile(product, profile)
+        ]
+    if not available_products:
+        return []
+
+    candidates = _local_product_candidates(
+        user_message,
+        available_products,
+        request_profile=request_profile,
+    )
     query_terms = _extract_product_query_terms(user_message)
     protected_ids = _protected_exact_product_ids(candidates, query_terms)
     fallback_ids = _fallback_product_ids(candidates)

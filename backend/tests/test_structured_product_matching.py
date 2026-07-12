@@ -162,6 +162,107 @@ class StructuredProductMatchingTests(unittest.TestCase):
         self.assertEqual(selected[0], 3)
         self.assertNotIn(1, selected)
 
+    def test_ai_select_products_excludes_seen_ids_for_batch_refresh(self):
+        products = [
+            {
+                "id": 1,
+                "name": "联邦书桌 A",
+                "primary_category": "desk",
+                "normalized_space": "study",
+                "image_paths": ["desk-a.jpg"],
+            },
+            {
+                "id": 2,
+                "name": "联邦书桌 B",
+                "primary_category": "desk",
+                "normalized_space": "study",
+                "image_paths": ["desk-b.jpg"],
+            },
+            {
+                "id": 3,
+                "name": "联邦书桌 C",
+                "primary_category": "desk",
+                "normalized_space": "study",
+                "image_paths": ["desk-c.jpg"],
+            },
+            {
+                "id": 4,
+                "name": "联邦沙发 A",
+                "primary_category": "sofa",
+                "normalized_space": "living_room",
+                "image_paths": ["sofa-a.jpg"],
+            },
+        ]
+        profile = {
+            "categories": ["desk"],
+            "spaces": ["study"],
+            "colors": [],
+            "styles": [],
+            "materials": [],
+            "brands": [],
+            "hard_constraints": ["categories", "spaces"],
+            "confidence": 0.9,
+        }
+
+        selected = asyncio.run(
+            ai_select_products(
+                "换一批",
+                products,
+                request_profile=profile,
+                exclude_product_ids=[1, 2],
+                require_full_match=True,
+            )
+        )
+
+        self.assertEqual(selected, [3])
+
+    def test_ai_select_products_returns_empty_when_no_more_full_matches(self):
+        products = [
+            {
+                "id": 1,
+                "name": "联邦书桌 A",
+                "primary_category": "desk",
+                "normalized_space": "study",
+                "image_paths": ["desk-a.jpg"],
+            },
+            {
+                "id": 2,
+                "name": "联邦书桌 B",
+                "primary_category": "desk",
+                "normalized_space": "study",
+                "image_paths": ["desk-b.jpg"],
+            },
+            {
+                "id": 3,
+                "name": "联邦沙发 A",
+                "primary_category": "sofa",
+                "normalized_space": "living_room",
+                "image_paths": ["sofa-a.jpg"],
+            },
+        ]
+        profile = {
+            "categories": ["desk"],
+            "spaces": ["study"],
+            "colors": [],
+            "styles": [],
+            "materials": [],
+            "brands": [],
+            "hard_constraints": ["categories", "spaces"],
+            "confidence": 0.9,
+        }
+
+        selected = asyncio.run(
+            ai_select_products(
+                "换一批",
+                products,
+                request_profile=profile,
+                exclude_product_ids=[1, 2],
+                require_full_match=True,
+            )
+        )
+
+        self.assertEqual(selected, [])
+
 
 if __name__ == "__main__":
     unittest.main()

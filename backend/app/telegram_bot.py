@@ -72,6 +72,7 @@ from app.services.llm_service import (
     classify_customer_intent_fast,
     detect_language,
     generate_response,
+    is_recommendation_refresh_text,
     resolve_recent_product_reference,
 )
 from app.services.observability_service import (
@@ -213,6 +214,24 @@ PRODUCT_REC_NONE = {
     "ko": "죄송합니다. 조건에 맞는 제품을 찾지 못했습니다. 상담원에게 문의해 주세요.",
     "es": "Lo siento, no encontré productos que coincidan. Contacte a un agente.",
     "fr": "Désolé, aucun produit correspondant. Veuillez contacter un agent.",
+}
+
+PRODUCT_REC_NO_MORE_EXACT = {
+    "zh": "目前没有更多完全匹配您需求的产品了。如果您愿意，我可以为您推荐其他相似产品。",
+    "en": "There are no more products that fully match your request right now. If you'd like, I can recommend similar alternatives.",
+    "ja": "ご要望に完全に一致する商品は、現時点ではこれ以上ありません。よろしければ、近い代替商品をご提案できます。",
+    "ko": "현재 요청 조건에 완전히 맞는 제품은 더 없습니다. 원하시면 유사한 대안 제품을 추천해 드릴 수 있습니다.",
+    "es": "Por ahora no hay más productos que coincidan exactamente con su solicitud. Si lo desea, puedo recomendar alternativas similares.",
+    "fr": "Il n'y a pour le moment plus de produits correspondant exactement à votre demande. Si vous le souhaitez, je peux recommander des alternatives similaires.",
+}
+
+PRODUCT_REC_REFRESH_NEEDS_CONTEXT = {
+    "zh": "可以，请告诉我您想看哪一类产品，我再为您推荐合适的款式。",
+    "en": "Sure. Please tell me what product type you'd like to see, and I can recommend suitable options.",
+    "ja": "承知しました。ご覧になりたい商品の種類を教えてください。条件に合う候補をご提案します。",
+    "ko": "좋습니다. 어떤 종류의 제품을 보고 싶으신지 알려주시면 알맞은 상품을 추천해 드리겠습니다.",
+    "es": "Claro. Indíqueme qué tipo de producto quiere ver y le recomendaré opciones adecuadas.",
+    "fr": "Bien sûr. Indiquez-moi le type de produit que vous souhaitez voir, puis je vous recommanderai des options adaptées.",
 }
 
 SCENE_FOLLOWUP_MESSAGES = {
@@ -1153,6 +1172,101 @@ def _string_list(value: Any) -> list[str]:
         if text:
             normalized.append(text)
     return normalized
+
+
+PRODUCT_PROFILE_DIMENSIONS = ("categories", "spaces", "styles", "colors", "materials", "brands")
+
+
+def _has_product_profile_constraints(profile: dict[str, Any] | None) -> bool:
+    return any(
+        _string_list((profile or {}).get(dimension))
+        for dimension in PRODUCT_PROFILE_DIMENSIONS
+    )
+
+
+def collect_recommendation_refresh_excluded_ids(turns: list[dict[str, Any]]) -> list[int]:
+    """收集本会话历史推荐过的商品 ID，换批时避免重复展示."""
+    excluded_ids: list[int] = []
+    for turn in turns or []:
+        if not isinstance(turn, dict):
+            continue
+        for product_id in _int_list(turn.get("product_ids")):
+            if product_id not in excluded_ids:
+                excluded_ids.append(product_id)
+    return excluded_ids
+
+
+def _recommendation_turn_index(turn: Any) -> int:
+    if not isinstance(turn, dict):
+        return 0
+    try:
+        return int(turn.get("turn_index") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _latest_recommendation_profile(turns: list[dict[str, Any]]) -> dict[str, list[str]]:
+    for turn in sorted(turns or [], key=_recommendation_turn_index, reverse=True):
+        profile = turn.get("category_profile") if isinstance(turn, dict) else None
+        if not isinstance(profile, dict):
+            continue
+        normalized = {
+            dimension: _string_list(profile.get(dimension))
+            for dimension in PRODUCT_PROFILE_DIMENSIONS
+        }
+        if any(normalized.values()):
+            return normalized
+    return {dimension: [] for dimension in PRODUCT_PROFILE_DIMENSIONS}
+
+
+def build_recommendation_refresh_profile(
+    current_profile: dict[str, Any] | None,
+    turns: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """为“换一批”复用最近推荐轮次的显式商品诉求."""
+    profile = dict(current_profile or {})
+    latest_profile = _latest_recommendation_profile(turns)
+    for dimension in PRODUCT_PROFILE_DIMENSIONS:
+        current_values = _string_list(profile.get(dimension))
+        profile[dimension] = current_values or latest_profile.get(dimension, [])
+
+    hard_constraints = _string_list(profile.get("hard_constraints"))
+    if not hard_constraints:
+        hard_constraints = [
+            dimension for dimension in PRODUCT_PROFILE_DIMENSIONS if profile.get(dimension)
+        ]
+    profile["hard_constraints"] = hard_constraints
+    if _has_product_profile_constraints(profile):
+        profile["needs_human"] = False
+        try:
+            profile["confidence"] = max(float(profile.get("confidence") or 0.0), 0.72)
+        except (TypeError, ValueError):
+            profile["confidence"] = 0.72
+    profile["source"] = f"{profile.get('source') or 'profile'}+recommendation_refresh"
+    if not profile.get("reason"):
+        profile["reason"] = "reuse latest recommendation profile for batch refresh"
+    return profile
+
+
+def _bool_value(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"true", "1", "yes"}
+
+
+def should_use_recommendation_refresh(
+    user_message: str,
+    intent_slots: dict[str, Any],
+    recommendation_turns: list[dict[str, Any]],
+) -> bool:
+    """只有存在历史推荐轮次时，才启用“换一批”的续推语义."""
+    if not collect_recommendation_refresh_excluded_ids(recommendation_turns):
+        return False
+    return is_recommendation_refresh_text(user_message) or _bool_value(
+        intent_slots.get("is_recommendation_refresh")
+    )
 
 
 def _int_value(value: Any) -> int | None:
@@ -2768,9 +2882,32 @@ async def process_customer_text_message(
                     return
 
         await stage("checking_product_recommendation")
-        is_product_rec = is_product_recommendation_intent
+        is_recommendation_refresh_requested = is_recommendation_refresh_text(
+            user_message
+        ) or _bool_value(intent_slots.get("is_recommendation_refresh"))
+        is_recommendation_refresh = should_use_recommendation_refresh(
+            user_message,
+            intent_slots,
+            recommendation_turns,
+        )
+        is_product_rec = is_product_recommendation_intent or is_recommendation_refresh
         logger.info(f"[Bot {bot_id}] Product recommendation: {is_product_rec}")
         if is_product_rec:
+            if is_recommendation_refresh_requested and not is_recommendation_refresh:
+                clarification_msg = get_localized_static_text(
+                    PRODUCT_REC_REFRESH_NEEDS_CONTEXT,
+                    language,
+                )
+                await first_response("clarification")
+                await save_message(
+                    conversation_id, MessageRole.ASSISTANT, clarification_msg, language
+                )
+                stop_typing.set()
+                await typing_task
+                await outbound.reply_text(clarification_msg)
+                await finish("clarification", "换批推荐缺少历史推荐上下文")
+                return
+
             await stage("parsing_product_profile")
             product_request_profile = await parse_product_request_profile(
                 user_message,
@@ -2782,6 +2919,19 @@ async def process_customer_text_message(
                     include_preferences=False,
                 ),
             )
+            refresh_excluded_product_ids: list[int] = []
+            refresh_requires_full_match = False
+            if is_recommendation_refresh:
+                product_request_profile = build_recommendation_refresh_profile(
+                    product_request_profile,
+                    recommendation_turns,
+                )
+                refresh_excluded_product_ids = collect_recommendation_refresh_excluded_ids(
+                    recommendation_turns
+                )
+                refresh_requires_full_match = _has_product_profile_constraints(
+                    product_request_profile
+                )
             if (
                 product_request_profile.get("needs_human")
                 and float(product_request_profile.get("confidence") or 0.0) < 0.55
@@ -2818,6 +2968,8 @@ async def process_customer_text_message(
                     all_products,
                     conversation_memory=conversation_memory_info,
                     request_profile=product_request_profile,
+                    exclude_product_ids=refresh_excluded_product_ids,
+                    require_full_match=refresh_requires_full_match,
                 )
                 if all_products
                 else []
@@ -2830,6 +2982,8 @@ async def process_customer_text_message(
                 metadata={
                     "candidate_product_count": len(all_products or []),
                     "selected_product_count": len(selected_products),
+                    "refresh_excluded_product_count": len(refresh_excluded_product_ids),
+                    "refresh_requires_full_match": refresh_requires_full_match,
                 },
             )
             intro = get_localized_static_text(PRODUCT_REC_INTRO, language)
@@ -2844,7 +2998,10 @@ async def process_customer_text_message(
                 if constraint_notice.get("has_notice")
                 else intro
             )
-            none_msg = get_localized_static_text(PRODUCT_REC_NONE, language)
+            none_msg = get_localized_static_text(
+                PRODUCT_REC_NO_MORE_EXACT if refresh_requires_full_match else PRODUCT_REC_NONE,
+                language,
+            )
             stop_typing.set()
             await typing_task
             if selected_products:
